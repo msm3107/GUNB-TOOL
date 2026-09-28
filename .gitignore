@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Dane robocze: cache paczek GUNB, baza SQLite, logi
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.part
+*.log
+
+# Sekrety – NIGDY nie commituj
+.env
+service_account*.json
+credentials*.json
+*-sa.json
+
+# Edytory / narzędzia
+.idea/
+.vscode/
+.vexp/

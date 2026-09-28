@@ -1,0 +1,8 @@
+# Zależności runtime GUNB Lead Tool
+requests>=2.31,<3
+PyYAML>=6.0,<7
+python-dotenv>=1.0,<2
+
+# Eksport do Google Sheets (opcjonalny – wymagany tylko dla --sync-sheets)
+gspread>=6.0,<7
+google-auth>=2.20,<3

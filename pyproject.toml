@@ -1,0 +1,9 @@
+[project]
+name = "gunb-tool"
+version = "0.1.0"
+description = "Pozyskiwanie i wzbogacanie leadów inwestycyjnych z rejestru GUNB (RWDZ) dla lokalnych wykonawców budowlanych"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,133 @@
+# ============================================================================
+#  GUNB Lead Tool – konfiguracja
+#
+#  • Sekretów NIE wpisuj tutaj – używaj placeholderów ${ZMIENNA} lub ${ZMIENNA:-domyślna};
+#    wartości trzymaj w zmiennych środowiskowych albo w pliku .env (wzór: .env.example).
+#  • Ścieżki względne liczone są od katalogu tego pliku.
+#  • Kody TERYT zawsze w cudzysłowie ("0201"), inaczej YAML może je przeczytać jako liczby.
+# ============================================================================
+
+gunb:
+  # Źródła – oficjalne paczki „Dane do pobrania” z wyszukiwarka.gunb.gov.pl (aktualizacja co noc):
+  #   pozwolenia – Rejestr Wniosków i Decyzji (osobny plik na województwo, dane od 2016 r.)
+  #   zgloszenia – Rejestr Zgłoszeń od 2022 r. (jeden plik dla całego kraju, ~25 MB ZIP)
+  sources: [pozwolenia, zgloszenia]
+
+  # Województwa (kody TERYT lub nazwy):
+  #   02 dolnośląskie  04 kujawsko-pomorskie  06 lubelskie   08 lubuskie
+  #   10 łódzkie       12 małopolskie         14 mazowieckie 16 opolskie
+  #   18 podkarpackie  20 podlaskie           22 pomorskie   24 śląskie
+  #   26 świętokrzyskie 28 warmińsko-mazurskie 30 wielkopolskie 32 zachodniopomorskie
+  voivodeships: ["12"]
+
+  # Powiaty do monitorowania (4-cyfrowe kody TERYT). Pusta lista = całe województwo.
+  # Przykład: 1206 – powiat krakowski, 1219 – wielicki, 1261 – m. Kraków.
+  powiats: ["1206", "1219", "1261"]
+
+  # Data używana przy filtrowaniu pozwoleń: "decyzja" (data wydania) lub "wplyw" (data złożenia).
+  # Zgłoszenia mają wyłącznie datę wpływu i zawsze są filtrowane po niej.
+  date_field: decyzja
+
+  # Okno czasowe w dniach, gdy w CLI nie podano --since / --days.
+  lookback_days: 30
+
+  # Paginacja przetwarzania: liczba spraw na stronę (geokodowanie + zapis w jednej transakcji).
+  page_size: 200
+
+  cache_dir: data/cache
+
+filter:
+  # Odrzucaj rekordy uznane za szum.
+  drop_noise: true
+
+  # Słowa wykluczające (rdzenie słów; polskie znaki opcjonalne; można użyć wyrażeń regularnych).
+  # Rekord jest szumem, gdy takie słowo stoi w opisie PRZED słowem opisującym budynek:
+  #   „Przyłącze gazowe do budynku mieszkalnego”                → szum
+  #   „Budowa budynku mieszkalnego wraz z przyłączami i zjazdem” → lead
+  exclude_keywords:
+    - ogrodzen        # ogrodzenia
+    - zjazd           # zjazdy z drogi publicznej
+    - przyłącz        # przyłącza
+    - sieć
+    - sieci
+    - gazow           # instalacje / sieci / zbiorniki gazowe
+    - gazociąg
+    - wodociąg
+    - kanalizac
+    - elektroenerget
+    - kablow
+    - napowietrzn
+    - oświetleni
+    - telekomunikac
+    - bazow           # stacje bazowe telefonii
+    - maszt
+    - reklam          # nośniki reklamowe
+    - rozbiórk        # rozbiórki
+    - fotowolt
+    - wiatrow         # elektrownie wiatrowe
+    - zbiornik
+    - oczyszczal      # przydomowe oczyszczalnie ścieków
+    - szamb
+    - studni
+    - drog            # drogi, przebudowy dróg
+    - chodnik
+    - parking
+    - melioracj
+
+  # Kategorie obiektów (I–XXX) traktowane jako szum, o ile opis nie wskazuje na budynek:
+  #   IV zjazdy/skrzyżowania, XXII parkingi/place, XXV drogi, XXVI sieci, XXVIII mosty, XXIX maszty...
+  noise_categories: [IV, VI, VII, XXI, XXII, XXIII, XXIV, XXV, XXVI, XXVII, XXVIII, XXIX, XXX]
+
+  # Zostaw tylko wybrane kategorie leadów (pusta lista = wszystko poza szumem). Dostępne:
+  #   mieszkaniowa-jednorodzinna, mieszkaniowa-wielorodzinna, mieszana, komercyjna,
+  #   publiczna, rolnicza, inna
+  include_categories: []
+
+geocoding:
+  enabled: true
+  # Ile działek sprawy próbować zlokalizować w ULDK, zanim użyjemy środka obrębu.
+  max_parcels_per_case: 3
+  # Gdy żadna działka nie istnieje (np. po podziale) – współrzędne środka obrębu.
+  region_fallback: true
+  # Losowe opóźnienie między zapytaniami do ULDK (sekundy).
+  min_delay: 0.2
+  max_delay: 0.8
+  # Po ilu dniach ponowić zapytanie o działkę, której ULDK nie znalazł.
+  negative_cache_days: 30
+
+http:
+  timeout: 60
+  max_retries: 5
+  backoff_base: 2        # wykładniczy backoff: 2, 4, 8... s (z losowym jitterem)
+  backoff_max: 60
+  min_delay: 1.0         # losowe opóźnienie między zapytaniami do GUNB
+  max_delay: 3.0
+  # user_agents:         # własna pula User-Agent (domyślnie 5 popularnych przeglądarek)
+  #   - "Mozilla/5.0 ..."
+
+storage:
+  db_path: data/gunb_leads.sqlite
+
+notifications:
+  # Limit wiadomości na kanał na jedno uruchomienie (reszta pójdzie przy następnym).
+  max_messages_per_run: 30
+  # Nie powiadamiaj o leadach, których status zmienił się dawniej niż N dni temu.
+  max_age_days: 14
+
+telegram:
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  chat_id: ${TELEGRAM_CHAT_ID}
+  delay_seconds: 1.1     # limit Telegrama: ~1 wiadomość/s na czat
+
+discord:
+  webhook_url: ${DISCORD_WEBHOOK_URL}
+  delay_seconds: 1.0
+
+sheets:
+  service_account_file: ${GOOGLE_SERVICE_ACCOUNT_FILE:-service_account.json}
+  spreadsheet_id: ${GOOGLE_SHEET_ID}
+  worksheet: Leady
+
+logging:
+  level: INFO
+  file: data/gunb_tool.log
