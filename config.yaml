@@ -28,8 +28,10 @@ gunb:
   # Zgłoszenia mają wyłącznie datę wpływu i zawsze są filtrowane po niej.
   date_field: decyzja
 
-  # Okno czasowe w dniach, gdy w CLI nie podano --since / --days.
-  lookback_days: 30
+  # Okno czasowe w dniach, gdy w CLI nie podano --since / --days. Urzędy wprowadzają sprawy
+  # do RWDZ z opóźnieniem (zgłoszenia nawet kilka tygodni), więc okno powinno być szerokie –
+  # sprawy już znane są rozpoznawane po numerze i nie generują ponownych powiadomień.
+  lookback_days: 60
 
   # Paginacja przetwarzania: liczba spraw na stronę (geokodowanie + zapis w jednej transakcji).
   page_size: 200

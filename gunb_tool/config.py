@@ -89,7 +89,7 @@ class GunbConfig:
     voivodeships: tuple[str, ...] = ()
     powiats: tuple[str, ...] = ()
     date_field: str = "decyzja"
-    lookback_days: int = 30
+    lookback_days: int = 60
     page_size: int = 200
 
 
