@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,6 +35,19 @@ MAX_RETRY_AFTER = 600.0
 """Górny limit (s) czekania na żądanie serwera z nagłówka ``Retry-After``."""
 
 _CHUNK_SIZE = 1 << 20
+
+# Sekrety bywają częścią URL-a (token bota Telegrama, token webhooka Discorda) – nie mogą trafić do logów.
+_SECRET_URL_PATTERNS = (
+    (re.compile(r"(/bot)[^/]+"), r"\g<1><token>"),
+    (re.compile(r"(/webhooks/[^/]+/)[^/?#]+"), r"\g<1><token>"),
+)
+
+
+def redact_url(url: str) -> str:
+    """Maskuje sekrety w URL-u (``/bot<token>/``, ``/webhooks/<id>/<token>``) przed logowaniem."""
+    for pattern, replacement in _SECRET_URL_PATTERNS:
+        url = pattern.sub(replacement, url)
+    return url
 
 
 class HttpError(RuntimeError):
@@ -125,6 +139,7 @@ class ResilientHttpClient:
         Raises:
             HttpError: gdy wyczerpano limit ponowień.
         """
+        safe_url = redact_url(url)
         merged = {"Accept-Language": "pl-PL,pl;q=0.9,en;q=0.5"}
         merged.update(headers or {})
         kwargs.setdefault("timeout", self.config.timeout)
@@ -143,7 +158,7 @@ class ResilientHttpClient:
                 if response.status_code not in RETRYABLE_STATUS:
                     return response
                 last_status = response.status_code
-                last_error = HttpError(f"HTTP {response.status_code}", status_code=last_status, url=url)
+                last_error = HttpError(f"HTTP {response.status_code}", status_code=last_status, url=safe_url)
                 retry_after = _retry_after_seconds(response)
                 delay = min(retry_after, MAX_RETRY_AFTER) if retry_after is not None else self._backoff(attempt)
                 response.close()
@@ -153,14 +168,14 @@ class ResilientHttpClient:
             if attempt < self.config.max_retries:
                 log.warning(
                     "%s %s: %s – ponowienie %d/%d za %.1f s",
-                    method, url, last_error, attempt + 1, self.config.max_retries, delay,
+                    method, safe_url, last_error, attempt + 1, self.config.max_retries, delay,
                 )
                 self._sleep(delay)
 
         raise HttpError(
-            f"{method} {url}: wyczerpano limit ponowień ({self.config.max_retries}); ostatni błąd: {last_error}",
+            f"{method} {safe_url}: wyczerpano limit ponowień ({self.config.max_retries}); ostatni błąd: {last_error}",
             status_code=last_status,
-            url=url,
+            url=safe_url,
         ) from last_error
 
     # --- Pobieranie plików -----------------------------------------------------

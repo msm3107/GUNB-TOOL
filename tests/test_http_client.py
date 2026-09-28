@@ -62,6 +62,24 @@ def test_honors_retry_after_from_json_body(payload):
     assert clock.sleeps == [3.0]
 
 
+def test_secrets_in_urls_are_redacted_from_logs_and_errors(caplog):
+    telegram = "https://api.telegram.org/bot123456:SECRET-token_x/sendMessage"
+    discord = "https://discord.com/api/webhooks/987654/WEBHOOK-secret_y"
+    client, _, _ = make_client([FakeResponse(503)] * 4 + [FakeResponse(503)] * 4, max_retries=3)
+
+    with caplog.at_level("WARNING"):
+        for url in (telegram, discord):
+            with pytest.raises(HttpError) as excinfo:
+                client.post(url, json={})
+            assert "SECRET" not in str(excinfo.value) and "WEBHOOK-secret" not in str(excinfo.value)
+            assert "SECRET" not in (excinfo.value.url or "")
+
+    assert caplog.records, "ponowienia powinny być logowane"
+    assert "SECRET" not in caplog.text
+    assert "WEBHOOK-secret" not in caplog.text
+    assert "api.telegram.org/bot<token>/sendMessage" in caplog.text
+
+
 # --- User-Agent i uprzejme opóźnienia ----------------------------------------
 
 def test_rotates_user_agent_from_pool_without_immediate_repeats():
