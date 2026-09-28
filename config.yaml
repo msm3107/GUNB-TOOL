@@ -42,6 +42,10 @@ filter:
   # Odrzucaj rekordy uznane za szum.
   drop_noise: true
 
+  # Traktuj rozbiórki jako szum – chyba że opis obejmuje też budowę / przebudowę / rozbudowę
+  # (np. „rozbiórka starego domu i budowa nowego budynku mieszkalnego” pozostaje leadem).
+  drop_demolitions: true
+
   # Słowa wykluczające (rdzenie słów; polskie znaki opcjonalne; można użyć wyrażeń regularnych).
   # Rekord jest szumem, gdy takie słowo stoi w opisie PRZED słowem opisującym budynek:
   #   „Przyłącze gazowe do budynku mieszkalnego”                → szum
@@ -64,7 +68,6 @@ filter:
     - bazow           # stacje bazowe telefonii
     - maszt
     - reklam          # nośniki reklamowe
-    - rozbiórk        # rozbiórki
     - fotowolt
     - wiatrow         # elektrownie wiatrowe
     - zbiornik

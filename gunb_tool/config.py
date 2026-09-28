@@ -42,7 +42,7 @@ DEFAULT_USER_AGENTS: tuple[str, ...] = (
 DEFAULT_EXCLUDE_KEYWORDS: tuple[str, ...] = (
     "ogrodzen", "zjazd", "przylacz", "siec", "gazow", "gazociag", "wodociag", "kanalizac",
     "elektroenerget", "kablow", "napowietrzn", "oswietleni", "telekomunikac", "bazow",
-    "maszt", "reklam", "rozbiork", "fotowolt", "wiatrow", "zbiornik", "oczyszczal",
+    "maszt", "reklam", "fotowolt", "wiatrow", "zbiornik", "oczyszczal",
     "szamb", "studni", "drog", "chodnik", "parking", "melioracj",
 )
 """Rdzenie słów oznaczających „szum” (dopasowanie do tekstu bez polskich znaków)."""
@@ -98,6 +98,7 @@ class FilterConfig:
     """Reguły kategoryzacji i odrzucania szumu."""
 
     drop_noise: bool = True
+    drop_demolitions: bool = True
     exclude_keywords: tuple[str, ...] = DEFAULT_EXCLUDE_KEYWORDS
     noise_categories: tuple[str, ...] = DEFAULT_NOISE_CATEGORIES
     include_categories: tuple[str, ...] = ()
@@ -312,6 +313,7 @@ def _filter(data: dict[str, Any]) -> FilterConfig:
             )
     return FilterConfig(
         drop_noise=_bool(data, "filter", "drop_noise", defaults.drop_noise),
+        drop_demolitions=_bool(data, "filter", "drop_demolitions", defaults.drop_demolitions),
         exclude_keywords=_patterns(data, "exclude_keywords", defaults.exclude_keywords),
         noise_categories=noise_categories,
         include_categories=include,
