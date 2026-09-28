@@ -130,6 +130,12 @@ def test_download_writes_file_and_metadata(tmp_path):
     assert meta["last_modified"] == "Sun, 27 Sep 2026 21:35:36 GMT"
 
 
+def test_download_requests_uncompressed_transfer(tmp_path):
+    client, session, _ = make_client([FakeResponse(200, "data")])
+    client.download("https://example.test/wynik.zip", tmp_path / "wynik.zip")
+    assert session.calls[0].headers["Accept-Encoding"] == "identity"
+
+
 def test_download_sends_conditional_headers_and_keeps_file_on_304(tmp_path):
     dest = tmp_path / "wynik.zip"
     dest.write_bytes(b"old")

@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import yaml
 
@@ -231,6 +231,37 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         sheets=_sheets(_section(raw, "sheets"), base_dir),
         logging=_logging(_section(raw, "logging"), base_dir),
     )
+
+
+def override_scope(
+    config: AppConfig,
+    *,
+    voivodeships: Sequence[str] | None = None,
+    powiats: Sequence[str] | None = None,
+    sources: Sequence[str] | None = None,
+) -> AppConfig:
+    """Nadpisuje zakres pobierania (np. parametrami CLI) z tą samą walidacją co ``config.yaml``.
+
+    Podanie województw lub powiatów zastępuje oba ustawienia z pliku: same województwa oznaczają
+    całe województwa, same powiaty – wyłącznie te powiaty.
+
+    Raises:
+        ConfigError: niepoprawny kod województwa, powiatu lub nazwa źródła.
+    """
+    gunb = config.gunb
+    if voivodeships or powiats:
+        codes = [_voivodeship_code(v) for v in voivodeships or ()]
+        powiat_codes = [_powiat_code(p) for p in powiats or ()]
+        for powiat in powiat_codes:
+            if powiat[:2] not in codes:
+                codes.append(powiat[:2])
+        gunb = replace(gunb, voivodeships=tuple(dict.fromkeys(codes)), powiats=tuple(dict.fromkeys(powiat_codes)))
+    if sources:
+        try:
+            gunb = replace(gunb, sources=tuple(dict.fromkeys(Source(s) for s in sources)))
+        except ValueError:
+            raise ConfigError(f"Nieznane źródło w {list(sources)} (dozwolone: pozwolenia, zgloszenia)") from None
+    return replace(config, gunb=gunb)
 
 
 # --- Sekcje ---------------------------------------------------------------

@@ -178,6 +178,9 @@ def test_include_categories_limit_kept_leads():
     "raw,expected",
     [
         ("  Firma  Testowa Sp. z o.o. ", "Firma Testowa Sp. z o.o."),
+        ("X-Bud Sp. z o.o.", "X-Bud Sp. z o.o."),
+        ("Bezpieczny Dom Sp. j.", "Bezpieczny Dom Sp. j."),
+        ("-", None),
         ('""', None),
         (None, None),
         ("osoba fizyczna", None),

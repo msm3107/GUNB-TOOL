@@ -95,6 +95,7 @@ class _Line:
     label: str
     value: str
     code: bool = False
+    suffix: str = ""
 
 
 class MessageFormatter:
@@ -139,6 +140,8 @@ class MessageFormatter:
         ]
         for line in _details(inv):
             value = style.code(line.value) if line.code else style.text(line.value)
+            if line.suffix:
+                value += " " + style.text(line.suffix)
             lines.append(f"{line.icon} {style.text(line.label)}: {value}")
 
         links = [(label, url) for label, url in (("Google Maps", inv.google_maps_url),
@@ -184,7 +187,7 @@ def _details(inv: Investment) -> list[_Line]:
         lines.append(_Line("🏛️", "Organ", inv.organ))
     if inv.teryt_dzialki:
         extra = len(inv.dzialki) - 1
-        lines.append(_Line("🧩", "Działka", inv.teryt_dzialki + (f" (+{extra})" if extra > 0 else ""), code=True))
+        lines.append(_Line("🧩", "Działka", inv.teryt_dzialki, code=True, suffix=f"(+{extra})" if extra > 0 else ""))
     lines.append(_Line("🔖", "Sprawa", inv.id_sprawy, code=True))
     return lines
 
@@ -366,7 +369,7 @@ class GoogleSheetsExporter:
         return cls(factory)
 
     def export(self, investments: Sequence[Investment]) -> SheetsSyncResult:
-        """Aktualizuje istniejące wiersze (po ``id_sprawy``) i dopisuje nowe – łącznie 3 wywołania API."""
+        """Aktualizuje istniejące wiersze (po ``id_sprawy``) i dopisuje nowe – stała liczba wywołań API."""
         if not investments:
             return SheetsSyncResult(0, 0)
         worksheet = self._worksheet_factory()

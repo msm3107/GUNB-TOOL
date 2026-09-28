@@ -28,9 +28,10 @@ _MULTI_FAMILY_RE = re.compile(r"wielorodzin|wielolokal")
 _AGRICULTURAL_RE = re.compile(r"inwentarsk|\bobor|chlewni|kurnik|stodol|rolnicz|gospodarstw")
 _SINGLE_FAMILY_TYPE = "budynek mieszkalny jednorodzinny"
 
+# Zwroty „brak…”/„bez…” rozpoczynające tekst albo same symbole zastępcze (cały tekst: „-”, „x”, „n/d”).
 _PLACEHOLDER_RE = re.compile(
-    r"^(brak|bez|nie dotyczy|nie wymaga|nie podano|nieznany|osoba fizyczna|n ?/ ?d|b ?/ ?d|nd|bd"
-    r"|x+|-+|\.+|0+|\?+)(\b|$)"
+    r"^(?:(?:brak|bez|nie dotyczy|nie wymaga|nie podano|nieznany|osoba fizyczna)\b"
+    r"|(?:n ?/ ?d|b ?/ ?d|nd|bd|x+|-+|\.+|0+|\?+)$)"
 )
 _FIRM_RE = re.compile(
     r"pracowni|biuro|studio|architekci|atelier|sp\.? ?z ?o\.? ?o|\bs\.? ?c\.?(\s|$)|spolk|\bgroup\b"

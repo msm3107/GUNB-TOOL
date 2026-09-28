@@ -211,7 +211,8 @@ class ResilientHttpClient:
                 part.unlink()  # bez ETag nie da się bezpiecznie dokleić reszty
                 offset = 0
 
-            headers: dict[str, str] = {}
+            # Bez kompresji transportowej: Content-Length i zakresy Range dotyczą wtedy bajtów pliku.
+            headers: dict[str, str] = {"Accept-Encoding": "identity"}
             if offset:
                 headers.update({"Range": f"bytes={offset}-", "If-Range": resume_etag or ""})
             elif cached_meta:

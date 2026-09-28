@@ -90,6 +90,11 @@ def test_telegram_message_for_status_change_has_transition_header():
     assert "wniosek → decyzja" in text
 
 
+def test_parcel_count_is_shown_outside_code_span():
+    text = MessageFormatter().telegram(lead(), NEW)
+    assert "🧩 Działka: `160705_4.0005.13` \\(\\+1\\)" in text
+
+
 def test_design_studio_is_not_repeated_when_it_is_the_designer():
     studio = "Pracownia Testowa s.c."
     text = MessageFormatter().discord(lead(projektant=studio, pracownia=studio, projektant_uprawnienia=None), NEW)
