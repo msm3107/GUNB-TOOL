@@ -310,8 +310,10 @@ def test_subscriptions_from_the_previous_version_are_kept(tmp_path, api, clock):
 
 def test_recipients_query_matches_the_access_rule(bot, api, repo, clock):
     store = BotStore(repo)
-    for chat_id in range(10, 18):
+    for chat_id in range(10, 19):
         store.register(chat_id, None, None, status="aktywny", backlog_days=7)
+    store.set_access(18, "2026-10-01T00:00:00+00:00")
+    store.set_paused(18, True)  # dostęp ma, ale wstrzymał powiadomienia
     store.set_access(11, "2026-10-01T00:00:00+00:00")  # ważny
     store.set_access(12, "2026-09-01T00:00:00+00:00")  # wygasły
     store.allow_trial(13)  # test dozwolony, nierozpoczęty
@@ -323,6 +325,8 @@ def test_recipients_query_matches_the_access_rule(bot, api, repo, clock):
     store.set_access(17, "2026-10-01T00:00:00+00:00")
     store.revoke_access(17)
 
-    by_rule = {u.chat_id for u in store.users() if bot._has_access(u)}
+    everyone = [u for status in ("aktywny", "zablokowany") for u in store.users(status)]
+    by_rule = {u.chat_id for u in everyone if bot._receives_automatic(u)}
     by_query = {u.chat_id for u in bot._subscribers()}
     assert by_query == by_rule == {11, 14, 15}
+    assert bot._has_access(store.get_user(18))  # pauza nie odbiera dostępu

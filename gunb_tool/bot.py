@@ -76,6 +76,8 @@ ACCESS_REMINDER_BEFORE = timedelta(hours=24)
 ACCESS_REMINDER_JOB = "dostep_przypomnienie"
 ACCESS_END_JOB = "dostep_koniec"
 NO_ACCESS_TOAST = "⛔ Brak aktywnego dostępu (test albo abonament) – szczegóły: /konto"
+WATCH_DIGEST_AFTER = 3
+"""Więcej alertów obserwowanych naraz (np. po wznowieniu powiadomień) idzie jedną wiadomością."""
 
 MENU_ACTIONS: dict[str, str] = {
     "📊 Inwestycje": "_show_news",
@@ -118,6 +120,7 @@ ADMIN_COMMANDS: dict[str, str] = {
     "/trial": "_cmd_trial",  # /trial <chat_id> – pozwala na 7-dniowy test (startuje klient)
     "/nowymodel": "_cmd_new_model",  # /nowymodel <chat_id|wszyscy> <dni|data> – termin dla dotychczasowych
     "/status": "_cmd_status",  # import GUNB, wątek zadań, wysyłki z ostatniej doby
+    "/raport": "_cmd_pilot_report",  # /raport [7|30] – pilotaż: unikalne osoby i inwestycje
 }
 """Komendy zastrzeżone dla ``bot.admins`` (``ADMIN_CHAT_ID``); u innych działają jak nieznany tekst."""
 
@@ -237,6 +240,7 @@ class LeadBot:
                     self._start_sends(name, now)
                 ran.append(name)
         self.process_sends()
+        self.deliver_personal_reminders()
         last = self.store.job_time("natychmiast")
         interval = timedelta(minutes=self.settings.instant_every_minutes)
         if ran or last is None or last + interval <= now:
@@ -316,6 +320,8 @@ class LeadBot:
                 return "dostęp przedłużony" if job == ACCESS_END_JOB else "dostęp już się skończył"
         elif not self._has_access(user):
             return "brak dostępu"
+        elif user.wstrzymane:
+            return "powiadomienia wstrzymane"
         if job in REPORT_JOBS and user.tryb != REPORT_JOBS[job]:
             return "zmieniony tryb raportów"
         now = self._now()
@@ -515,6 +521,7 @@ class LeadBot:
         ends_on = self._local_date(ends_iso, with_time=True)
         for user in targets:
             self.store.set_access(user.chat_id, ends_iso)
+            self.store.record_event(user.chat_id, "dostep_przedluzony")
             self._notify(user.chat_id, ui.access_term_text(ends_on))
         self._send(admin_chat, ui.admin_new_model_text(len(targets), ends_on))
 
@@ -549,6 +556,7 @@ class LeadBot:
             until = current + timedelta(days=days or 0)
         ends_iso = _utc_iso(until)
         self.store.set_access(user.chat_id, ends_iso)
+        self.store.record_event(user.chat_id, "dostep_przedluzony")
         if user.status != "aktywny":  # np. wcześniej odrzucony albo „zablokowany” – admin daje nową szansę
             self.store.set_status(user.chat_id, "aktywny")
         ends_on = self._local_date(ends_iso, with_time=True)
@@ -590,6 +598,7 @@ class LeadBot:
         now = self._now()
         if not self.store.start_trial(user.chat_id, now, now + TRIAL_LENGTH):
             return None  # drugie kliknięcie w tej samej chwili – test już ruszył
+        self.store.record_event(user.chat_id, "test_start")
         ends_on = self._local_date(_utc_iso(now + TRIAL_LENGTH), with_time=True)
         self._send(user.chat_id, ui.trial_started_text(ends_on), ui.menu_keyboard())
         self._send(user.chat_id, *self._history_screen(self.store.get_user(user.chat_id) or user, 0,
@@ -643,6 +652,7 @@ class LeadBot:
     def _finish_setup(self, user: BotUser, message_id: int | None = None) -> None:
         """Koniec pierwszej konfiguracji: podsumowanie; z dostępem od razu przegląd ostatnich 30 dni."""
         self.store.set_setup_step(user.chat_id, SETUP_DONE)
+        self.store.record_event(user.chat_id, "konfiguracja")
         user = self.store.get_user(user.chat_id) or user
         level = self._level(user)
         text, markup = ui.setup_summary(user, ui.place_label(user.filtry, self._place_names()), self.settings,
@@ -735,6 +745,13 @@ class LeadBot:
             log.warning("Nie udało się powiadomić %s: %s", chat_id, exc)
             return False
         return True
+
+    def _cmd_pilot_report(self, admin_chat: int, args: list[str]) -> None:
+        """``/raport [dni]`` – tylko admin: wysłane (z ``deliveries``) i zdarzenia z ostatnich 7/30 dni."""
+        days = int(args[0]) if args and args[0].isdigit() and 1 <= int(args[0]) <= 90 else 7
+        since = self._now() - timedelta(days=days)
+        self._send(admin_chat, ui.pilot_report(days, sent=self.store.delivery_counts(since),
+                                               events=self.store.event_counts(since)))
 
     def _cmd_status(self, admin_chat: int, args: list[str]) -> None:
         """``/status`` – tylko admin: stan importu GUNB, wątku zadań i wysyłek z ostatniej doby."""
@@ -866,6 +883,12 @@ class LeadBot:
             "k": (NONE, lambda: self._account_screen(user)),
             "0": (NONE, lambda: self._settings_screen(user)),
         }
+        if arg == "p":  # ⏸️ / ▶️ – pauza wszystkich automatycznych wiadomości (dostęp biegnie dalej)
+            self.store.set_paused(user.chat_id, not user.wstrzymane)
+            user = self.store.get_user(user.chat_id) or user
+            self.api.edit_message_text(user.chat_id, message_id, *self._settings_screen(user))
+            self._send(user.chat_id, ui.pause_text(user.wstrzymane))
+            return "⏸️ Wstrzymano" if user.wstrzymane else "▶️ Wznowiono"
         if arg not in screens:
             return None
         needed, screen = screens[arg]
@@ -899,6 +922,7 @@ class LeadBot:
         if inv is None:
             return "Nie znaleziono inwestycji"
         self._send_card(user, inv)
+        self.store.record_event(user.chat_id, "szczegoly", inv.id_sprawy)
         return None
 
     def _cb_flag(self, user: BotUser, arg: str, message_id: int, *, toast: str, **flag: bool) -> str:
@@ -912,6 +936,9 @@ class LeadBot:
 
     def _cb_save(self, user: BotUser, arg: str, message_id: int) -> str:
         """``s1:``/``s:`` (starsze przyciski) – zapisz; ponowione kliknięcie niczego nie cofa."""
+        inv = self._lead(arg)
+        if inv is not None and not self.store.lead_flags(user.chat_id, inv.id_sprawy).saved:
+            self.store.record_event(user.chat_id, "zapis", inv.id_sprawy)
         return self._cb_flag(user, arg, message_id, saved=True, toast="⭐ Zapisano – znajdziesz je pod „⭐ Zapisane”")
 
     def _cb_unsave(self, user: BotUser, arg: str, message_id: int) -> str:
@@ -965,8 +992,73 @@ class LeadBot:
         else:
             self.store.add_watch(user.chat_id, kind, value, label)
             toast = f"👀 Obserwujesz: {label} – o nowych inwestycjach dam znać od razu"
+        self._refresh_keyboard(user, inv, message_id, view="more")
+        return toast
+
+    # === Kliknięcia: ⏰ Przypomnij, 📝 Notatka, ⋯ Więcej ================================================
+
+    def _cb_remind(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """``pr:<nr>`` – wybór terminu; ``pr:<nr>:<dni>`` – przypomnienie rano w tym dniu (0 = bez przypomnienia)."""
+        number, _, days = arg.partition(":")
+        inv = self._lead(number)
+        if inv is None:
+            return "Nie znaleziono inwestycji"
+        if not days:
+            self._refresh_keyboard(user, inv, message_id, view="remind")
+            return None
+        if not days.isdigit() or (int(days) and int(days) not in ui.REMINDER_DAYS):
+            return None
+        if int(days) == 0:
+            self.store.clear_reminder(user.chat_id, inv.id_sprawy)
+            toast = "✖️ Bez przypomnienia"
+        else:  # rano (godzina raportu porannego) w wybranym dniu – nigdy w nocy
+            day = local(self._now()).date() + timedelta(days=int(days))
+            due = datetime.combine(day, clock_time(*map(int, self.settings.morning_time.split(":"))), tzinfo=WARSAW)
+            self.store.set_reminder(user.chat_id, inv.id_sprawy, due.astimezone(timezone.utc), int(days))
+            toast = f"⏰ Przypomnę {due:%d.%m} rano"
         self._refresh_keyboard(user, inv, message_id)
         return toast
+
+    def _cb_note(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """``nt:<nr>`` – dopisz albo pokaż opcje; ``nt:<nr>:e`` – zmień; ``nt:<nr>:d`` – usuń."""
+        number, _, action = arg.partition(":")
+        inv = self._lead(number)
+        if inv is None:
+            return "Nie znaleziono inwestycji"
+        existing = self.store.note(user.chat_id, inv.id_sprawy)
+        if action == "d":
+            self.store.delete_note(user.chat_id, inv.id_sprawy)
+            self._refresh_keyboard(user, inv, message_id)
+            return "🗑️ Notatka usunięta"
+        if existing and action != "e":
+            self._refresh_keyboard(user, inv, message_id, view="note")
+            return None
+        self.store.set_awaiting(user.chat_id, f"notatka:{inv.nr}")
+        self._send(user.chat_id, ui.note_prompt())
+        return "✏️ Napisz notatkę w czacie"
+
+    def _cb_more(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        inv = self._lead(arg)
+        if inv is None:
+            return "Nie znaleziono inwestycji"
+        self._refresh_keyboard(user, inv, message_id, view="more")
+        return None
+
+    def _cb_back(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        inv = self._lead(arg)
+        if inv is None:
+            return "Nie znaleziono inwestycji"
+        self._refresh_keyboard(user, inv, message_id)
+        return None
+
+    def _cb_feedback(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """👍 / 👎 pod „⋯ Więcej” – ocena trafności dla pilotażu (bez wpływu na to, co bot wysyła)."""
+        number, _, value = arg.partition(":")
+        inv = self._lead(number)
+        if inv is None or value not in ("0", "1"):
+            return None
+        self.store.record_event(user.chat_id, "przydatne" if value == "1" else "nieprzydatne", inv.id_sprawy)
+        return "Dzięki – to pomaga nam ulepszać Żółtą Tablicę"
 
     # === Kliknięcia: filtry, tryb, listy ===========================================================
 
@@ -1081,9 +1173,28 @@ class LeadBot:
         self.api.edit_message_text(user.chat_id, message_id, text, markup)
         return "Usunięto z obserwowanych"
 
+    def _save_note(self, user: BotUser, number: str, text: str) -> None:
+        """Prywatna notatka z czatu: do ``NOTE_LIMIT`` znaków (dłuższa – prośba o skrócenie), pusta = usuń."""
+        inv = self._lead(number)
+        if inv is None:
+            return
+        note = text.strip()
+        if len(note) > ui.NOTE_LIMIT:
+            self.store.set_awaiting(user.chat_id, f"notatka:{number}")
+            self._send(user.chat_id, ui.note_too_long_text(len(note)))
+            return
+        if note:
+            self.store.set_note(user.chat_id, inv.id_sprawy, note)
+        else:
+            self.store.delete_note(user.chat_id, inv.id_sprawy)
+        self._send_card(user, inv)
+
     def _text_input(self, user: BotUser, text: str) -> None:
         what = user.oczekuje_na
         self.store.set_awaiting(user.chat_id, None)
+        if what and what.startswith("notatka:"):
+            self._save_note(user, what.partition(":")[2], text)
+            return
         filters = user.filtry
         value = " ".join(text.split())[:60]
         if what == "miejsce":
@@ -1132,6 +1243,41 @@ class LeadBot:
             except TelegramApiError as exc:
                 self._delivery_failed(user, exc)
         return sent
+
+    def deliver_personal_reminders(self) -> int:
+        """„⏰ Przypomnij”: rano w wybranym dniu, nigdy w nocy; kilka zaległych naraz – jedna wiadomość.
+
+        Bez dostępu albo przy pauzie przypomnienia czekają (nie giną). Doręczenie „co najmniej raz”:
+        awaria między wysyłką a skasowaniem przypomnienia może je powtórzyć po restarcie.
+        """
+        now = self._now()
+        if self._quiet(now):
+            return 0
+        sent = 0
+        for chat_id, leads in self.store.due_reminders(now).items():
+            if self.should_stop():
+                break
+            user = self.store.get_user(chat_id)
+            if user is None or not self._receives_automatic(user):
+                continue
+            distance = user.filtry.distance_km if user.filtry.baza else None
+            try:
+                if len(leads) == 1:
+                    self._send_card(user, leads[0], header=ui.reminder_header())
+                else:
+                    self._send(chat_id, *ui.reminders_digest(leads[:self.settings.max_leads_in_report], distance))
+                    leads = leads[:self.settings.max_leads_in_report]
+            except TelegramApiError as exc:
+                self._delivery_failed(user, exc)
+                continue
+            for inv in leads:
+                self.store.clear_reminder(chat_id, inv.id_sprawy)
+            sent += 1
+        return sent
+
+    def _receives_automatic(self, user: BotUser) -> bool:
+        """Czy do tej osoby idą automatyczne wiadomości – ta sama reguła co ``BotStore.subscribers``."""
+        return user.status == "aktywny" and not user.wstrzymane and self._has_access(user)
 
     def deliver_reports(self, mode: str) -> int:
         """Raporty zbiorcze teraz dla trybu ``mode`` (``rano``/``wieczor``) – przez kolejkę wysyłek."""
@@ -1263,12 +1409,25 @@ class LeadBot:
     def _deliver_instant_to(self, user: BotUser) -> int:
         candidates = self.store.candidates(user.chat_id, self._window_start(user))
         watch_items = self.store.watchlist(user.chat_id)
-        sent, remaining = 0, []
+        sent, remaining, hits = 0, [], []
         for inv in candidates:
             hit = watch_match(inv, watch_items) if watch_items else None
             if hit is None:
                 remaining.append(inv)
-                continue
+            else:
+                hits.append((hit, inv))
+        if len(hits) > WATCH_DIGEST_AFTER:  # np. po wznowieniu – jedna wiadomość zamiast serii kart
+            shown = hits[:self.settings.max_leads_in_report]
+            distance = user.filtry.distance_km if user.filtry.baza else None
+            text, markup = ui.watch_digest(shown, distance)
+            while len(text) > TELEGRAM_LIMIT and len(shown) > 1:
+                shown = shown[:max(1, len(shown) - 3)]
+                text, markup = ui.watch_digest(shown, distance)
+            self._send(user.chat_id, text, markup)
+            self.store.record_delivery(user.chat_id, [inv for _, inv in shown], "watchlista")  # reszta – w kolejnym
+            sent += 1
+            hits = []
+        for hit, inv in hits:
             self._send_card(user, inv, header=ui.watch_header(hit, inv))
             self.store.record_delivery(user.chat_id, [inv], "watchlista")
             sent += 1
@@ -1311,24 +1470,31 @@ class LeadBot:
         km = user.filtry.distance_km(inv)
         if km is not None:
             text += f"\n📏 {escape_html(ui.distance_label(km))} w linii prostej od Twojej bazy"
-        return text, self._keyboard(user, inv)
+        note = self.store.note(user.chat_id, inv.id_sprawy)
+        if note:  # prywatna – tylko w karcie tej osoby
+            text += ui.note_line(note)
+        return text[:TELEGRAM_LIMIT], self._keyboard(user, inv)
 
-    def _keyboard(self, user: BotUser, inv: Investment) -> dict:
+    def _keyboard(self, user: BotUser, inv: Investment, view: str = "main") -> dict:
         items = self.store.watchlist(user.chat_id)
         key = investor_key(inv.inwestor)
+        remind_at = self.store.reminder(user.chat_id, inv.id_sprawy)
         return ui.lead_keyboard(
             inv,
             flags=self.store.lead_flags(user.chat_id, inv.id_sprawy),
             watching_investor=any(i.rodzaj == "inwestor" and i.wartosc == key for i in items) if key else False,
             watching_gmina=any(i.rodzaj == "gmina" and i.wartosc == inv.gmina_teryt for i in items),
+            reminder_on=f"{local(remind_at):%d.%m}" if remind_at else None,
+            has_note=self.store.note(user.chat_id, inv.id_sprawy) is not None,
+            view=view,
         )
 
     def _send_card(self, user: BotUser, inv: Investment, header: tuple[str, str, str] | None = None) -> None:
         text, markup = self._card(user, inv, header)
         self._send(user.chat_id, text, markup)
 
-    def _refresh_keyboard(self, user: BotUser, inv: Investment, message_id: int) -> None:
-        self.api.edit_message_reply_markup(user.chat_id, message_id, self._keyboard(user, inv))
+    def _refresh_keyboard(self, user: BotUser, inv: Investment, message_id: int, view: str = "main") -> None:
+        self.api.edit_message_reply_markup(user.chat_id, message_id, self._keyboard(user, inv, view))
 
     def _edit_filters(self, user: BotUser, message_id: int) -> None:
         text, markup = ui.filters_screen(self.store.get_user(user.chat_id), self._place_names(), self.settings)
@@ -1458,6 +1624,11 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "ob": LeadBot._cb_setup_trade,
     "oa": LeadBot._cb_setup_area,
     "st": LeadBot._cb_settings,
+    "pr": LeadBot._cb_remind,
+    "nt": LeadBot._cb_note,
+    "mx": LeadBot._cb_more,
+    "bk": LeadBot._cb_back,
+    "fu": LeadBot._cb_feedback,
 }
 _CALLBACK_LEVELS: dict[str, int] = {
     **{prefix: SETUP for prefix in ("f", "fp", "fpr", "fr", "fb", "ft", "fv", "fi", "m", "ob", "oa")},

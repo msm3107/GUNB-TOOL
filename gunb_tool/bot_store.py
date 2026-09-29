@@ -184,6 +184,7 @@ class BotUser:
     test_start: str | None = None
     test_koniec: str | None = None
     konfiguracja: str | None = None
+    wstrzymane: bool = False
 
     @property
     def setup_done(self) -> bool:
@@ -319,10 +320,10 @@ class BotStore:
         return [_user(row) for row in self._conn.execute(sql + " ORDER BY chat_id", params).fetchall()]
 
     def subscribers(self, now_iso: str, *, admins: Sequence[int], tryb: str | None = None) -> list[BotUser]:
-        """Odbiorcy automatycznych wysyłek – ta sama reguła co ``LeadBot._has_access`` (test to pilnuje):
-        dostęp bez limitu, otwarte okno testu/abonamentu albo administrator; tylko status ``aktywny``."""
+        """Odbiorcy automatycznych wysyłek – ta sama reguła co ``LeadBot._receives_automatic`` (test to
+        pilnuje): status ``aktywny``, bez pauzy i z dostępem (bez limitu, otwarte okno testu/abonamentu, admin)."""
         marks = ",".join("?" for _ in admins) or "NULL"
-        sql = (f"SELECT * FROM bot_users WHERE status = 'aktywny' AND (dostep_bez_limitu = 1"
+        sql = (f"SELECT * FROM bot_users WHERE status = 'aktywny' AND wstrzymane = 0 AND (dostep_bez_limitu = 1"
                f" OR (is_active = 1 AND subscription_ends > ?) OR chat_id IN ({marks}))")
         params: list[object] = [now_iso, *admins]
         if tryb is not None:
@@ -410,6 +411,10 @@ class BotStore:
     def set_trade(self, chat_id: int, branza: str | None) -> None:
         """Branża użytkownika do przypomnień „Kiedy dzwonić” (``None`` – bez przypomnień)."""
         self._update(chat_id, branza=branza)
+
+    def set_paused(self, chat_id: int, value: bool) -> None:
+        """Pauza wszystkich automatycznych wiadomości (raporty, alerty, przypomnienia); dostęp się nie zmienia."""
+        self._update(chat_id, wstrzymane=int(value))
 
     def set_setup_step(self, chat_id: int, step: str) -> None:
         """Krok pierwszej konfiguracji: ``branza``, ``obszar`` albo ``gotowe``."""
@@ -509,6 +514,81 @@ class BotStore:
             (chat_id, limit, offset),
         ).fetchall()
         return [investment_from_row(row) for row in rows]
+
+    # Osobiste przypomnienia („⏰ Przypomnij”) i prywatne notatki ----------------------------------
+
+    def set_reminder(self, chat_id: int, id_sprawy: str, termin: datetime, dni: int) -> None:
+        """Jedno przypomnienie na osobę i inwestycję – ponowny wybór przesuwa termin."""
+        self._conn.execute(
+            "INSERT INTO przypomnienia (chat_id, id_sprawy, termin, dni, utworzono) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET termin = excluded.termin, dni = excluded.dni",
+            (chat_id, id_sprawy, _iso(termin), dni, _iso(self.repo.now())),
+        )
+
+    def clear_reminder(self, chat_id: int, id_sprawy: str) -> None:
+        self._conn.execute("DELETE FROM przypomnienia WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy))
+
+    def reminder(self, chat_id: int, id_sprawy: str) -> datetime | None:
+        row = self._conn.execute(
+            "SELECT termin FROM przypomnienia WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy)
+        ).fetchone()
+        return datetime.fromisoformat(row["termin"]) if row else None
+
+    def due_reminders(self, now: datetime) -> dict[int, list[Investment]]:
+        """Przypomnienia po terminie: ``{chat_id: [inwestycje]}`` (najstarsze terminy najpierw)."""
+        rows = self._conn.execute(
+            "SELECT r.chat_id AS przypomnienie_dla, i.* FROM przypomnienia r"
+            " JOIN investments i ON i.id_sprawy = r.id_sprawy WHERE r.termin <= ? ORDER BY r.chat_id, r.termin",
+            (_iso(now),),
+        ).fetchall()
+        due: dict[int, list[Investment]] = {}
+        for row in rows:
+            due.setdefault(row["przypomnienie_dla"], []).append(investment_from_row(row))
+        return due
+
+    def note(self, chat_id: int, id_sprawy: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT tekst FROM notatki WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy)
+        ).fetchone()
+        return row["tekst"] if row else None
+
+    def set_note(self, chat_id: int, id_sprawy: str, tekst: str) -> None:
+        """Prywatna notatka do inwestycji (widzi ją tylko ta osoba)."""
+        self._conn.execute(
+            "INSERT INTO notatki (chat_id, id_sprawy, tekst, zmieniono) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET tekst = excluded.tekst, zmieniono = excluded.zmieniono",
+            (chat_id, id_sprawy, tekst, _iso(self.repo.now())),
+        )
+
+    def delete_note(self, chat_id: int, id_sprawy: str) -> None:
+        self._conn.execute("DELETE FROM notatki WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy))
+
+    # Zdarzenia pilotażu (tylko te, których nie ma w ``deliveries``) --------------------------------
+
+    def record_event(self, chat_id: int, rodzaj: str, id_sprawy: str | None = None) -> None:
+        self._conn.execute(
+            "INSERT INTO zdarzenia (chat_id, rodzaj, id_sprawy, kiedy) VALUES (?, ?, ?, ?)",
+            (chat_id, rodzaj, id_sprawy, _iso(self.repo.now())),
+        )
+
+    def event_counts(self, since: datetime) -> dict[str, tuple[int, int]]:
+        """``{rodzaj: (unikalne osoby, unikalne inwestycje)}`` od ``since``."""
+        rows = self._conn.execute(
+            "SELECT rodzaj, COUNT(DISTINCT chat_id) AS osoby, COUNT(DISTINCT id_sprawy) AS inwestycje"
+            " FROM zdarzenia WHERE kiedy >= ? GROUP BY rodzaj", (_iso(since),)
+        ).fetchall()
+        return {row["rodzaj"]: (row["osoby"], row["inwestycje"]) for row in rows}
+
+    def delivery_counts(self, since: datetime) -> tuple[int, int]:
+        """Wysłane w raportach i alertach od ``since``: (unikalne inwestycje, unikalne osoby).
+
+        Wysłanie to nie przeczytanie – Telegram nie mówi, czy ktoś wiadomość obejrzał.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT id_sprawy) AS inwestycje, COUNT(DISTINCT chat_id) AS osoby FROM deliveries"
+            " WHERE doreczono >= ? AND rodzaj IN ('raport', 'natychmiast', 'watchlista', 'etap')", (_iso(since),)
+        ).fetchone()
+        return row["inwestycje"], row["osoby"]
 
     def saved_count(self, chat_id: int) -> int:
         return self._conn.execute(
@@ -756,6 +836,7 @@ def _user(row) -> BotUser:
         test_start=row["test_start"],
         test_koniec=row["test_koniec"],
         konfiguracja=row["konfiguracja"],
+        wstrzymane=bool(row["wstrzymane"]),
     )
 
 

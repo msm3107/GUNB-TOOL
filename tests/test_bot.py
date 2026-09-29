@@ -290,7 +290,9 @@ def test_lead_card_has_action_buttons_and_save_updates_them(bot, api, repo):
     assert card["text"].startswith("🔥 <b>HOT</b>")
     labels = [t for t, _ in buttons(card["markup"])]
     assert labels[:2] == ["📍 Mapa", "🏛️ Geoportal"] or labels[0] == "📍 Mapa"
-    assert {"⭐ Zapisz", "✅ Przejrzane", "🗑️ Ukryj", "👀 Obserwuj inwestora", "📌 Obserwuj gminę"} <= set(labels)
+    assert {"⭐ Zapisz", "✅ Przejrzane", "🗑️ Ukryj", "⏰ Przypomnij", "📝 Notatka", "⋯ Więcej"} <= set(labels)
+    bot.handle_update(click(MIETEK, f"mx:{nr}", message_id=card["message_id"]))  # obserwowanie – pod „⋯ Więcej”
+    assert {"👀 Obserwuj inwestora", "📌 Obserwuj gminę"} <= {t for t, _ in buttons(api.edits[-1]["markup"])}
 
     bot.handle_update(click(MIETEK, f"s:{nr}", message_id=card["message_id"]))
     assert api.answers[-1].startswith("⭐ Zapisano")

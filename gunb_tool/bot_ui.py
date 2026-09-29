@@ -242,12 +242,14 @@ def settings_screen(user: BotUser, *, place: str, settings: BotConfig, watch_cou
              f" · 📦 {_volume_label(user.filtry.min_kubatura)}",
              f"🧰 Branża: {_trade_label(get_trade(user.branza))}",
              f"⏰ Raporty: {_mode_label(user.tryb, settings)}",
+             f"🔔 Powiadomienia: {'⏸️ wstrzymane' if user.wstrzymane else 'włączone'}",
              f"👀 Obserwowane: {watch_count}",
              f"👤 Dostęp: {account}",
              "", "Kliknij, co chcesz zmienić 👇"]
+    pause = ("▶️ Wznów powiadomienia", "st:p") if user.wstrzymane else ("⏸️ Wstrzymaj powiadomienia", "st:p")
     rows = [[("🔎 Obszar i rodzaj", "st:f"), ("🧰 Branża", "st:b")],
             [("👀 Obserwowane", "st:w"), ("⏰ Harmonogram", "st:m")],
-            [("👤 Konto", "st:k")]]
+            [pause, ("👤 Konto", "st:k")]]
     return "\n".join(lines), inline(rows)
 
 
@@ -612,27 +614,115 @@ def mode_screen(user: BotUser, settings: BotConfig) -> tuple[str, Markup]:
 
 # --- Lead ------------------------------------------------------------------------------------------
 
-def lead_keyboard(inv: Investment, *, flags: LeadFlags, watching_investor: bool, watching_gmina: bool) -> Markup:
-    """Przyciski pod inwestycją; każdy niesie docelowy stan (``s1``/``s0``), więc ponowione kliknięcie nic nie psuje."""
-    rows: list[list[dict[str, str]]] = []
+REMINDER_DAYS: tuple[int, ...] = (7, 14, 30)
+NOTE_LIMIT = 300
+
+
+def lead_keyboard(inv: Investment, *, flags: LeadFlags, watching_investor: bool, watching_gmina: bool,
+                  reminder_on: str | None = None, has_note: bool = False, view: str = "main") -> Markup:
+    """Przyciski pod inwestycją; każdy niesie docelowy stan (``s1``/``s0``), więc ponowione kliknięcie nic nie psuje.
+
+    Widoki: ``main`` (oznaczenia, ⏰ Przypomnij, 📝 Notatka, ⋯ Więcej), ``remind`` (7/14/30 dni),
+    ``note`` (zmień/usuń notatkę) i ``more`` (obserwowanie, 👍/👎).
+    """
+    nr = inv.nr
+    back = [("◀️ Wróć", f"bk:{nr}")]
+    if view == "remind":
+        choices = [(f"{days} dni", f"pr:{nr}:{days}") for days in REMINDER_DAYS]
+        rows = [choices] + ([[("✖️ Bez przypomnienia", f"pr:{nr}:0")]] if reminder_on else []) + [back]
+        return inline(rows)
+    if view == "note":
+        return inline([[("✏️ Zmień notatkę", f"nt:{nr}:e"), ("🗑️ Usuń", f"nt:{nr}:d")], back])
+    if view == "more":
+        rows = []
+        if inv.inwestor:
+            rows.append([("👀 Obserwujesz inwestora ✓" if watching_investor else "👀 Obserwuj inwestora", f"wi:{nr}")])
+        if inv.gmina_teryt:
+            rows.append([("📌 Obserwujesz gminę ✓" if watching_gmina else "📌 Obserwuj gminę", f"wg:{nr}")])
+        rows += [[("👍 Przydatne", f"fu:{nr}:1"), ("👎 Nieprzydatne", f"fu:{nr}:0")], back]
+        return inline(rows)
+    keyboard: list[list[dict[str, str]]] = []
     links = [{"text": text, "url": url} for text, url in (("📍 Mapa", inv.google_maps_url),
                                                           ("🏛️ Geoportal", inv.geoportal_url)) if url]
     if links:
-        rows.append(links)
-    nr = inv.nr
+        keyboard.append(links)
     actions = [
         ("⭐ Zapisany ✓", f"s0:{nr}") if flags.saved else ("⭐ Zapisz", f"s1:{nr}"),
         ("✅ Przejrzany ✓", f"r0:{nr}") if flags.reviewed else ("✅ Przejrzane", f"r1:{nr}"),
         ("🗑️ Ukryj", f"h:{nr}"),
     ]
-    rows.append([{"text": t, "callback_data": d} for t, d in actions])
-    if inv.inwestor:
-        label = "👀 Obserwujesz inwestora ✓" if watching_investor else "👀 Obserwuj inwestora"
-        rows.append([{"text": label, "callback_data": f"wi:{nr}"}])
-    if inv.gmina_teryt:
-        label = "📌 Obserwujesz gminę ✓" if watching_gmina else "📌 Obserwuj gminę"
-        rows.append([{"text": label, "callback_data": f"wg:{nr}"}])
-    return {"inline_keyboard": rows}
+    personal = [(f"⏰ {reminder_on} ✓" if reminder_on else "⏰ Przypomnij", f"pr:{nr}"),
+                ("📝 Notatka ✓" if has_note else "📝 Notatka", f"nt:{nr}")]
+    keyboard += inline([actions, personal, [("⋯ Więcej", f"mx:{nr}")]])["inline_keyboard"]
+    return {"inline_keyboard": keyboard}
+
+
+def note_prompt() -> str:
+    return (f"📝 Napisz notatkę do tej inwestycji (do {NOTE_LIMIT} znaków), np. co zostało ustalone albo kiedy "
+            "wrócić. Widzisz ją tylko Ty.")
+
+
+def note_too_long_text(length: int) -> str:
+    return f"✂️ Notatka jest za długa ({length} znaków) – zmieść się w {NOTE_LIMIT} i wyślij jeszcze raz."
+
+
+def note_line(note: str) -> str:
+    return f"\n📝 Twoja notatka: {escape_html(note)}"
+
+
+def reminder_header() -> tuple[str, str, str]:
+    return "⏰", "Przypomnienie", "wróć do tej inwestycji"
+
+
+def reminders_digest(leads: Sequence[Investment], distance: Distance | None = None) -> tuple[str, Markup]:
+    """Kilka przypomnień naraz (np. po pauzie) – jedna wiadomość zamiast serii kart."""
+    lines = [f"⏰ <b>Przypomnienie</b> – {_count(len(leads), 'inwestycja', 'inwestycje', 'inwestycji')} "
+             "do sprawdzenia (ustawione przypomnienia):", ""]
+    lines += [_report_entry(position, inv, distance) for position, inv in enumerate(leads, start=1)]
+    lines.append("\n👇 Kliknij numer, żeby otworzyć inwestycję.")
+    return "\n".join(lines), inline(number_buttons([(p, inv.nr) for p, inv in enumerate(leads, start=1)]))
+
+
+def watch_digest(hits: Sequence[tuple[WatchItem, Investment]], distance: Distance | None = None) -> tuple[str, Markup]:
+    """Wiele alertów obserwowanych naraz (np. po wznowieniu) – jedna wiadomość."""
+    leads = [inv for _, inv in hits]
+    labels = ", ".join(dict.fromkeys(item.etykieta for item, _ in hits))
+    lines = [f"👀 <b>Obserwowane</b> – {_count(len(leads), 'nowa inwestycja', 'nowe inwestycje', 'nowych inwestycji')}"
+             f" ({escape_html(labels)}):", ""]
+    lines += [_report_entry(position, inv, distance) for position, inv in enumerate(leads, start=1)]
+    lines.append("\n👇 Kliknij numer, żeby otworzyć inwestycję.")
+    return "\n".join(lines), inline(number_buttons([(p, inv.nr) for p, inv in enumerate(leads, start=1)]))
+
+
+def pause_text(paused: bool) -> str:
+    if paused:
+        return ("⏸️ Powiadomienia wstrzymane – nie wyślę raportów, alertów ani przypomnień, dopóki ich nie wznowisz. "
+                "📊 Inwestycje możesz przeglądać jak zawsze; dostęp biegnie dalej.")
+    return "▶️ Powiadomienia wznowione – zaległe przyjdą zbiorczo, bez zalewu wiadomości."
+
+
+def pilot_report(days: int, *, sent: tuple[int, int], events: dict[str, tuple[int, int]]) -> str:
+    """Raport pilotażu dla admina: unikalne osoby i inwestycje z ostatnich ``days`` dni."""
+    def investments(kind: str) -> str:
+        people, count = events.get(kind, (0, 0))
+        return (f"{_count(count, 'inwestycja', 'inwestycje', 'inwestycji')} · "
+                f"{_count(people, 'osoba', 'osoby', 'osób')}")
+
+    def people(kind: str) -> str:
+        return _count(events.get(kind, (0, 0))[0], "osoba", "osoby", "osób")
+
+    lines = [f"📈 <b>Pilotaż – ostatnie {days} dni</b>", "",
+             f"📤 Wysłane w raportach i alertach: {_count(sent[0], 'inwestycja', 'inwestycje', 'inwestycji')} · "
+             f"{_count(sent[1], 'osoba', 'osoby', 'osób')}",
+             f"👆 Otwarte szczegóły: {investments('szczegoly')}",
+             f"⭐ Zapisane: {investments('zapis')}",
+             f"👍 Przydatne: {events.get('przydatne', (0, 0))[1]} · 👎 Nieprzydatne: {events.get('nieprzydatne', (0, 0))[1]}",
+             f"⚙️ Ukończona konfiguracja: {people('konfiguracja')} · ▶️ Start testu: {people('test_start')}",
+             f"💳 Dostęp nadany lub przedłużony: {people('dostep_przedluzony')}",
+             "",
+             "ℹ️ Uwaga: wysłanie to nie przeczytanie – Telegram nie mówi, kto obejrzał wiadomość. Kliknięć "
+             "w mapy i Geoportal Telegram nie zgłasza botowi, więc ich nie liczymy."]
+    return "\n".join(lines)
 
 
 def hidden_card(inv: Investment) -> tuple[str, Markup]:

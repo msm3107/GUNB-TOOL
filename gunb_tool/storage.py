@@ -254,6 +254,40 @@ UPDATE bot_users SET konfiguracja = 'gotowe';
 """v10: krok pierwszej konfiguracji (branża → obszar → gotowe); dotychczasowi użytkownicy jej nie powtarzają."""
 
 
+_PERSONAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS przypomnienia (
+    chat_id   INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    id_sprawy TEXT NOT NULL REFERENCES investments (id_sprawy) ON DELETE CASCADE,
+    termin    TEXT NOT NULL,
+    dni       INTEGER NOT NULL,
+    utworzono TEXT NOT NULL,
+    PRIMARY KEY (chat_id, id_sprawy)
+);
+CREATE INDEX IF NOT EXISTS ix_przypomnienia_termin ON przypomnienia (termin);
+
+CREATE TABLE IF NOT EXISTS notatki (
+    chat_id   INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    id_sprawy TEXT NOT NULL REFERENCES investments (id_sprawy) ON DELETE CASCADE,
+    tekst     TEXT NOT NULL,
+    zmieniono TEXT NOT NULL,
+    PRIMARY KEY (chat_id, id_sprawy)
+);
+
+ALTER TABLE bot_users ADD COLUMN wstrzymane INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS zdarzenia (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id   INTEGER NOT NULL,
+    rodzaj    TEXT NOT NULL,
+    id_sprawy TEXT,
+    kiedy     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_zdarzenia_kiedy ON zdarzenia (kiedy);
+"""
+"""v11: osobiste przypomnienia (jedno na osobę i inwestycję) i prywatne notatki – w osobnych tabelach,
+bez ruszania oznaczeń; pauza powiadomień; zdarzenia pilotażu, których nie ma w ``deliveries``."""
+
+
 Migration = str | Callable[[sqlite3.Connection, int], None]
 
 _MIGRATIONS: tuple[Migration, ...] = (
@@ -267,6 +301,7 @@ _MIGRATIONS: tuple[Migration, ...] = (
     _jobs_in_utc,                                         # v8: zadania w UTC, kolejka wysyłek, blokady
     _trial_and_access,                                    # v9: 7-dniowy test, dostęp dotychczasowych
     _SETUP_STEP,                                          # v10: krok pierwszej konfiguracji
+    _PERSONAL_SCHEMA,                                     # v11: przypomnienia, notatki, pauza, zdarzenia
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 
