@@ -284,3 +284,10 @@ def test_apply_geocode_stores_parcel_id_resolved_by_uldk():
     ))
     assert investment.teryt_dzialki == "302108_5.0024.57/52"
     assert investment.google_maps_url == "https://www.google.com/maps?q=52.410000,17.230000"
+
+
+def test_fetch_scores_every_lead(repo):
+    make_pipeline(repo, [gunb_case("A/1")]).fetch(QUERY, page_size=10)
+    stored = repo.get("A/1")
+    # dom 600 m³ (0) + dom jednorodzinny (+1) + nowa budowa (+1) + inwestor firmowy (+1)
+    assert (stored.punkty, stored.priorytet) == (3, "normal")

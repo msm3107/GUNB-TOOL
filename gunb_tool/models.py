@@ -304,7 +304,10 @@ class Investment:
     is_residential: bool = False
     is_commercial: bool = False
     is_noise: bool = False
+    punkty: int | None = None
+    priorytet: str | None = None
     # --- Pola księgowe: ustawia wyłącznie warstwa storage. ---
+    nr: int | None = None
     czy_wyslano: bool = False
     wyslano_kanaly: str = ""
     utworzono: str | None = None
@@ -315,6 +318,7 @@ class Investment:
 
 
 BOOKKEEPING_FIELDS: tuple[str, ...] = (
+    "nr",
     "czy_wyslano",
     "wyslano_kanaly",
     "utworzono",

@@ -268,8 +268,44 @@ def test_version_1_database_is_migrated_with_segment_column(tmp_path, clock):
     legacy.close()
 
     with LeadRepository(path, now=clock) as repo:
-        assert repo._conn.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 2
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 3
         assert repo.get("OLD/1").segment is None
         repo.upsert(lead("NEW/1", segment="domki"))
         assert repo.get("NEW/1").segment == "domki"
         assert repo.stats()["segmenty"] == {"bez segmentu": 1, "domki": 1}
+
+
+# --- Migracja v2 -> v3 (scoring, numer leada, tabele bota) ---------------------------------------
+
+def test_version_2_database_is_migrated_to_bot_schema(tmp_path, clock):
+    import sqlite3
+    from gunb_tool import storage
+
+    path = tmp_path / "v2.sqlite"
+    legacy = sqlite3.connect(path)
+    for script in storage._MIGRATIONS[:2]:
+        legacy.executescript(script)
+    legacy.execute("PRAGMA user_version = 2")
+    legacy.execute(
+        "INSERT INTO investments (id_sprawy, zrodlo, status, utworzono, zmieniono, status_zmieniony, ostatnio_widziany)"
+        " VALUES ('OLD/1', 'pozwolenia', 'decyzja', 'x', 'x', 'x', 'x')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repo:
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 3
+        old = repo.get("OLD/1")
+        assert old.nr == 1
+        assert old.priorytet is None
+        tables = {row[0] for row in repo.connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert {"bot_users", "watchlist", "user_leads", "deliveries", "bot_jobs"} <= tables
+
+
+def test_leads_get_sequential_numbers_that_survive_updates(repo):
+    repo.upsert(lead("A/1"))
+    repo.upsert(lead("B/1"))
+    repo.upsert(lead("A/1", kubatura=999.0))
+    assert repo.get("A/1").nr == 1
+    assert repo.get_by_nr(2).id_sprawy == "B/1"
+    assert repo.get_by_nr(99) is None

@@ -337,3 +337,27 @@ def test_sheets_export_skips_api_calls_when_nothing_to_sync():
     result = GoogleSheetsExporter(lambda: calls.append("open")).export([])
     assert (result.updated, result.appended) == (0, 0)
     assert calls == []
+
+
+# --- Priorytet w wiadomości -------------------------------------------------------------------
+
+HOT_LEAD = dict(kategoria="mieszkaniowa-wielorodzinna", kategoria_obiektu="XIII", kubatura=26265.0,
+                nazwa_zamierzenia="Budowa zespołu dwóch budynków wielorodzinnych z garażem podziemnym",
+                rodzaj_robot="budowa nowego/nowych obiektów budowlanych", priorytet="hot", punkty=10)
+
+
+def test_hot_lead_has_hot_header_and_priority_reasons():
+    text = MessageFormatter().telegram(lead(**HOT_LEAD), NEW).text
+    assert text.startswith("🔥 <b>HOT LEAD</b> · pozwolenie na budowę")
+    assert "🎚️ Priorytet: 🔥 HOT · 10 pkt (kubatura ≥ 20 000 m³, wielorodzinny, kilka budynków" in text
+
+
+def test_normal_lead_shows_priority_line_without_hot_header():
+    text = MessageFormatter().telegram(lead(priorytet="normal", punkty=3), NEW).text
+    assert text.startswith("🏗️ <b>NOWY LEAD</b>")
+    assert "🎚️ Priorytet: 🟡 NORMAL" in text
+
+
+def test_custom_header_replaces_default_one():
+    message = MessageFormatter().telegram(lead(), NEW, header=("👀", "WATCHLISTA", "nowa inwestycja obserwowanego inwestora"))
+    assert message.text.startswith("👀 <b>WATCHLISTA</b> · nowa inwestycja obserwowanego inwestora")

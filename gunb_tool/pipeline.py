@@ -15,6 +15,7 @@ from .geocoding_uldk import GeocodeResult, GeoPrecision, UldkClient, UldkGeocode
 from .gunb_scraper import FetchQuery, GunbScraper, Page
 from .http_client import ResilientHttpClient
 from .models import GunbCase, Investment
+from .scoring import score_investment
 from .storage import GEO_FIELDS, ChangeType, LeadRepository
 
 log = logging.getLogger(__name__)
@@ -246,7 +247,7 @@ def build_investment(case: GunbCase, decision: FilterDecision) -> Investment:
     """Buduje rekord leada ze sprawy GUNB i wyniku filtrowania (bez lokalizacji)."""
     classification = decision.classification
     designer = decision.designer
-    return Investment(
+    investment = Investment(
         id_sprawy=case.id_sprawy,
         zrodlo=case.source.value,
         status=case.status.value,
@@ -278,6 +279,9 @@ def build_investment(case: GunbCase, decision: FilterDecision) -> Investment:
         is_commercial=classification.is_commercial,
         is_noise=classification.is_noise,
     )
+    score = score_investment(investment)
+    investment.punkty, investment.priorytet = score.points, score.priority
+    return investment
 
 
 def apply_geocode(investment: Investment, result: GeocodeResult) -> None:

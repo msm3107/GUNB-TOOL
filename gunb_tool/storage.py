@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
@@ -92,9 +92,66 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 );
 """
 
+_BOT_SCHEMA = """
+ALTER TABLE investments ADD COLUMN punkty INTEGER;
+ALTER TABLE investments ADD COLUMN priorytet TEXT;
+ALTER TABLE investments ADD COLUMN nr INTEGER;
+UPDATE investments SET nr = rowid;
+CREATE UNIQUE INDEX IF NOT EXISTS ix_investments_nr ON investments (nr);
+
+CREATE TABLE IF NOT EXISTS bot_users (
+    chat_id        INTEGER PRIMARY KEY,
+    imie           TEXT,
+    username       TEXT,
+    status         TEXT NOT NULL DEFAULT 'oczekuje',
+    tryb           TEXT NOT NULL DEFAULT 'rano',
+    tylko_hot      INTEGER NOT NULL DEFAULT 0,
+    filtry         TEXT NOT NULL DEFAULT '{}',
+    oczekuje_na    TEXT,
+    nowe_od        TEXT NOT NULL,
+    ostatni_raport TEXT,
+    utworzono      TEXT NOT NULL,
+    zmieniono      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id   INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    rodzaj    TEXT NOT NULL,
+    wartosc   TEXT NOT NULL,
+    etykieta  TEXT NOT NULL,
+    utworzono TEXT NOT NULL,
+    UNIQUE (chat_id, rodzaj, wartosc)
+);
+
+CREATE TABLE IF NOT EXISTS user_leads (
+    chat_id   INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    id_sprawy TEXT NOT NULL REFERENCES investments (id_sprawy) ON DELETE CASCADE,
+    stan      TEXT NOT NULL,
+    zmieniono TEXT NOT NULL,
+    PRIMARY KEY (chat_id, id_sprawy)
+);
+
+CREATE TABLE IF NOT EXISTS deliveries (
+    chat_id   INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    id_sprawy TEXT NOT NULL REFERENCES investments (id_sprawy) ON DELETE CASCADE,
+    rewizja   TEXT NOT NULL,
+    rodzaj    TEXT NOT NULL,
+    doreczono TEXT NOT NULL,
+    PRIMARY KEY (chat_id, id_sprawy, rewizja)
+);
+CREATE INDEX IF NOT EXISTS ix_deliveries_chat_time ON deliveries (chat_id, doreczono);
+
+CREATE TABLE IF NOT EXISTS bot_jobs (
+    nazwa    TEXT PRIMARY KEY,
+    ostatnio TEXT NOT NULL
+);
+"""
+
 _MIGRATIONS: tuple[str, ...] = (
     _SCHEMA,                                              # v1: schemat bazowy
     "ALTER TABLE investments ADD COLUMN segment TEXT;",   # v2: segment klientów
+    _BOT_SCHEMA,                                          # v3: scoring, numer leada, bot Telegram
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``."""
 
@@ -171,6 +228,15 @@ class LeadRepository:
     # --- Cykl życia ---------------------------------------------------------------
 
     @property
+    def connection(self) -> sqlite3.Connection:
+        """Połączenie z bazą (dla modułów współdzielących plik, np. ``bot_store``)."""
+        return self._conn
+
+    def now(self) -> datetime:
+        """Bieżący czas UTC (wstrzykiwany w testach)."""
+        return self._now()
+
+    @property
     def journal_mode(self) -> str:
         """Tryb dziennika SQLite (``wal`` dla plików, ``memory`` dla ``:memory:``)."""
         return self._conn.execute("PRAGMA journal_mode").fetchone()[0]
@@ -212,6 +278,11 @@ class LeadRepository:
     def get(self, id_sprawy: str) -> Investment | None:
         """Zwraca lead o danym numerze sprawy albo ``None``."""
         row = self._conn.execute("SELECT * FROM investments WHERE id_sprawy = ?", (id_sprawy,)).fetchone()
+        return _to_investment(row) if row else None
+
+    def get_by_nr(self, nr: int) -> Investment | None:
+        """Lead o stabilnym numerze ``nr`` (używanym m.in. w przyciskach bota)."""
+        row = self._conn.execute("SELECT * FROM investments WHERE nr = ?", (nr,)).fetchone()
         return _to_investment(row) if row else None
 
     def status_history(self, id_sprawy: str) -> list[StatusChange]:
@@ -365,6 +436,7 @@ class LeadRepository:
             "statusy": grouped("status"),
             "kategorie": grouped("kategoria"),
             "segmenty": grouped("coalesce(segment, 'bez segmentu')"),
+            "priorytety": grouped("coalesce(priorytet, 'brak')"),
             "zrodla": grouped("zrodlo"),
             "niewyslane": count("czy_wyslano = 0 AND is_noise = 0"),
             "do_arkusza": count("zsynchronizowano IS NULL OR zsynchronizowano < zmieniono"),
@@ -384,8 +456,10 @@ class LeadRepository:
                 self._conn.execute(f"PRAGMA user_version = {number}")
 
     def _insert(self, values: dict[str, Any], now: str) -> None:
+        next_nr = self._conn.execute("SELECT coalesce(max(nr), 0) + 1 FROM investments").fetchone()[0]
         record = {
             **values,
+            "nr": next_nr,
             "czy_wyslano": 0,
             "wyslano_kanaly": "",
             "utworzono": now,

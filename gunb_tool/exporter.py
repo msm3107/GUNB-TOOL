@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .http_client import HttpError, ResilientHttpClient
 from .models import BUILDING_CATEGORIES, LEAD_CATEGORIES, Investment, Status
+from .scoring import HOT, PRIORITY_BADGES, score_investment
 from .storage import StatusChange
 
 log = logging.getLogger(__name__)
@@ -150,14 +151,21 @@ class MessageFormatter:
 
     # Pojedyncze leady ------------------------------------------------------------------
 
-    def telegram(self, investment: Investment, change: StatusChange | None = None) -> OutgoingMessage:
-        """Wiadomość Telegram (HTML) z przyciskami „Otwórz w Google Maps” i „Geoportal”."""
-        text = self._fit(investment, change, _HtmlStyle, TELEGRAM_LIMIT, links_in_text=False)
+    def telegram(
+        self, investment: Investment, change: StatusChange | None = None, *, header: tuple[str, str, str] | None = None
+    ) -> OutgoingMessage:
+        """Wiadomość Telegram (HTML) z przyciskami „Otwórz w Google Maps” i „Geoportal”.
+
+        ``header`` = ``(ikona, tytuł, opis)`` zastępuje domyślny nagłówek (np. alert watchlisty).
+        """
+        text = self._fit(investment, change, _HtmlStyle, TELEGRAM_LIMIT, links_in_text=False, header=header)
         return OutgoingMessage(text, buttons=_buttons(investment), lead_ids=(investment.id_sprawy,))
 
-    def discord(self, investment: Investment, change: StatusChange | None = None) -> OutgoingMessage:
+    def discord(
+        self, investment: Investment, change: StatusChange | None = None, *, header: tuple[str, str, str] | None = None
+    ) -> OutgoingMessage:
         """Wiadomość w Markdown Discorda (linki w treści)."""
-        text = self._fit(investment, change, _DiscordStyle, DISCORD_LIMIT, links_in_text=True)
+        text = self._fit(investment, change, _DiscordStyle, DISCORD_LIMIT, links_in_text=True, header=header)
         return OutgoingMessage(text, lead_ids=(investment.id_sprawy,))
 
     # Raporty zbiorcze -----------------------------------------------------------------
@@ -176,23 +184,31 @@ class MessageFormatter:
 
     # Wewnętrzne ------------------------------------------------------------------------
 
-    def _fit(self, inv: Investment, change: StatusChange | None, style: Any, limit: int, *, links_in_text: bool) -> str:
+    def _fit(
+        self, inv: Investment, change: StatusChange | None, style: Any, limit: int, *,
+        links_in_text: bool, header: tuple[str, str, str] | None = None,
+    ) -> str:
         text = ""
         for description_limit in (self.description_limit, 200, 80):
-            text = self._render(inv, change, style, description_limit, links_in_text)
+            text = self._render(inv, change, style, description_limit, links_in_text, header)
             if len(text) <= limit:
                 return text
         return text[:limit]
 
     def _render(
-        self, inv: Investment, change: StatusChange | None, style: Any, description_limit: int, links_in_text: bool
+        self, inv: Investment, change: StatusChange | None, style: Any, description_limit: int,
+        links_in_text: bool, header: tuple[str, str, str] | None = None,
     ) -> str:
-        if change is not None and change.stary_status:
+        source = "pozwolenie na budowę" if inv.zrodlo == "pozwolenia" else "zgłoszenie budowy"
+        if header is not None:
+            icon, title, detail = header
+        elif change is not None and change.stary_status:
             icon, title = "🔄", "ZMIANA STATUSU"
             detail = f"{_status_word(change.stary_status)} → {_status_word(change.nowy_status)}"
+        elif inv.priorytet == HOT:
+            icon, title, detail = "🔥", "HOT LEAD", source
         else:
-            icon, title = "🏗️", "NOWY LEAD"
-            detail = "pozwolenie na budowę" if inv.zrodlo == "pozwolenia" else "zgłoszenie budowy"
+            icon, title, detail = "🏗️", "NOWY LEAD", source
 
         lines = [
             f"{icon} {style.bold(title)} · {style.text(detail)}",
@@ -213,6 +229,11 @@ class MessageFormatter:
 
     def _details(self, inv: Investment) -> list[_Line]:
         lines = [_Line("📌", "Status", _status_label(inv.status))]
+        if inv.priorytet in PRIORITY_BADGES:
+            score = score_investment(inv)
+            points = inv.punkty if inv.punkty is not None else score.points
+            reasons = f" ({', '.join(score.reasons[:4])})" if score.reasons else ""
+            lines.append(_Line("🎚️", "Priorytet", f"{PRIORITY_BADGES[inv.priorytet]} · {points} pkt{reasons}"))
         if inv.segment:
             lines.append(_Line("🎯", "Segment", self.segment_labels.get(inv.segment, inv.segment)))
 
@@ -301,7 +322,7 @@ class MessageFormatter:
 
     @staticmethod
     def _digest_entry(inv: Investment, change: StatusChange | None, style: Any) -> str:
-        icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+        icon = ("🔥 " if inv.priorytet == HOT else "") + CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
         lines = [f"{icon} {style.bold(_truncate(inv.nazwa_zamierzenia or '(brak opisu zamierzenia)', 110))}"]
         if _is_status_change(change):
             lines.append(style.text(f"🔄 {_status_word(change.stary_status)} → {_status_word(change.nowy_status)}"))
