@@ -185,6 +185,32 @@ class SegmentConfig:
 
 
 @dataclass(frozen=True)
+class BotConfig:
+    """Interaktywny bot Telegram (``main.py --bot``).
+
+    Attributes:
+        admins: ID czatów administratorów (akceptują nowe osoby, widzą listę użytkowników).
+        access: ``approval`` – nowa osoba czeka na akceptację admina, ``open`` – dostęp dla każdego.
+        fetch_times: godziny (``HH:MM``), o których bot sam pobiera dane GUNB; puste = z harmonogramu systemu.
+        morning_time / evening_time: godziny raportów „rano” i „wieczorem”.
+        instant_every_minutes: jak często sprawdzać nowe leady dla trybu „od razu” i alertów watchlisty.
+        welcome_backlog_days: z ilu dni wstecz nowy użytkownik dostaje leady w pierwszym raporcie.
+        max_leads_in_report: najwięcej leadów wypisanych w jednym raporcie.
+        poll_timeout: czas long pollingu Telegrama (s).
+    """
+
+    admins: tuple[int, ...] = ()
+    access: str = "approval"
+    fetch_times: tuple[str, ...] = ()
+    morning_time: str = "07:00"
+    evening_time: str = "19:00"
+    instant_every_minutes: int = 10
+    welcome_backlog_days: int = 7
+    max_leads_in_report: int = 20
+    poll_timeout: int = 25
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     """Poziom i (opcjonalny) plik logów."""
 
@@ -207,13 +233,16 @@ class AppConfig:
     sheets: SheetsConfig
     logging: LoggingConfig
     segments: tuple[SegmentConfig, ...] = ()
+    bot: BotConfig = BotConfig()
 
 
+_CHAT_ID_RE = re.compile(r"^-?\d+$")
+_CLOCK_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _SEGMENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _KNOWN_SECTIONS = {
     "http", "gunb", "filter", "geocoding", "storage", "notifications", "telegram", "discord", "sheets",
-    "logging", "segments",
+    "logging", "segments", "bot",
 }
 
 
@@ -257,6 +286,7 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         sheets=_sheets(_section(raw, "sheets"), base_dir),
         logging=_logging(_section(raw, "logging"), base_dir),
         segments=_segments(_section(raw, "segments")),
+        bot=_bot(_section(raw, "bot")),
     )
 
 
@@ -452,6 +482,41 @@ def _logging(data: dict[str, Any], base_dir: Path) -> LoggingConfig:
         raise ConfigError(f"logging.level: nieznany poziom {level!r}")
     log_file = str(data.get("file") or "").strip()
     return LoggingConfig(level=level, file=_path(log_file, base_dir) if log_file else None)
+
+
+def _bot(data: dict[str, Any]) -> BotConfig:
+    defaults = BotConfig()
+    admins = []
+    for value in _list(data, "bot", "admins", ()):
+        text = str(value).strip()
+        if not text:
+            continue  # np. nieustawiona zmienna ${TELEGRAM_CHAT_ID}
+        if not _CHAT_ID_RE.match(text):
+            raise ConfigError(f"bot.admins: {value!r} nie jest ID czatu Telegram (liczba)")
+        admins.append(int(text))
+    access = str(data.get("access", defaults.access)).strip().lower()
+    if access not in {"approval", "open"}:
+        raise ConfigError("bot.access: dozwolone wartości to approval (akceptacja admina) lub open")
+    times = {key: _clock_time(data.get(key, getattr(defaults, key)), f"bot.{key}")
+             for key in ("morning_time", "evening_time")}
+    return BotConfig(
+        admins=tuple(dict.fromkeys(admins)),
+        access=access,
+        fetch_times=tuple(_clock_time(t, "bot.fetch_times") for t in _list(data, "bot", "fetch_times", ())),
+        instant_every_minutes=int(_number(data, "bot", "instant_every_minutes", defaults.instant_every_minutes,
+                                          minimum=1)),
+        welcome_backlog_days=int(_number(data, "bot", "welcome_backlog_days", defaults.welcome_backlog_days)),
+        max_leads_in_report=int(_number(data, "bot", "max_leads_in_report", defaults.max_leads_in_report, minimum=1)),
+        poll_timeout=int(_number(data, "bot", "poll_timeout", defaults.poll_timeout, minimum=1)),
+        **times,
+    )
+
+
+def _clock_time(value: Any, where: str) -> str:
+    text = str(value).strip()
+    if not _CLOCK_RE.match(text):
+        raise ConfigError(f"{where}: {value!r} – podaj godzinę w formacie HH:MM, np. \"07:00\"")
+    return text
 
 
 def _segments(data: dict[str, Any]) -> tuple[SegmentConfig, ...]:

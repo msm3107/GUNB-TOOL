@@ -103,6 +103,23 @@ segments:
     categories: [mieszkaniowa-jednorodzinna, mieszkaniowa-wielorodzinna, mieszana, komercyjna, publiczna]
     telegram_chat_id: ${TELEGRAM_CHAT_ID_DUZE}
 
+# Interaktywny bot Telegram (python main.py --bot) – każdy użytkownik ustawia własne filtry,
+# tryb raportów i „tylko HOT”, zapisuje leady i obserwuje inwestorów/gminy.
+bot:
+  # Administratorzy (ID czatów Telegram) – akceptują nowe osoby. Domyślnie Twój czat z .env.
+  admins: ["${TELEGRAM_CHAT_ID}"]
+  # approval – nowa osoba czeka na akceptację admina; open – dostęp dla każdego, kto napisze do bota.
+  access: approval
+  # O której bot sam pobiera dane GUNB (paczki są aktualizowane ok. 23:30). [] = tylko przez --fetch.
+  fetch_times: ["06:30"]
+  morning_time: "07:00"
+  evening_time: "19:00"
+  # Co ile minut sprawdzać alerty 👀 watchlisty i tryb „⚡ od razu”.
+  instant_every_minutes: 10
+  # Z ilu dni wstecz nowa osoba dostaje leady w pierwszym raporcie.
+  welcome_backlog_days: 7
+  max_leads_in_report: 20
+
 geocoding:
   enabled: true
   # Ile działek sprawy próbować zlokalizować w ULDK, zanim użyjemy środka obrębu.

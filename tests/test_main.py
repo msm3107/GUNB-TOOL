@@ -112,3 +112,31 @@ def test_max_leads_option_and_legacy_alias_limit_dry_run(workdir, capsys):
     assert "wiadomości 1, leady 1" in capsys.readouterr().out
     assert run(workdir, "--notify-discord", "--dry-run", "--max-messages", "2") == 0
     assert "wiadomości 2, leady 2" in capsys.readouterr().out
+
+
+# --- Bot ---------------------------------------------------------------------------------------
+
+def test_bot_requires_token(workdir, caplog):
+    assert run(workdir, "--bot-once") == 1
+    assert "TELEGRAM_BOT_TOKEN" in caplog.text
+
+
+def test_bot_once_runs_single_cycle(workdir, monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    calls = {}
+
+    class Api:
+        def __init__(self, http, token, **kwargs):
+            calls["token"] = token
+
+        def set_my_commands(self, commands):
+            calls["commands"] = len(commands)
+
+        def get_updates(self, offset, timeout):
+            calls["timeout"] = timeout
+            return []
+
+    monkeypatch.setattr(main, "TelegramApi", Api)
+    assert run(workdir, "--bot-once") == 0
+    assert calls == {"token": "123:ABC", "commands": 7, "timeout": 0}
+    assert "Bot:" in capsys.readouterr().out

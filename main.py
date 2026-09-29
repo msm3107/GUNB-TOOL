@@ -7,6 +7,7 @@ Przykłady::
     python main.py --fetch --mark-sent              # pierwsze uruchomienie: zbuduj bazę bez zalewu powiadomień
     python main.py --notify-telegram --dry-run      # podgląd wiadomości bez wysyłania
     python main.py --fetch --notify-telegram --sync-sheets   # typowe uruchomienie z harmonogramu
+    python main.py --bot                            # interaktywny bot Telegram (działa stale)
 """
 
 from __future__ import annotations
@@ -15,10 +16,12 @@ import argparse
 import logging
 import logging.handlers
 import sys
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Sequence
 
+from gunb_tool.bot import LeadBot
 from gunb_tool.config import AppConfig, ConfigError, LoggingConfig, load_config, override_scope
 from gunb_tool.exporter import (
     DiscordNotifier,
@@ -29,7 +32,7 @@ from gunb_tool.exporter import (
     TelegramNotifier,
 )
 from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError
-from gunb_tool.http_client import HttpError
+from gunb_tool.http_client import HttpError, ResilientHttpClient
 from gunb_tool.models import Source
 from gunb_tool.pipeline import (
     FetchReport,
@@ -40,6 +43,7 @@ from gunb_tool.pipeline import (
     notification_http_client,
 )
 from gunb_tool.storage import LeadRepository
+from gunb_tool.telegram_api import TelegramApi
 
 log = logging.getLogger("gunb_tool.main")
 
@@ -66,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
     actions.add_argument("--mark-sent", action="store_true",
                          help="oznacz wszystkie oczekujące leady jako wysłane, bez wysyłania")
     actions.add_argument("--stats", action="store_true", help="pokaż podsumowanie bazy")
+    actions.add_argument("--bot", action="store_true",
+                         help="uruchom interaktywnego bota Telegram (działa stale, Ctrl+C kończy)")
+    actions.add_argument("--bot-once", action="store_true",
+                         help="jeden cykl bota: odbierz wiadomości i wykonaj zaległe zadania, potem zakończ")
 
     fetch = parser.add_argument_group("opcje --fetch")
     fetch.add_argument("--since", type=_parse_date, metavar="RRRR-MM-DD", help="data początkowa (nadpisuje okno)")
@@ -92,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not (args.fetch or args.notify_telegram or args.notify_discord or args.sync_sheets
-            or args.mark_sent or args.stats):
+            or args.mark_sent or args.stats or args.bot or args.bot_once):
         parser.print_help()
         return EXIT_USAGE
 
@@ -120,6 +128,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code = max(exit_code, _run_sync_sheets(pipeline, config))
         if args.stats:
             _print_stats(repo.stats())
+        if args.bot or args.bot_once:
+            exit_code = max(exit_code, _run_bot(config, repo, once=args.bot_once))
     return exit_code
 
 
@@ -208,6 +218,47 @@ def _run_sync_sheets(pipeline: LeadPipeline, config: AppConfig) -> int:
         log.debug("Szczegóły błędu Google Sheets", exc_info=True)
         return EXIT_PARTIAL_FAILURE
     print(f"Google Sheets: zaktualizowano {result.updated}, dopisano {result.appended}")
+    return EXIT_OK
+
+
+def _run_bot(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
+    """Interaktywny bot: stała pętla (``--bot``) albo jeden cykl (``--bot-once``)."""
+    if not config.telegram.bot_token:
+        log.error("Bot: brak TELEGRAM_BOT_TOKEN (sekcja telegram / plik .env)")
+        return EXIT_PARTIAL_FAILURE
+    http = ResilientHttpClient(replace(config.http, min_delay=0.0, max_delay=0.0, max_retries=3,
+                                       timeout=config.bot.poll_timeout + 20))
+    api = TelegramApi(http, config.telegram.bot_token, min_interval_per_chat=config.telegram.delay_seconds)
+    fetch_pipeline = create_pipeline(config, repo)
+
+    def fetcher() -> None:
+        query = build_query(config.gunb, today=date.today())
+        try:
+            report = fetch_pipeline.fetch(query, page_size=config.gunb.page_size)
+        except (HttpError, GunbFormatError) as exc:
+            log.error("Bot: pobieranie danych GUNB nie powiodło się: %s", exc)
+            return
+        log.info("Bot: pobrano dane GUNB – nowe %d, zmiana statusu %d", report.new, report.status_changed)
+
+    bot = LeadBot(
+        repo, api,
+        settings=config.bot,
+        powiat_codes=config.gunb.powiats,
+        formatter=build_formatter(config),
+        digest_threshold=config.notifications.digest_threshold,
+        max_age_days=config.notifications.max_age_days,
+        fetcher=fetcher,
+    )
+    if once:
+        bot.setup()
+        received = bot.poll_once(timeout=0)
+        ran = bot.run_due_jobs()
+        print(f"Bot: odebrano {received} aktualizacji, zadania: {', '.join(ran) or 'brak'}")
+        return EXIT_OK
+    try:
+        bot.run_forever()
+    except KeyboardInterrupt:
+        log.info("Bot zatrzymany")
     return EXIT_OK
 
 

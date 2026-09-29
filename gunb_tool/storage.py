@@ -528,6 +528,11 @@ def _content_values(investment: Investment) -> dict[str, Any]:
     return values
 
 
+def investment_from_row(row: sqlite3.Row) -> Investment:
+    """Buduje :class:`Investment` z wiersza tabeli ``investments`` (także dla ``bot_store``)."""
+    return _to_investment(row)
+
+
 def _to_investment(row: sqlite3.Row) -> Investment:
     data = {name: row[name] for name in _INVESTMENT_FIELDS}
     data["dzialki"] = json.loads(data["dzialki"] or "[]")

@@ -1,0 +1,188 @@
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from gunb_tool.bot_store import BotStore, UserFilters, investor_key, watch_match
+from gunb_tool.models import Investment
+from gunb_tool.storage import LeadRepository
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.current = datetime(2026, 9, 29, 6, 0, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance(self, **delta) -> None:
+        self.current += timedelta(**delta)
+
+
+@pytest.fixture
+def clock():
+    return Clock()
+
+
+@pytest.fixture
+def repo(clock):
+    repository = LeadRepository(":memory:", now=clock)
+    yield repository
+    repository.close()
+
+
+@pytest.fixture
+def store(repo):
+    return BotStore(repo)
+
+
+def lead(id_sprawy="A/1", **overrides) -> Investment:
+    base = dict(
+        id_sprawy=id_sprawy, zrodlo="pozwolenia", status="decyzja", kategoria="mieszkaniowa-wielorodzinna",
+        nazwa_zamierzenia="Budowa zespołu dwóch budynków wielorodzinnych", kubatura=26265.0,
+        adres_opisowy="Warszawa", miejscowosc="Warszawa", gmina="Warszawa (miasto)", powiat="powiat Warszawa",
+        powiat_teryt="1465", gmina_teryt="1465038", inwestor="Napollo 3 Sp. z o.o.", priorytet="hot", punkty=10,
+    )
+    base.update(overrides)
+    return Investment(**base)
+
+
+# --- Filtry użytkownika ------------------------------------------------------------------------
+
+WARSZAWA_WIELORODZINNE = UserFilters(miejsca=("Warszawa",), kategorie=("mieszkaniowa-wielorodzinna",),
+                                     min_kubatura=10000)
+
+
+def test_example_filter_warsaw_multi_family_over_10000():
+    assert WARSZAWA_WIELORODZINNE.matches(lead())
+    assert not WARSZAWA_WIELORODZINNE.matches(lead(kubatura=994.0))
+    assert not WARSZAWA_WIELORODZINNE.matches(lead(kategoria="komercyjna"))
+    assert not WARSZAWA_WIELORODZINNE.matches(lead(gmina="Kostrzyn", miejscowosc="Wróblewo", adres_opisowy="Wróblewo",
+                                                   powiat="powiat poznański", powiat_teryt="3021"))
+
+
+def test_min_volume_excludes_leads_with_unknown_volume():
+    assert not UserFilters(min_kubatura=1000).matches(lead(kubatura=None))
+
+
+def test_locations_are_alternatives():
+    filters = UserFilters(powiaty=("3021",), miejsca=("Warszawa",))
+    assert filters.matches(lead())
+    assert filters.matches(lead(powiat_teryt="3021", gmina="Kostrzyn", miejscowosc="Wróblewo",
+                                adres_opisowy="Wróblewo", powiat="powiat poznański"))
+
+
+def test_investor_filter_company_only_or_name_fragment():
+    assert UserFilters(inwestor="firma").matches(lead())
+    assert not UserFilters(inwestor="firma").matches(lead(inwestor=None))
+    assert UserFilters(inwestor="napollo").matches(lead())
+    assert not UserFilters(inwestor="Budimex").matches(lead())
+
+
+def test_empty_filters_match_everything_and_round_trip_json():
+    assert UserFilters().matches(lead(kubatura=None, inwestor=None))
+    assert UserFilters.from_json(WARSZAWA_WIELORODZINNE.to_json()) == WARSZAWA_WIELORODZINNE
+    assert UserFilters.from_json("{zepsuty json") == UserFilters()
+
+
+# --- Watchlista ----------------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "name,key",
+    [
+        ("Napollo 3 Sp. z o.o.", "napollo"),
+        ("NAPOLLO 4 SP. Z O.O.", "napollo"),
+        ("Hevi MDM 1 Szafarowicz Sp.K.", "hevi mdm szafarowicz"),
+        ("Budimex S.A.", "budimex"),
+        ("BUDIMEX SA", "budimex"),
+    ],
+)
+def test_investor_key_ignores_legal_form_and_spv_numbers(name, key):
+    assert investor_key(name) == key
+
+
+def test_investor_key_of_missing_investor_is_none():
+    assert investor_key(None) is None
+    assert investor_key("  ") is None
+
+
+def test_watch_match_by_investor_or_gmina(store):
+    store.register(1, "Mietek", None, status="aktywny", backlog_days=7)
+    store.add_watch(1, "inwestor", investor_key("Napollo 3 Sp. z o.o."), "Napollo 3 Sp. z o.o.")
+    store.add_watch(1, "gmina", "3021085", "Kostrzyn")
+    items = store.watchlist(1)
+
+    assert watch_match(lead(inwestor="Napollo 7 Sp. z o.o."), items).etykieta == "Napollo 3 Sp. z o.o."
+    assert watch_match(lead(inwestor=None, gmina_teryt="3021085"), items).rodzaj == "gmina"
+    assert watch_match(lead(inwestor="Inny Deweloper S.A."), items) is None
+
+
+def test_watchlist_add_is_idempotent_and_removable(store):
+    store.register(1, "Mietek", None, status="aktywny", backlog_days=7)
+    assert store.add_watch(1, "gmina", "3021085", "Kostrzyn") is True
+    assert store.add_watch(1, "gmina", "3021085", "Kostrzyn") is False
+    (item,) = store.watchlist(1)
+    assert store.remove_watch(1, item.id) is True
+    assert store.watchlist(1) == []
+    assert store.remove_watch(2, item.id) is False
+
+
+# --- Użytkownicy ------------------------------------------------------------------------------
+
+def test_register_creates_user_once_with_backlog_window(store, clock):
+    user = store.register(10, "Mietek", "mietek_bud", status="oczekuje", backlog_days=7)
+    assert (user.status, user.tryb, user.tylko_hot) == ("oczekuje", "rano", False)
+    assert user.nowe_od == "2026-09-22T06:00:00+00:00"
+    store.set_status(10, "aktywny")
+    assert store.register(10, "Mietek", "mietek_bud", status="oczekuje", backlog_days=7).status == "aktywny"
+
+
+def test_user_settings_round_trip(store):
+    store.register(10, "Mietek", None, status="aktywny", backlog_days=7)
+    store.set_mode(10, "natychmiast")
+    store.set_hot_only(10, True)
+    store.set_filters(10, WARSZAWA_WIELORODZINNE)
+    store.set_awaiting(10, "miejsce")
+    user = store.get_user(10)
+    assert (user.tryb, user.tylko_hot, user.filtry, user.oczekuje_na) == (
+        "natychmiast", True, WARSZAWA_WIELORODZINNE, "miejsce")
+    assert [u.chat_id for u in store.users(tryb="natychmiast")] == [10]
+    assert store.users(tryb="rano") == []
+
+
+# --- Stany leadów i doręczenia -----------------------------------------------------------------
+
+def test_saved_list_follows_lead_states(store, repo):
+    store.register(1, "Mietek", None, status="aktywny", backlog_days=7)
+    repo.upsert(lead("A/1"))
+    repo.upsert(lead("B/1"))
+    store.set_lead_state(1, "A/1", "zapisany")
+    store.set_lead_state(1, "B/1", "zapisany")
+    assert [i.id_sprawy for i in store.saved(1, limit=10)] == ["B/1", "A/1"]
+    store.set_lead_state(1, "A/1", "przejrzany")
+    assert [i.id_sprawy for i in store.saved(1, limit=10)] == ["B/1"]
+    assert store.saved_count(1) == 1
+    assert store.lead_state(1, "A/1") == "przejrzany"
+
+
+def test_candidates_skip_noise_hidden_and_already_delivered(store, repo, clock):
+    store.register(1, "Mietek", None, status="aktywny", backlog_days=7)
+    repo.upsert(lead("A/1"))
+    repo.upsert(lead("SZUM/1", is_noise=True))
+    repo.upsert(lead("UKRYTY/1"))
+    store.set_lead_state(1, "UKRYTY/1", "ukryty")
+    since = store.get_user(1).nowe_od
+
+    assert [i.id_sprawy for i in store.candidates(1, since)] == ["A/1"]
+    store.record_delivery(1, [repo.get("A/1")], "raport")
+    assert store.candidates(1, since) == []
+
+    clock.advance(days=1)
+    repo.upsert(lead("A/1", status="brak_sprzeciwu"))  # zmiana statusu = nowa rewizja
+    assert [i.id_sprawy for i in store.candidates(1, since)] == ["A/1"]
+    assert store.deliveries_since(1, since, "raport") == 1
+
+
+def test_jobs_remember_last_run(store):
+    assert store.job_last_run("raport_rano") is None
+    store.mark_job("raport_rano", "2026-09-29T07:00:00")
+    assert store.job_last_run("raport_rano") == "2026-09-29T07:00:00"
