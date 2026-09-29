@@ -435,15 +435,10 @@ def _when(moment: datetime | str | None) -> str:
 
 def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConfig, prefix: str = "") -> tuple[str, Markup]:
     f = user.filtry
-    places = [place_names.get(code, code) for code in f.powiaty] + list(f.miejsca)
     categories = [label for key, label in CATEGORY_CHOICES if key in f.kategorie]
-    if f.radius_active:
-        place_label = f"do {f.promien_km} km od Twojej bazy"
-    else:
-        place_label = escape_html(", ".join(places)) if places else "cały monitorowany obszar"
     lines = [
         prefix + "🔎 <b>Twoje filtry</b>" if prefix else "🔎 <b>Twoje filtry</b>",
-        f"📍 Miejsce: {place_label}",
+        f"📍 Miejsce: {escape_html(place_label(f, place_names))}",
         f"🏗️ Rodzaj: {escape_html(', '.join(categories)) if categories else 'wszystkie'}",
         f"📦 Kubatura: {_volume_label(f.min_kubatura)}",
         f"💼 Inwestor: {_investor_label(f.inwestor)}",
@@ -844,13 +839,8 @@ def history_page(leads: Sequence[Investment], *, page: int, pages: int, total: i
 def filters_summary(user: BotUser, place_names: dict[str, str]) -> str:
     """Jednolinijkowe podsumowanie aktywnych filtrów (np. przy braku wyników)."""
     f = user.filtry
-    if f.radius_active:
-        place = f"do {f.promien_km} km od Twojej bazy"
-    else:
-        places = [place_names.get(code, code) for code in f.powiaty] + list(f.miejsca)
-        place = ", ".join(places) if places else "cały monitorowany obszar"
     categories = [label for key, label in CATEGORY_CHOICES if key in f.kategorie]
-    parts = [f"📍 {escape_html(place)}",
+    parts = [f"📍 {escape_html(place_label(f, place_names))}",
              f"🏗️ {escape_html(', '.join(categories)) if categories else 'wszystkie rodzaje'}",
              f"📦 {_volume_label(f.min_kubatura)}"]
     if f.inwestor:

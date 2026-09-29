@@ -58,6 +58,9 @@ HEARTBEAT_JOB = "watek_zadan"
 """Ostatni cykl wątku zadań – po nim widać, że zadania w tle żyją."""
 REPORT_JOBS: dict[str, str] = {"raport_rano": "rano", "raport_wieczor": "wieczor"}
 """Zadanie raportu → tryb użytkowników, którzy go dostają."""
+CLEANUP_JOB, CLEANUP_TIME = "porzadki", "03:30"
+SENDS_KEPT = timedelta(days=35)
+"""Zakończone wysyłki starsze niż tyle są usuwane (``/status`` pokazuje ostatnią dobę, ``/raport`` – z ``deliveries``)."""
 
 SEND_BACKOFF: tuple[timedelta, ...] = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=15),
                                        timedelta(minutes=30))
@@ -267,6 +270,9 @@ class LeadBot:
                 else:
                     self._start_sends(name, now)
                 ran.append(name)
+        if self._due(CLEANUP_JOB, now, CLEANUP_TIME):  # raz dziennie: kolejka wysyłek nie rośnie bez końca
+            self.store.set_job_time(CLEANUP_JOB, now)
+            self.store.prune_sends(now - SENDS_KEPT)
         self.process_sends()
         self.deliver_personal_reminders()
         last = self.store.job_time("natychmiast")
@@ -1240,7 +1246,9 @@ class LeadBot:
         filters = user.filtry
         value = " ".join(text.split())[:60]
         if what == "miejsce":
-            if not self.store.place_is_known(value):  # spoza monitorowanego obszaru albo literówka
+            # spoza monitorowanego obszaru albo literówka; bez żadnych danych (świeża instalacja) nie ma z czym
+            # porównać – wtedy przyjmujemy nazwę, a nietrafioną widać potem w podsumowaniu filtrów
+            if self.store.has_investments() and not self.store.place_is_known(value):
                 self.store.set_awaiting(user.chat_id, "miejsce")
                 self._send(user.chat_id, ui.place_unknown_text(value, self._region_label()))
                 return
@@ -1287,7 +1295,7 @@ class LeadBot:
         return sent
 
     def deliver_personal_reminders(self) -> int:
-        """„⏰ Przypomnij”: rano w wybranym dniu, nigdy w nocy; kilka zaległych naraz – jedna wiadomość.
+        """„⏰ Przypomnij”: rano w wybranym dniu, nigdy w nocy; kilka zaległych naraz – zbiorczo, od razu wszystkie.
 
         Bez dostępu albo przy pauzie przypomnienia czekają (nie giną). Doręczenie „co najmniej raz”:
         awaria między wysyłką a skasowaniem przypomnienia może je powtórzyć po restarcie.
@@ -1303,19 +1311,37 @@ class LeadBot:
             if user is None or not self._receives_automatic(user):
                 continue
             distance = user.filtry.distance_km if user.filtry.baza else None
+
+            def delivered(chunk: Sequence[Investment], chat_id: int = chat_id) -> None:
+                for inv in chunk:
+                    self.store.clear_reminder(chat_id, inv.id_sprawy)
+
             try:
                 if len(leads) == 1:
                     self._send_card(user, leads[0], header=ui.reminder_header())
+                    delivered(leads)
                 else:
-                    self._send(chat_id, *ui.reminders_digest(leads[:self.settings.max_leads_in_report], distance))
-                    leads = leads[:self.settings.max_leads_in_report]
+                    self._send_in_chunks(chat_id, leads, lambda chunk: ui.reminders_digest(chunk, distance), delivered)
             except TelegramApiError as exc:
                 self._delivery_failed(user, exc)
                 continue
-            for inv in leads:
-                self.store.clear_reminder(chat_id, inv.id_sprawy)
             sent += 1
         return sent
+
+    def _send_in_chunks(self, chat_id: int, items: Sequence[Any], build: Callable[[Sequence[Any]], tuple[str, dict]],
+                        delivered: Callable[[Sequence[Any]], None]) -> None:
+        """Długa lista w kilku wiadomościach wysłanych od razu: do ``max_leads_in_report`` pozycji i do limitu
+        Telegrama każda; ``delivered`` odnotowuje każdą część zaraz po jej wysłaniu."""
+        start = 0
+        while start < len(items):
+            count = min(self.settings.max_leads_in_report, len(items) - start)
+            text, markup = build(items[start:start + count])
+            while len(text) > TELEGRAM_LIMIT and count > 1:
+                count = max(1, count - 3)
+                text, markup = build(items[start:start + count])
+            self._send(chat_id, text, markup)
+            delivered(items[start:start + count])
+            start += count
 
     def _receives_automatic(self, user: BotUser) -> bool:
         """Czy do tej osoby idą automatyczne wiadomości – ta sama reguła co ``BotStore.subscribers``."""
@@ -1460,15 +1486,12 @@ class LeadBot:
                 remaining.append(inv)
             else:
                 hits.append((hit, inv))
-        if len(hits) > WATCH_DIGEST_AFTER:  # np. po wznowieniu – jedna wiadomość zamiast serii kart
-            shown = hits[:self.settings.max_leads_in_report]
+        if len(hits) > WATCH_DIGEST_AFTER:  # np. po wznowieniu – zbiorczo zamiast serii kart, od razu wszystkie
             distance = user.filtry.distance_km if user.filtry.baza else None
-            text, markup = ui.watch_digest(shown, distance)
-            while len(text) > TELEGRAM_LIMIT and len(shown) > 1:
-                shown = shown[:max(1, len(shown) - 3)]
-                text, markup = ui.watch_digest(shown, distance)
-            self._send(user.chat_id, text, markup)
-            self.store.record_delivery(user.chat_id, [inv for _, inv in shown], "watchlista")  # reszta – w kolejnym
+            self._send_in_chunks(
+                user.chat_id, hits, lambda chunk: ui.watch_digest(chunk, distance),
+                lambda chunk: self.store.record_delivery(user.chat_id, [inv for _, inv in chunk], "watchlista"),
+            )
             sent += 1
             hits = []
         for hit, inv in hits:

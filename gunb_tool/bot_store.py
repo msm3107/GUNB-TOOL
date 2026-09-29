@@ -420,6 +420,10 @@ class BotStore:
         """Krok pierwszej konfiguracji: ``branza``, ``obszar`` albo ``gotowe``."""
         self._update(chat_id, konfiguracja=step)
 
+    def has_investments(self) -> bool:
+        """Czy w bazie są już jakiekolwiek dane (świeża instalacja przed pierwszym importem – nie)."""
+        return self._conn.execute("SELECT 1 FROM investments WHERE is_noise = 0 LIMIT 1").fetchone() is not None
+
     def place_is_known(self, name: str) -> bool:
         """Czy w danych (monitorowany obszar) jest inwestycja z tej miejscowości lub gminy."""
         wanted = normalize_text(name)

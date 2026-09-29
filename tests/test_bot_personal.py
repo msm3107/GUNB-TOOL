@@ -277,3 +277,60 @@ def test_pause_also_works_when_the_bot_is_open_to_everyone(repo, api, clock):
     bot.deliver_reports("rano")
 
     assert api.to(MIETEK) == []
+
+
+def test_many_overdue_reminders_arrive_together_not_in_later_cycles(repo, api, clock):
+    bot = make_bot(repo, api, clock, max_leads_in_report=10)
+    activate(bot, api, MIETEK)
+    for n in range(15):
+        repo.upsert(lead(f"R/{n}", nazwa_zamierzenia=f"Budowa numer {n:02d}"))
+        bot.handle_update(click(MIETEK, f"pr:{repo.get(f'R/{n}').nr}:7"))
+    settle(bot, api)
+
+    clock.utc = morning(7)
+    bot.run_due_jobs()
+    first = reminders(api)
+    clock.advance(seconds=20)
+    bot.run_due_jobs()
+    clock.advance(minutes=11)
+    bot.run_due_jobs()
+
+    assert reminders(api) == first  # w kolejnych cyklach nic już nie dochodzi
+    assert len(first) == 2 and all(len(m["text"]) <= 4096 for m in first)
+    text = " ".join(m["text"] for m in first)
+    assert all(f"Budowa numer {n:02d}" in text for n in range(15))
+
+
+def test_many_watchlist_alerts_arrive_together_not_in_later_cycles(repo, api, clock):
+    bot = make_bot(repo, api, clock, max_leads_in_report=10)
+    activate(bot, api, MIETEK)
+    store = BotStore(repo)
+    store.add_watch(MIETEK, "gmina", "3021085", "Kostrzyn")
+    store.set_paused(MIETEK, True)
+    for n in range(25):
+        repo.upsert(lead(f"W/{n}", nazwa_zamierzenia=f"Budowa numer {n:02d}"))
+    bot.run_due_jobs()
+    store.set_paused(MIETEK, False)
+    api.sent.clear()
+
+    clock.advance(minutes=11)
+    bot.run_due_jobs()
+    first = list(api.to(MIETEK))
+    clock.advance(minutes=11)
+    bot.run_due_jobs()
+
+    assert api.to(MIETEK) == first and len(first) == 3
+    text = " ".join(m["text"] for m in first)
+    assert all(f"Budowa numer {n:02d}" in text for n in range(25))
+
+
+def test_old_finished_sends_are_cleaned_up_once_a_day(repo, api, clock):
+    store = BotStore(repo)
+    store.enqueue_sends("raport_rano:2026-08-01", [MIETEK, OBCY])
+    store.finish_send("raport_rano:2026-08-01", MIETEK, "wyslano")
+    clock.advance(days=40)
+
+    make_bot(repo, api, clock).run_due_jobs()
+
+    assert store.send_row("raport_rano:2026-08-01", MIETEK) is None  # zakończona, stara – usunięta
+    assert store.send_row("raport_rano:2026-08-01", OBCY) is not None  # nieobsłużona zostaje

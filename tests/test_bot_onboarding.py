@@ -217,3 +217,13 @@ def test_old_setup_buttons_after_setup_do_not_restart_it(bot, api, repo):
     assert user(repo).setup_done
     assert user(repo).filtry == UserFilters(powiaty=("1465",), miejsca=("Dywity",))
     assert "⚙️ Ustawienia" in api.answers[-1]
+
+
+def test_typed_place_is_accepted_while_there_is_no_data_yet(repo, api, clock):
+    bot = make_bot(repo, api, clock)  # świeża instalacja – w bazie jeszcze żadnej inwestycji
+    allowed(bot, api)
+    bot.handle_update(click(MIETEK, "ob:none"))
+    bot.handle_update(click(MIETEK, "oa:txt"))
+    bot.handle_update(message(MIETEK, "Dywity"))
+    assert user(repo).filtry.miejsca == ("Dywity",)
+    assert "Gotowe" in api.last_to(MIETEK)["text"]
