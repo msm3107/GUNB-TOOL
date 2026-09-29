@@ -773,7 +773,7 @@ def test_filters_screen_shows_trade_and_timing(bot, api, repo):
     activate(bot, api)
     BotStore(repo).set_trade(MIETEK, "okna")
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
-    assert "Okna i drzwi – przypomnę 5–7 mies. po pozwoleniu" in api.last_to(MIETEK)["text"]
+    assert "Okna i drzwi – przypomnę orientacyjnie 5–7 mies. po decyzji" in api.last_to(MIETEK)["text"]
 
 
 def test_branza_command_opens_trade_picker(bot, api):
