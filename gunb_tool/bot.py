@@ -75,7 +75,9 @@ TRIAL_LENGTH = timedelta(days=ui.TRIAL_DAYS)
 ACCESS_REMINDER_BEFORE = timedelta(hours=24)
 ACCESS_REMINDER_JOB = "dostep_przypomnienie"
 ACCESS_END_JOB = "dostep_koniec"
+ACCESS_JOBS = (ACCESS_REMINDER_JOB, ACCESS_END_JOB)
 NO_ACCESS_TOAST = "⛔ Brak aktywnego dostępu (test albo abonament) – szczegóły: /konto"
+SETUP_DONE_TOAST = "✅ To już ustawione – zmienisz w ⚙️ Ustawienia"
 WATCH_DIGEST_AFTER = 3
 """Więcej alertów obserwowanych naraz (np. po wznowieniu powiadomień) idzie jedną wiadomością."""
 
@@ -286,12 +288,16 @@ class LeadBot:
             self.store.finish_send(item.zadanie, item.chat_id, "pominieto", blad=obstacle)
             return 0
         assert user is not None
+        now = self._now()
+        if job in ACCESS_JOBS and self._quiet(now):  # informacja o dostępie nie przepada – czeka do rana
+            self.store.finish_send(item.zadanie, item.chat_id, "oczekuje", retry_at=self._quiet_end(now))
+            return 0
         if not self.store.claim_send(item.zadanie, item.chat_id):
             return 0  # tę wysyłkę obsłużył w międzyczasie inny proces
         try:
             if job == STAGE_REMINDER_JOB:
                 delivered = self.send_stage_reminder(user)
-            elif job in (ACCESS_REMINDER_JOB, ACCESS_END_JOB):
+            elif job in ACCESS_JOBS:
                 delivered = self._send_access_notice(user, ended=job == ACCESS_END_JOB)
             else:
                 delivered = self.send_report(user)
@@ -313,14 +319,15 @@ class LeadBot:
         """Powód, by wysyłki już nie robić (``None`` – można wysyłać)."""
         if user is None or user.status != "aktywny":
             return f"odbiorca {user.status if user else 'nieznany'}"
-        if job in (ACCESS_REMINDER_JOB, ACCESS_END_JOB):  # wiadomości o dostępie idą także bez dostępu
+        if job in ACCESS_JOBS:  # wiadomości o dostępie idą także bez dostępu i nie przedawniają się
             if user.subscription_ends != item.zadanie.partition(":")[2]:
                 return "termin dostępu się zmienił"
             if (job == ACCESS_END_JOB) == self._has_access(user):
                 return "dostęp przedłużony" if job == ACCESS_END_JOB else "dostęp już się skończył"
-        elif not self._has_access(user):
+            return None
+        if not self._has_access(user):
             return "brak dostępu"
-        elif user.wstrzymane:
+        if user.wstrzymane:
             return "powiadomienia wstrzymane"
         if job in REPORT_JOBS and user.tryb != REPORT_JOBS[job]:
             return "zmieniony tryb raportów"
@@ -352,6 +359,11 @@ class LeadBot:
         """Czy w Polsce trwa cisza nocna (22:00–6:00)."""
         moment = local(now).time()
         return moment >= QUIET_FROM or moment < QUIET_UNTIL
+
+    def _quiet_end(self, now: datetime) -> datetime:
+        """Najbliższy koniec ciszy nocnej (6:00 czasu polskiego)."""
+        morning = at_local_time(now, f"{QUIET_UNTIL:%H:%M}")
+        return morning if morning > now else at_local_time(now + timedelta(days=1), f"{QUIET_UNTIL:%H:%M}")
 
     # === Aktualizacje =========================================================================
 
@@ -621,6 +633,8 @@ class LeadBot:
 
     def _cb_setup_trade(self, user: BotUser, arg: str, message_id: int) -> str | None:
         """Krok 1/2 – branża („ob:<branża>”, „ob:none”); „ob:resume” wraca do przerwanego kroku."""
+        if user.setup_done:  # stary przycisk z historii czatu – pierwsze kroki są za nim
+            return SETUP_DONE_TOAST
         if arg == "resume":
             self._show_setup_step(user)
             return None
@@ -634,6 +648,8 @@ class LeadBot:
 
     def _cb_setup_area(self, user: BotUser, arg: str, message_id: int) -> str | None:
         """Krok 2/2 – obszar: powiat („oa:p:<kod>”), cały obszar, pinezka bazy albo wpisana miejscowość."""
+        if user.setup_done:  # stary przycisk – filtrów nie nadpisujemy
+            return SETUP_DONE_TOAST
         if arg == "loc":
             self._send(user.chat_id, *ui.location_request())
             return "👇 Wyślij pinezkę przyciskiem na dole ekranu"
@@ -781,9 +797,9 @@ class LeadBot:
         return ui.admin_contact_html(self.settings.admin_contact, self.settings.admins)
 
     def _subscribers(self, tryb: str | None = None) -> list[BotUser]:
-        """Odbiorcy pętli wysyłkowych: z bazy tylko osoby z dostępem (i admini)."""
+        """Odbiorcy pętli wysyłkowych: z bazy tylko osoby z dostępem (i admini), bez tych z pauzą."""
         if self.settings.access == "open":
-            return self.store.users(tryb=tryb)
+            return [user for user in self.store.users(tryb=tryb) if not user.wstrzymane]
         return self.store.subscribers(_utc_iso(self._now()), admins=self.settings.admins, tryb=tryb)
 
     def _local_date(self, utc_iso: str | None, *, with_time: bool = False) -> str:

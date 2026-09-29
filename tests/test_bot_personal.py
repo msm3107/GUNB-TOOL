@@ -258,3 +258,22 @@ def test_setup_trial_start_and_extension_are_recorded(bot, api, repo):
     counts = BotStore(repo).event_counts(TODAY - timedelta(days=1))
     assert counts["konfiguracja"] == (1, 0) and counts["test_start"] == (1, 0)
     assert counts["dostep_przedluzony"][0] == 2  # MIETEK (activate) i OBCY
+
+
+# --- Poprawki z przeglądu -------------------------------------------------------------------------------------
+
+def test_pause_also_works_when_the_bot_is_open_to_everyone(repo, api, clock):
+    bot = make_bot(repo, api, clock, access="open")
+    bot.handle_update(message(MIETEK, "/start"))
+    store = BotStore(repo)
+    store.set_setup_step(MIETEK, "gotowe")
+    store.set_mode(MIETEK, "natychmiast")
+    store.add_watch(MIETEK, "gmina", "3021085", "Kostrzyn")
+    store.set_paused(MIETEK, True)
+    repo.upsert(lead("P/1"))
+    api.sent.clear()
+
+    bot.deliver_instant()
+    bot.deliver_reports("rano")
+
+    assert api.to(MIETEK) == []

@@ -6,6 +6,7 @@ import pytest
 
 from gunb_tool.bot_store import BotStore
 from gunb_tool.storage import LeadRepository
+from gunb_tool.telegram_api import TelegramApiError
 from tests.bot_helpers import ADMIN, MIETEK, OBCY, activate, buttons, click, configured, lead, make_bot, message
 
 START = "ts"  # przycisk „▶️ Zacznij 7-dniowy test”
@@ -341,3 +342,22 @@ def test_recipients_query_matches_the_access_rule(bot, api, repo, clock):
     by_query = {u.chat_id for u in bot._subscribers()}
     assert by_query == by_rule == {11, 14, 15}
     assert bot._has_access(store.get_user(18))  # pauza nie odbiera dostępu
+
+
+def test_access_end_notice_waits_for_the_morning_instead_of_being_lost(bot, api, repo, clock):
+    clock.utc = datetime(2026, 9, 29, 19, 50, tzinfo=timezone.utc)  # 21:50
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 3"))  # koniec 02.10 o 21:50
+    api.sent.clear()
+    clock.utc = datetime(2026, 10, 2, 19, 58, tzinfo=timezone.utc)  # 21:58 – po końcu, tuż przed ciszą nocną
+    api.fail(MIETEK, TelegramApiError("sendMessage", 502, "Bad Gateway"))
+    bot.run_due_jobs()  # pierwsza próba nieudana
+    clock.utc = datetime(2026, 10, 2, 20, 14, tzinfo=timezone.utc)  # 22:14 – ponowienie wypada w ciszy nocnej
+    bot.run_due_jobs()
+    clock.utc = datetime(2026, 10, 3, 4, 1, tzinfo=timezone.utc)  # 06:01 następnego dnia
+    for _ in range(2):
+        bot.run_due_jobs()
+        clock.advance(minutes=20)
+
+    notices = [m for m in api.to(MIETEK) if m["text"].startswith("⛔ Twój abonament wygasł")]
+    assert len(notices) == 1

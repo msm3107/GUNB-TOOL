@@ -3,7 +3,7 @@
 import pytest
 
 from gunb_tool.bot import MENU_BUTTONS
-from gunb_tool.bot_store import BotStore
+from gunb_tool.bot_store import BotStore, UserFilters
 from gunb_tool.storage import LeadRepository
 from tests.bot_helpers import ADMIN, MIETEK, activate, buttons, click, lead, make_bot, message
 
@@ -203,3 +203,17 @@ def test_settings_lead_to_filters_trade_schedule_and_account(bot, api):
     assert "Twoje filtry" in api.edits[-1]["text"]
     bot.handle_update(click(ADMIN, "st:k", message_id=hub["message_id"]))
     assert "Twoje konto" in api.edits[-1]["text"]
+
+
+def test_old_setup_buttons_after_setup_do_not_restart_it(bot, api, repo):
+    allowed(bot, api)
+    bot.handle_update(click(MIETEK, "ob:none"))
+    bot.handle_update(click(MIETEK, "oa:p:1465"))
+    BotStore(repo).set_filters(MIETEK, UserFilters(powiaty=("1465",), miejsca=("Dywity",)))
+
+    bot.handle_update(click(MIETEK, "ob:dach"))  # stary przycisk z kroku 1/2 w historii czatu
+    bot.handle_update(click(MIETEK, "oa:all"))  # i z kroku 2/2
+
+    assert user(repo).setup_done
+    assert user(repo).filtry == UserFilters(powiaty=("1465",), miejsca=("Dywity",))
+    assert "⚙️ Ustawienia" in api.answers[-1]
