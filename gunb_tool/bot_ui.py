@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Sequence
 
-from .bot_store import BotUser, UserFilters, WatchItem
+from .bot_store import BotUser, LeadFlags, UserFilters, WatchItem
 from .config import BotConfig
 from .exporter import CATEGORY_ICONS, escape_html
 from .models import Investment
@@ -373,7 +373,8 @@ def mode_screen(user: BotUser, settings: BotConfig) -> tuple[str, Markup]:
 
 # --- Lead ------------------------------------------------------------------------------------------
 
-def lead_keyboard(inv: Investment, *, state: str | None, watching_investor: bool, watching_gmina: bool) -> Markup:
+def lead_keyboard(inv: Investment, *, flags: LeadFlags, watching_investor: bool, watching_gmina: bool) -> Markup:
+    """Przyciski pod inwestycją; każdy niesie docelowy stan (``s1``/``s0``), więc ponowione kliknięcie nic nie psuje."""
     rows: list[list[dict[str, str]]] = []
     links = [{"text": text, "url": url} for text, url in (("📍 Mapa", inv.google_maps_url),
                                                           ("🏛️ Geoportal", inv.geoportal_url)) if url]
@@ -381,8 +382,8 @@ def lead_keyboard(inv: Investment, *, state: str | None, watching_investor: bool
         rows.append(links)
     nr = inv.nr
     actions = [
-        ("⭐ Zapisany ✓" if state == "zapisany" else "⭐ Zapisz", f"s:{nr}"),
-        ("✅ Przejrzany ✓" if state == "przejrzany" else "✅ Przejrzane", f"r:{nr}"),
+        ("⭐ Zapisany ✓", f"s0:{nr}") if flags.saved else ("⭐ Zapisz", f"s1:{nr}"),
+        ("✅ Przejrzany ✓", f"r0:{nr}") if flags.reviewed else ("✅ Przejrzane", f"r1:{nr}"),
         ("🗑️ Ukryj", f"h:{nr}"),
     ]
     rows.append([{"text": t, "callback_data": d} for t, d in actions])

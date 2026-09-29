@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
@@ -162,15 +162,37 @@ ALTER TABLE bot_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE bot_users ADD COLUMN subscription_ends TEXT;
 """
 
-_MIGRATIONS: tuple[str, ...] = (
+def _independent_lead_flags(conn: sqlite3.Connection, from_version: int) -> None:
+    """v7: zapisanie, przejrzenie i ukrycie jako niezależne flagi (dotąd jedno pole ``stan`` – nadpisywało się).
+
+    Odtwarza tylko to, co da się odczytać ze starego pola; nadpisanych wcześniej stanów nie zgadujemy.
+    Kolumna ``stan`` zostaje (kod sprzed v7 nadal ją czyta) i jest dalej uzupełniana wartością pochodną.
+    """
+    conn.executescript("""
+        ALTER TABLE user_leads ADD COLUMN zapisany INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE user_leads ADD COLUMN przejrzany INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE user_leads ADD COLUMN ukryty INTEGER NOT NULL DEFAULT 0;
+        UPDATE user_leads SET zapisany = (stan = 'zapisany'), przejrzany = (stan = 'przejrzany'),
+                              ukryty = (stan = 'ukryty');
+    """)
+
+
+Migration = str | Callable[[sqlite3.Connection, int], None]
+
+_MIGRATIONS: tuple[Migration, ...] = (
     _SCHEMA,                                              # v1: schemat bazowy
     "ALTER TABLE investments ADD COLUMN segment TEXT;",   # v2: segment klientów
     _BOT_SCHEMA,                                          # v3: scoring, numer leada, bot Telegram
     _CONTACT_COLUMNS,                                     # v4: telefon/e-mail z surowych pól GUNB
     _TRADE_COLUMN,                                        # v5: branża użytkownika („Kiedy dzwonić”)
     _SUBSCRIPTION_COLUMNS,                                # v6: abonament (paywall) – is_active, subscription_ends
+    _independent_lead_flags,                              # v7: zapisany / przejrzany / ukryty niezależnie
 )
-"""Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``."""
+"""Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
+
+Krok może być skryptem SQL albo funkcją ``(połączenie, wersja_startowa)`` – gdy konwersja danych
+zależy od tego, z jakiej wersji baza jest podnoszona.
+"""
 
 GEO_FIELDS: tuple[str, ...] = (
     "lat", "lon", "precyzja_geo", "google_maps_url", "geoportal_url", "powiat", "gmina", "teryt_dzialki",
@@ -471,10 +493,13 @@ class LeadRepository:
     # --- Wewnętrzne -------------------------------------------------------------------
 
     def _migrate(self) -> None:
-        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        for number, script in enumerate(_MIGRATIONS, start=1):
-            if version < number:
-                self._conn.executescript(script)
+        start = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        for number, step in enumerate(_MIGRATIONS, start=1):
+            if start < number:
+                if callable(step):
+                    step(self._conn, start)
+                else:
+                    self._conn.executescript(step)
                 self._conn.execute(f"PRAGMA user_version = {number}")
 
     def _insert(self, values: dict[str, Any], now: str, *, appeared: str) -> None:

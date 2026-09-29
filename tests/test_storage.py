@@ -328,6 +328,37 @@ def test_version_3_database_gets_contact_columns(tmp_path, clock):
         assert (repo.get("NEW/1").telefon, repo.get("NEW/1").email) == ("+48600123456", "biuro@test.pl")
 
 
+def test_version_6_lead_states_become_independent_flags(tmp_path, clock):
+    import sqlite3
+    from gunb_tool import storage
+
+    path = tmp_path / "v6.sqlite"
+    legacy = sqlite3.connect(path)
+    for script in storage._MIGRATIONS[:6]:
+        legacy.executescript(script)
+    legacy.execute("PRAGMA user_version = 6")
+    legacy.execute("INSERT INTO bot_users (chat_id, status, nowe_od, utworzono, zmieniono) VALUES (1, 'aktywny', 'x', 'x', 'x')")
+    for n, stan in enumerate(("zapisany", "przejrzany", "ukryty"), start=1):
+        legacy.execute("INSERT INTO investments (id_sprawy, zrodlo, status, utworzono, zmieniono, status_zmieniony,"
+                       " ostatnio_widziany) VALUES (?, 'pozwolenia', 'decyzja', 'x', 'x', 'x', 'x')", (f"L/{n}",))
+        legacy.execute("INSERT INTO user_leads (chat_id, id_sprawy, stan, zmieniono) VALUES (1, ?, ?, 'x')",
+                       (f"L/{n}", stan))
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repo:
+        from gunb_tool.bot_store import BotStore, LeadFlags
+        store = BotStore(repo)
+        assert store.lead_flags(1, "L/1") == LeadFlags(saved=True)
+        assert store.lead_flags(1, "L/2") == LeadFlags(reviewed=True)
+        assert store.lead_flags(1, "L/3") == LeadFlags(hidden=True)
+        store.set_lead_flags(1, "L/1", reviewed=True)
+        # stary kod czyta nadal kolumnę „stan” – dostaje wartość pochodną
+        assert repo.connection.execute("SELECT stan FROM user_leads WHERE id_sprawy = 'L/1'").fetchone()[0] == "zapisany"
+    with LeadRepository(path, now=clock) as again:  # ponowny start po migracji
+        assert again.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
+
+
 def test_historical_import_dates_new_leads_by_their_decision(repo):
     """Import 18 miesięcy wstecz nie może zalać klientów „nowościami” – liczy się data decyzji."""
     repo.upsert_many([lead("OLD/1", data_aktualizacji="2025-06-01")], historical=True)

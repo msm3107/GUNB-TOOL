@@ -19,7 +19,26 @@ from .text import normalize_text
 
 MODES: tuple[str, ...] = ("natychmiast", "rano", "wieczor")
 LEAD_STATES: tuple[str, ...] = ("zapisany", "przejrzany", "ukryty")
+_STATE_FLAG = {"zapisany": "saved", "przejrzany": "reviewed", "ukryty": "hidden"}
 WATCH_KINDS: tuple[str, ...] = ("inwestor", "gmina")
+
+
+@dataclass(frozen=True)
+class LeadFlags:
+    """Oznaczenia inwestycji przez użytkownika – niezależne: zapisana, przejrzana, ukryta."""
+
+    saved: bool = False
+    reviewed: bool = False
+    hidden: bool = False
+
+    @property
+    def legacy_state(self) -> str | None:
+        """Jedno pole ``stan`` sprzed v7 (dla starszego kodu): ukryty > zapisany > przejrzany."""
+        if self.hidden:
+            return "ukryty"
+        if self.saved:
+            return "zapisany"
+        return "przejrzany" if self.reviewed else None
 
 _LEGAL_FORM_RE = re.compile(
     r"(?<![\w])(spolka z ograniczona odpowiedzialnoscia|spolka komandytowo-akcyjna|spolka komandytowa"
@@ -308,39 +327,64 @@ class BotStore:
         ).fetchall()
         return [WatchItem(**dict(row)) for row in rows]
 
-    # Stany leadów (⭐ / ✅ / 🗑️) -----------------------------------------------------------------
+    # Oznaczenia inwestycji (⭐ zapisana / ✅ przejrzana / 🗑️ ukryta) – niezależne od siebie ------------
+
+    def lead_flags(self, chat_id: int, id_sprawy: str) -> LeadFlags:
+        row = self._conn.execute(
+            "SELECT zapisany, przejrzany, ukryty FROM user_leads WHERE chat_id = ? AND id_sprawy = ?",
+            (chat_id, id_sprawy),
+        ).fetchone()
+        return LeadFlags(bool(row["zapisany"]), bool(row["przejrzany"]), bool(row["ukryty"])) if row else LeadFlags()
+
+    def set_lead_flags(self, chat_id: int, id_sprawy: str, *, saved: bool | None = None,
+                       reviewed: bool | None = None, hidden: bool | None = None) -> LeadFlags:
+        """Ustawia wskazane oznaczenia (pozostałe bez zmian); ponowienie tego samego jest bez skutków.
+
+        Kolumna ``stan`` dostaje wartość pochodną – kod sprzed rozdzielenia oznaczeń (v7) nadal ją czyta.
+        """
+        current = self.lead_flags(chat_id, id_sprawy)
+        flags = LeadFlags(current.saved if saved is None else saved,
+                          current.reviewed if reviewed is None else reviewed,
+                          current.hidden if hidden is None else hidden)
+        if flags == current:
+            return flags
+        self._conn.execute(
+            "INSERT INTO user_leads (chat_id, id_sprawy, stan, zmieniono, zapisany, przejrzany, ukryty)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET stan = excluded.stan,"
+            " zmieniono = excluded.zmieniono, zapisany = excluded.zapisany, przejrzany = excluded.przejrzany,"
+            " ukryty = excluded.ukryty",
+            (chat_id, id_sprawy, flags.legacy_state or "przejrzany", _iso(self.repo.now()),
+             int(flags.saved), int(flags.reviewed), int(flags.hidden)),
+        )
+        return flags
 
     def set_lead_state(self, chat_id: int, id_sprawy: str, stan: str) -> None:
+        """Zgodność ze starszym API: włącza jedno oznaczenie (``zapisany`` / ``przejrzany`` / ``ukryty``)."""
         if stan not in LEAD_STATES:
             raise ValueError(f"Nieznany stan leada: {stan!r}")
-        self._conn.execute(
-            "INSERT INTO user_leads (chat_id, id_sprawy, stan, zmieniono) VALUES (?, ?, ?, ?)"
-            " ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET stan = excluded.stan, zmieniono = excluded.zmieniono",
-            (chat_id, id_sprawy, stan, _iso(self.repo.now())),
-        )
+        self.set_lead_flags(chat_id, id_sprawy, **{_STATE_FLAG[stan]: True})
 
     def clear_lead_state(self, chat_id: int, id_sprawy: str) -> None:
-        """Usuwa oznaczenie leada (np. „↩️ Przywróć” po ukryciu)."""
-        self._conn.execute("DELETE FROM user_leads WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy))
+        """„↩️ Przywróć” – zdejmuje tylko ukrycie; zapisanie i przejrzenie zostają."""
+        self.set_lead_flags(chat_id, id_sprawy, hidden=False)
 
     def lead_state(self, chat_id: int, id_sprawy: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT stan FROM user_leads WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy)
-        ).fetchone()
-        return row["stan"] if row else None
+        """Zgodność ze starszym API: najważniejsze oznaczenie (ukryty > zapisany > przejrzany)."""
+        return self.lead_flags(chat_id, id_sprawy).legacy_state
 
     def saved(self, chat_id: int, *, limit: int, offset: int = 0) -> list[Investment]:
-        """Zapisane leady użytkownika – ostatnio zapisane pierwsze."""
+        """Zapisane (i nieukryte) inwestycje użytkownika – ostatnio zmienione pierwsze."""
         rows = self._conn.execute(
             "SELECT i.* FROM user_leads u JOIN investments i ON i.id_sprawy = u.id_sprawy"
-            " WHERE u.chat_id = ? AND u.stan = 'zapisany' ORDER BY u.zmieniono DESC, u.rowid DESC LIMIT ? OFFSET ?",
+            " WHERE u.chat_id = ? AND u.zapisany = 1 AND u.ukryty = 0"
+            " ORDER BY u.zmieniono DESC, u.rowid DESC LIMIT ? OFFSET ?",
             (chat_id, limit, offset),
         ).fetchall()
         return [investment_from_row(row) for row in rows]
 
     def saved_count(self, chat_id: int) -> int:
         return self._conn.execute(
-            "SELECT COUNT(*) FROM user_leads WHERE chat_id = ? AND stan = 'zapisany'", (chat_id,)
+            "SELECT COUNT(*) FROM user_leads WHERE chat_id = ? AND zapisany = 1 AND ukryty = 0", (chat_id,)
         ).fetchone()[0]
 
     # Doręczenia --------------------------------------------------------------------------------
@@ -352,7 +396,7 @@ class BotStore:
             SELECT i.* FROM investments i
             WHERE i.is_noise = 0 AND i.status_zmieniony > ?
               AND NOT EXISTS (SELECT 1 FROM user_leads u
-                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.stan = 'ukryty')
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
               AND NOT EXISTS (SELECT 1 FROM deliveries d
                               WHERE d.chat_id = ? AND d.id_sprawy = i.id_sprawy AND d.rewizja = i.status_zmieniony)
             ORDER BY i.status_zmieniony, i.data_aktualizacji, i.nr
@@ -371,7 +415,7 @@ class BotStore:
             SELECT i.* FROM investments i
             WHERE i.is_noise = 0 AND i.data_aktualizacji >= ?
               AND NOT EXISTS (SELECT 1 FROM user_leads u
-                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.stan = 'ukryty')
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
             ORDER BY i.data_aktualizacji DESC, i.nr DESC LIMIT ?
             """,
             (date_from, chat_id, limit),
@@ -389,7 +433,7 @@ class BotStore:
             SELECT i.* FROM investments i
             WHERE i.is_noise = 0 AND coalesce(i.data_decyzji, i.data_wplywu) >= ?
               AND NOT EXISTS (SELECT 1 FROM user_leads u
-                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.stan = 'ukryty')
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
               AND NOT EXISTS (SELECT 1 FROM deliveries d
                               WHERE d.chat_id = ? AND d.id_sprawy = i.id_sprawy AND d.rewizja = ?)
             ORDER BY coalesce(i.data_decyzji, i.data_wplywu), i.nr

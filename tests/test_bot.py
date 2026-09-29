@@ -918,3 +918,88 @@ def test_reminded_lead_still_counts_as_new_in_normal_report(bot, api, repo):
     bot.handle_update(click(MIETEK, "fb:dach"))
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
     assert "Dom na etapie dachu" in api.last_to(MIETEK)["text"]
+
+
+# --- P0.3: zapisanie, przejrzenie i ukrycie to niezależne informacje ---------------------------------
+
+def flags(repo, id_sprawy):
+    f = BotStore(repo).lead_flags(MIETEK, id_sprawy)
+    return f.saved, f.reviewed, f.hidden
+
+
+def test_reviewing_a_saved_investment_keeps_it_saved(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    bot.handle_update(click(MIETEK, f"s1:{nr}"))
+    bot.handle_update(click(MIETEK, f"r1:{nr}"))
+
+    assert flags(repo, "WAW/1") == (True, True, False)
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert "Budowa zespołu dwóch budynków wielorodzinnych" in api.last_to(MIETEK)["text"]
+
+
+def test_old_buttons_reviewed_after_saved_no_longer_unsave(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    bot.handle_update(click(MIETEK, f"s:{nr}"))  # przyciski z wiadomości sprzed aktualizacji
+    bot.handle_update(click(MIETEK, f"r:{nr}"))
+    assert flags(repo, "WAW/1") == (True, True, False)
+
+
+def test_saving_can_be_switched_off(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    bot.handle_update(click(MIETEK, f"s1:{nr}"))
+    bot.handle_update(click(MIETEK, f"s0:{nr}"))
+    assert flags(repo, "WAW/1") == (False, False, False)
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert "Nie masz jeszcze zapisanych" in api.last_to(MIETEK)["text"]
+
+
+def test_hiding_and_restoring_keeps_saved_and_reviewed(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    for data in (f"s1:{nr}", f"r1:{nr}", f"h:{nr}"):
+        bot.handle_update(click(MIETEK, data))
+    assert flags(repo, "WAW/1") == (True, True, True)
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert "Budowa zespołu dwóch budynków wielorodzinnych" not in api.last_to(MIETEK)["text"]  # ukryte znika
+
+    bot.handle_update(click(MIETEK, f"u:{nr}"))
+
+    assert flags(repo, "WAW/1") == (True, True, False)
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert "Budowa zespołu dwóch budynków wielorodzinnych" in api.last_to(MIETEK)["text"]
+
+
+def test_repeated_clicks_do_not_flip_the_state(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    for _ in range(3):
+        bot.handle_update(click(MIETEK, f"s1:{nr}"))
+        bot.handle_update(click(MIETEK, f"r1:{nr}"))
+        bot.handle_update(click(MIETEK, f"u:{nr}"))
+    assert flags(repo, "WAW/1") == (True, True, False)
+
+
+def test_card_buttons_show_both_marks(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    bot.handle_update(click(MIETEK, f"s1:{nr}"))
+    bot.handle_update(click(MIETEK, f"r1:{nr}"))
+    labels = dict(buttons(api.edits[-1]["markup"]))
+    assert labels["⭐ Zapisany ✓"] == f"s0:{nr}" and labels["✅ Przejrzany ✓"] == f"r0:{nr}"
+
+
+def test_hidden_investment_leaves_the_report(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    bot.handle_update(click(MIETEK, f"h:{repo.get('DOM/1').nr}"))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    assert "Budowa budynku mieszkalnego jednorodzinnego" not in api.last_to(MIETEK)["text"]

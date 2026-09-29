@@ -232,9 +232,10 @@ def test_saved_list_follows_lead_states(store, repo):
     store.set_lead_state(1, "A/1", "zapisany")
     store.set_lead_state(1, "B/1", "zapisany")
     assert [i.id_sprawy for i in store.saved(1, limit=10)] == ["B/1", "A/1"]
-    store.set_lead_state(1, "A/1", "przejrzany")
+    store.set_lead_state(1, "A/1", "przejrzany")  # przejrzenie nie zdejmuje zapisania (P0.3)
+    assert store.saved_count(1) == 2
+    store.set_lead_flags(1, "A/1", saved=False)
     assert [i.id_sprawy for i in store.saved(1, limit=10)] == ["B/1"]
-    assert store.saved_count(1) == 1
     assert store.lead_state(1, "A/1") == "przejrzany"
 
 

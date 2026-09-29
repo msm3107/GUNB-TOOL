@@ -461,34 +461,44 @@ class LeadBot:
         self._send_card(user, inv)
         return None
 
-    def _cb_state(self, user: BotUser, arg: str, message_id: int, state: str, toast: str) -> str:
+    def _cb_flag(self, user: BotUser, arg: str, message_id: int, *, toast: str, **flag: bool) -> str:
+        """Ustawia jedno oznaczenie na wartość zapisaną w przycisku (idempotentnie) i odświeża przyciski."""
         inv = self._lead(arg)
         if inv is None:
-            return "Nie znaleziono leada"
-        self.store.set_lead_state(user.chat_id, inv.id_sprawy, state)
+            return "Nie znaleziono inwestycji"
+        self.store.set_lead_flags(user.chat_id, inv.id_sprawy, **flag)
         self._refresh_keyboard(user, inv, message_id)
         return toast
 
     def _cb_save(self, user: BotUser, arg: str, message_id: int) -> str:
-        return self._cb_state(user, arg, message_id, "zapisany", "⭐ Zapisano – znajdziesz go pod „⭐ Zapisane”")
+        """``s1:``/``s:`` (starsze przyciski) – zapisz; ponowione kliknięcie niczego nie cofa."""
+        return self._cb_flag(user, arg, message_id, saved=True, toast="⭐ Zapisano – znajdziesz je pod „⭐ Zapisane”")
+
+    def _cb_unsave(self, user: BotUser, arg: str, message_id: int) -> str:
+        return self._cb_flag(user, arg, message_id, saved=False, toast="Usunięto z zapisanych")
 
     def _cb_reviewed(self, user: BotUser, arg: str, message_id: int) -> str:
-        return self._cb_state(user, arg, message_id, "przejrzany", "✅ Oznaczono jako przejrzany")
+        """``r1:``/``r:`` – przejrzane; zapisanie zostaje."""
+        return self._cb_flag(user, arg, message_id, reviewed=True, toast="✅ Oznaczono jako przejrzane")
+
+    def _cb_unreviewed(self, user: BotUser, arg: str, message_id: int) -> str:
+        return self._cb_flag(user, arg, message_id, reviewed=False, toast="Zdjęto oznaczenie „przejrzane”")
 
     def _cb_hide(self, user: BotUser, arg: str, message_id: int) -> str:
         inv = self._lead(arg)
         if inv is None:
-            return "Nie znaleziono leada"
-        self.store.set_lead_state(user.chat_id, inv.id_sprawy, "ukryty")
+            return "Nie znaleziono inwestycji"
+        self.store.set_lead_flags(user.chat_id, inv.id_sprawy, hidden=True)
         text, markup = ui.hidden_card(inv)
         self.api.edit_message_text(user.chat_id, message_id, text, markup)
         return "🗑️ Ukryto"
 
     def _cb_unhide(self, user: BotUser, arg: str, message_id: int) -> str:
+        """„↩️ Przywróć” – zdejmuje tylko ukrycie; zapisanie i przejrzenie wracają bez zmian."""
         inv = self._lead(arg)
         if inv is None:
-            return "Nie znaleziono leada"
-        self.store.clear_lead_state(user.chat_id, inv.id_sprawy)
+            return "Nie znaleziono inwestycji"
+        self.store.set_lead_flags(user.chat_id, inv.id_sprawy, hidden=False)
         text, markup = self._card(user, inv)
         self.api.edit_message_text(user.chat_id, message_id, text, markup)
         return "↩️ Przywrócono"
@@ -821,7 +831,7 @@ class LeadBot:
         key = investor_key(inv.inwestor)
         return ui.lead_keyboard(
             inv,
-            state=self.store.lead_state(user.chat_id, inv.id_sprawy),
+            flags=self.store.lead_flags(user.chat_id, inv.id_sprawy),
             watching_investor=any(i.rodzaj == "inwestor" and i.wartosc == key for i in items) if key else False,
             watching_gmina=any(i.rodzaj == "gmina" and i.wartosc == inv.gmina_teryt for i in items),
         )
@@ -891,8 +901,12 @@ class LeadBot:
 
 _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "o": LeadBot._cb_open,
-    "s": LeadBot._cb_save,
+    "s": LeadBot._cb_save,  # starsze przyciski (sprzed rozdzielenia oznaczeń) – zawsze „zapisz”
+    "s1": LeadBot._cb_save,
+    "s0": LeadBot._cb_unsave,
     "r": LeadBot._cb_reviewed,
+    "r1": LeadBot._cb_reviewed,
+    "r0": LeadBot._cb_unreviewed,
     "h": LeadBot._cb_hide,
     "u": LeadBot._cb_unhide,
     "wi": LeadBot._cb_watch_investor,
