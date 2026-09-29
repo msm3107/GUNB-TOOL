@@ -389,3 +389,14 @@ def test_blocked_user_is_marked_and_skipped(bot, api, repo):
 def test_bot_commands_are_registered_on_setup(bot, api):
     bot.setup()
     assert ("filtry", "🔎 Ustaw, jakie inwestycje chcesz dostawać") in api.commands
+
+
+def test_long_report_is_shortened_to_fit_telegram_limit(bot, api, repo):
+    activate(bot, api)
+    for n in range(40):
+        repo.upsert(lead(f"DLUGI/{n}", nazwa_zamierzenia="Budowa zespołu budynków " + "bardzo długi opis " * 10,
+                         adres_opisowy="ul. " + "Bardzo Długa Nazwa Ulicy " * 5 + f"{n}, 00-001 Warszawa"))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    report = api.last_to(MIETEK)
+    assert len(report["text"]) <= 4096
+    assert "więcej" in report["text"]

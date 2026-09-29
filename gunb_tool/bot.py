@@ -20,7 +20,7 @@ from . import bot_ui as ui
 from .bot_store import BotStore, BotUser, UserFilters, investor_key, watch_match
 from .bot_ui import BOT_COMMANDS, MENU_BUTTONS
 from .config import BotConfig
-from .exporter import MessageFormatter, escape_html
+from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
 from .models import Investment
 from .scoring import HOT
 from .storage import LeadRepository
@@ -481,15 +481,17 @@ class LeadBot:
         if not leads and not on_demand:
             self.store.mark_report(user.chat_id, now_iso)
             return False
-        shown = list(leads[: self.settings.max_leads_in_report])
-        text, markup = ui.report(
-            f"{self._clock():%d.%m}",
+        summary = dict(
             total_new=self.store.count_new_since(since),
-            leads=shown,
             matching=len(leads),
             hot=sum(1 for inv in leads if inv.priorytet == HOT),
             watched=self.store.deliveries_since(user.chat_id, since, "watchlista"),
         )
+        shown = min(len(leads), self.settings.max_leads_in_report)
+        text, markup = ui.report(f"{self._clock():%d.%m}", leads=leads[:shown], **summary)
+        while len(text) > TELEGRAM_LIMIT and shown > 1:  # długie opisy/adresy – mniej pozycji na liście
+            shown = max(1, shown - 3)
+            text, markup = ui.report(f"{self._clock():%d.%m}", leads=leads[:shown], **summary)
         self._send(user.chat_id, text, markup)
         self.store.record_delivery(user.chat_id, leads, "raport")
         self.store.mark_report(user.chat_id, now_iso)

@@ -14,7 +14,9 @@ GUNB (RWDZ – pozwolenia na budowę i zgłoszenia) dla lokalnych wykonawców bu
   podwykonawców) – każdy segment może trafiać na osobny czat,
 - zapisuje wszystko w **SQLite** (tryb WAL) z wykrywaniem nowych spraw i **zmian statusu**,
 - wysyła powiadomienia **Telegram** (HTML, przyciski inline, raporty zbiorcze zamiast spamu, limit
-  1 wiadomość/s) i **Discord**, synchronizuje **Google Sheets**.
+  1 wiadomość/s) i **Discord**, synchronizuje **Google Sheets**,
+- ma **interaktywnego bota** dla wielu osób: własne filtry, 🔥 HOT/NORMAL/LOW, watchlista inwestorów
+  i gmin, ⭐ zapisane leady, raport rano lub wieczorem – wszystko przyciskami.
 
 ```
 🏗️ NOWY LEAD · pozwolenie na budowę
@@ -91,6 +93,8 @@ main.py (CLI)
 | `gunb_tool/storage.py` | SQLite (WAL, migracje schematu): tabela `investments`, historia statusów, wykrywanie zmian, kolejka powiadomień per kanał, kolejka synchronizacji arkusza, cache geokodowania. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
+| `gunb_tool/scoring.py` | Scoring 🔥 HOT / 🟡 NORMAL / ⚪ LOW z uzasadnieniem. |
+| `gunb_tool/bot.py`, `bot_ui.py`, `bot_store.py`, `telegram_api.py` | Interaktywny bot: logika i harmonogram, teksty i przyciski, dane użytkowników (filtry, watchlista, zapisane, doręczenia), klient Bot API. |
 | `gunb_tool/config.py` | `config.yaml` + zmienne środowiskowe (`${VAR}`), walidacja. |
 | `gunb_tool/models.py`, `teryt.py`, `text.py` | Modele domenowe, słownik województw TERYT, normalizacja polskiego tekstu. |
 
@@ -176,6 +180,7 @@ python main.py --stats
 | `--sync-sheets` | Eksportuje do Google Sheets leady nowe/zmienione od ostatniej synchronizacji. |
 | `--mark-sent` | Oznacza wszystkie oczekujące leady jako wysłane – bez wysyłania. |
 | `--stats` | Podsumowanie bazy. |
+| `--bot`, `--bot-once` | Interaktywny bot Telegram (stała praca) / jeden cykl bota. |
 | `--since`, `--until`, `--days` | Zakres dat (nadpisuje `lookback_days`). |
 | `--voivodeship`, `--powiat`, `--source` | Zakres danych zamiast ustawień z pliku (można powtarzać). |
 | `--no-geocode`, `--limit N` | Pominięcie ULDK / przetworzenie najwyżej N spraw. |
@@ -237,6 +242,45 @@ i Geoportalu są **przyciskami inline** (każdy w osobnym, pełnym wierszu) – 
 
 Stan wysyłki jest śledzony **osobno dla każdego kanału** – Telegram i Discord dostają ten sam lead
 niezależnie. Lead trafia ponownie do kolejki, gdy zmieni się jego status.
+
+## Bot Telegram dla ekipy (`--bot`)
+
+Interaktywny bot dla wielu osób – każda ustawia **własne** filtry, tryb raportów i listy.
+Obsługa wyłącznie przyciskami („proste jak drut”):
+
+```
+┌──────────────────┬──────────────────┐
+│ 📊 Co nowego?     │ 🔎 Filtry         │   ← stałe menu na dole ekranu
+│ ⭐ Zapisane       │ 👀 Obserwowane    │
+│ ⏰ Kiedy wysyłać  │ 🔥 Tylko HOT      │
+└──────────────────┴──────────────────┘
+```
+
+| Funkcja | Jak działa |
+|---|---|
+| **🔎 Filtry** | Miejsce (powiaty z listy albo wpisana miejscowość/gmina), rodzaj budynku (🏠 domy, 🏢 bloki, 🏭 hale…), minimalna kubatura (przyciski „od 10 000 m³”), inwestor (dowolny / tylko firmy / nazwa). Przykład: „Warszawa + bloki + od 10 000 m³”. |
+| **🔥 HOT / 🟡 NORMAL / ⚪ LOW** | Punkty bez AI: kubatura, rodzaj budynku, kilka budynków, nowa budowa, inwestor-firma; minus za garaże, wiaty, drobne roboty i zmiany starych pozwoleń. Każdy lead pokazuje punkty i powody. **🔥 Tylko HOT** włącza tylko najlepsze. |
+| **Przyciski pod leadem** | 📍 Mapa · 🏛️ Geoportal · ⭐ Zapisz · ✅ Przejrzane · 🗑️ Ukryj (z „↩️ Przywróć”) · 👀 Obserwuj inwestora · 📌 Obserwuj gminę |
+| **⭐ Zapisane** | Własna lista ciekawych inwestycji (namiastka CRM), z numerami do otwarcia szczegółów. |
+| **👀 Watchlista** | Nowa inwestycja obserwowanego inwestora lub w obserwowanej gminie → alert **„👀 WATCHLISTA”** od razu, niezależnie od trybu. Obserwacja „Napollo 3 Sp. z o.o.” obejmuje też „Napollo 4” (spółki celowe dewelopera). |
+| **⏰ Kiedy wysyłać** | ⚡ Od razu · 🌅 Raport rano · 🌙 Raport wieczorem. W trybie „od razu” przy wielu leadach naraz przychodzi raport zamiast spamu. |
+| **📊 Raport** | „📊 Raport 29.09 – Znaleziono 36 nowych inwestycji. 7 spełnia Twoje filtry. 2 to 🔥 HOT LEADY. 1 dotyczy obserwowanego inwestora lub gminy.” + lista z numerami – klik w numer otwiera lead z przyciskami. |
+
+**Dostęp:** nowa osoba pisze do bota `/start`, a administrator (`bot.admins`, domyślnie Twój czat)
+dostaje wiadomość z przyciskami **✅ Wpuść / ⛔ Odrzuć**. `bot.access: open` wpuszcza każdego.
+Admin widzi listę osób komendą `/uzytkownicy`.
+
+**Uruchomienie:** bot musi działać **stale** (odbiera kliknięcia na bieżąco) – sam pobiera dane GUNB
+o `bot.fetch_times`, rozsyła alerty co `instant_every_minutes` i raporty o `morning_time` / `evening_time`:
+
+```bash
+python main.py --bot          # działa do Ctrl+C
+python main.py --bot-once     # jeden cykl (odbierz wiadomości + zaległe zadania) – do testów
+```
+
+Na Windows najprościej: Harmonogram zadań → „Przy logowaniu” → `python main.py --bot` (albo usługa
+przez NSSM). Komputer musi być włączony – do pracy 24/7 lepszy jest mały serwer VPS lub Raspberry Pi.
+Tryb bota zastępuje `--notify-telegram` (nie uruchamiaj obu dla tego samego czatu).
 
 ## Google Sheets
 
