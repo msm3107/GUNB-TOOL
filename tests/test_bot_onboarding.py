@@ -63,6 +63,19 @@ def test_area_can_be_set_without_location(bot, api, repo):
     assert "Gotowe" in api.edits[-1]["text"]
 
 
+def test_area_buttons_work_when_the_whole_voivodeship_is_monitored(bot, api, repo):
+    """Bez listy powiatów w konfiguracji przyciski to powiaty z danych – kliknięty też musi zadziałać."""
+    bot.powiat_codes = ()
+    allowed(bot, api)
+    bot.handle_update(click(MIETEK, "ob:none"))
+    assert ("📌 Olsztyn", "oa:p:1465") in buttons(api.edits[-1]["markup"])
+
+    bot.handle_update(click(MIETEK, "oa:p:1465"))
+
+    assert user(repo).filtry.powiaty == ("1465",)
+    assert "Gotowe" in api.edits[-1]["text"]
+
+
 def test_typed_place_outside_the_monitored_area_is_explained(bot, api, repo):
     allowed(bot, api)
     bot.handle_update(click(MIETEK, "ob:none"))

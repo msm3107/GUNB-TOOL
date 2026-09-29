@@ -641,7 +641,7 @@ class LeadBot:
             return self._ask(user, "miejsce")
         if arg == "all":
             filters = replace(user.filtry, powiaty=(), miejsca=(), promien_km=None)
-        elif arg.startswith("p:") and arg[2:] in self.powiat_codes:
+        elif arg.startswith("p:") and arg[2:] in self._place_names():  # te same powiaty, co na przyciskach
             filters = replace(user.filtry, powiaty=(arg[2:],), miejsca=(), promien_km=None)
         else:
             return None
