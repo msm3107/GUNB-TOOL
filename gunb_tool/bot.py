@@ -1465,15 +1465,17 @@ class LeadBot:
         return self.repo.get_by_nr(int(arg)) if arg.isdigit() else None
 
     def _card(self, user: BotUser, inv: Investment, header: tuple[str, str, str] | None = None) -> tuple[str, dict]:
-        message = self.formatter.telegram(inv, self.repo.last_status_change(inv.id_sprawy), header=header)
-        text = message.text
+        """Karta inwestycji; odległość i prywatna notatka mają zarezerwowane miejsce (HTML nigdy nie jest cięty)."""
+        extras = ""
         km = user.filtry.distance_km(inv)
         if km is not None:
-            text += f"\n📏 {escape_html(ui.distance_label(km))} w linii prostej od Twojej bazy"
+            extras += f"\n📏 {escape_html(ui.distance_label(km))} w linii prostej od Twojej bazy"
         note = self.store.note(user.chat_id, inv.id_sprawy)
         if note:  # prywatna – tylko w karcie tej osoby
-            text += ui.note_line(note)
-        return text[:TELEGRAM_LIMIT], self._keyboard(user, inv)
+            extras += ui.note_line(note)
+        message = self.formatter.telegram(inv, self.repo.last_status_change(inv.id_sprawy), header=header,
+                                          limit=TELEGRAM_LIMIT - len(extras))
+        return message.text + extras, self._keyboard(user, inv)
 
     def _keyboard(self, user: BotUser, inv: Investment, view: str = "main") -> dict:
         items = self.store.watchlist(user.chat_id)

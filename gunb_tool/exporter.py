@@ -152,13 +152,15 @@ class MessageFormatter:
     # Pojedyncze leady ------------------------------------------------------------------
 
     def telegram(
-        self, investment: Investment, change: StatusChange | None = None, *, header: tuple[str, str, str] | None = None
+        self, investment: Investment, change: StatusChange | None = None, *, header: tuple[str, str, str] | None = None,
+        limit: int = TELEGRAM_LIMIT,
     ) -> OutgoingMessage:
         """Wiadomość Telegram (HTML) z przyciskami „Otwórz w Google Maps” i „Geoportal”.
 
-        ``header`` = ``(ikona, tytuł, opis)`` zastępuje domyślny nagłówek (np. alert watchlisty).
+        ``header`` = ``(ikona, tytuł, opis)`` zastępuje domyślny nagłówek (np. alert watchlisty);
+        ``limit`` – mniejszy niż limit Telegrama, gdy pod kartą coś jeszcze się dopisze (np. notatka).
         """
-        text = self._fit(investment, change, _HtmlStyle, TELEGRAM_LIMIT, links_in_text=False, header=header)
+        text = self._fit(investment, change, _HtmlStyle, limit, links_in_text=False, header=header)
         return OutgoingMessage(text, buttons=_buttons(investment), lead_ids=(investment.id_sprawy,))
 
     def discord(
@@ -188,16 +190,17 @@ class MessageFormatter:
         self, inv: Investment, change: StatusChange | None, style: Any, limit: int, *,
         links_in_text: bool, header: tuple[str, str, str] | None = None,
     ) -> str:
+        """Skraca opis, a w razie potrzeby każde pole – zawsze przed escapowaniem, więc HTML/Markdown zostaje cały."""
         text = ""
-        for description_limit in (self.description_limit, 200, 80):
-            text = self._render(inv, change, style, description_limit, links_in_text, header)
+        for description_limit, field_limit in ((self.description_limit, 400), (200, 150), (80, 60), (40, 30)):
+            text = self._render(inv, change, style, description_limit, links_in_text, header, field_limit)
             if len(text) <= limit:
                 return text
-        return text[:limit]
+        return text  # nieosiągalne dla rozsądnego limitu: ~20 krótkich wierszy
 
     def _render(
         self, inv: Investment, change: StatusChange | None, style: Any, description_limit: int,
-        links_in_text: bool, header: tuple[str, str, str] | None = None,
+        links_in_text: bool, header: tuple[str, str, str] | None = None, field_limit: int = 400,
     ) -> str:
         source = "pozwolenie na budowę" if inv.zrodlo == "pozwolenia" else "zgłoszenie budowy"
         if header is not None:
@@ -216,7 +219,8 @@ class MessageFormatter:
             "",
         ]
         for line in self._details(inv):
-            value = style.code(line.value) if line.code else style.text(line.value)
+            raw = _truncate(line.value, field_limit)
+            value = style.code(raw) if line.code else style.text(raw)
             if line.suffix:
                 value += " " + style.text(line.suffix)
             lines.append(f"{line.icon} {style.text(line.label)}: {value}")

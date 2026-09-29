@@ -139,6 +139,24 @@ def test_html_emoji_and_long_descriptions_are_safe_everywhere(nasty_bot, api, re
     assert any("🏠" in text for text in texts)  # emoji przechodzą bez zmian
 
 
+def test_long_card_with_a_long_note_is_shortened_without_breaking_html(repo, api, clock):
+    bot = make_bot(repo, api, clock)
+    activate(bot, api)
+    long_fields = dict(nazwa_zamierzenia="Opis " * 300, adres_opisowy="Adres & " * 250, inwestor="Spółka & " * 120,
+                       organ="Starosta & " * 60)
+    repo.upsert(lead("L/1", **long_fields))
+    nr = repo.get("L/1").nr
+    bot.handle_update(click(MIETEK, f"nt:{nr}"))
+    bot.handle_update(message(MIETEK, "&" * 300))  # po escapowaniu 1500 znaków
+
+    card = api.last_to(MIETEK)["text"]
+    assert len(card) <= TELEGRAM_LIMIT
+    assert card.count("<b>") == card.count("</b>") and card.count("<code>") == card.count("</code>")
+    assert "📝 Twoja notatka:" in card
+    tail = card.rsplit("📝 Twoja notatka:", 1)[1]
+    assert "&" not in tail.replace("&amp;", "")  # żadnej uciętej encji
+
+
 def test_repeated_reminder_and_note_clicks_are_harmless(nasty_bot, api, repo):
     nr = repo.get("X/1").nr
     for _ in range(3):

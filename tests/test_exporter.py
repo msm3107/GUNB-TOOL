@@ -103,6 +103,16 @@ def test_long_description_is_truncated():
     assert "x" * 100 not in text
 
 
+@pytest.mark.parametrize("limit", [4096, 2500])
+def test_card_with_huge_fields_is_shortened_field_by_field_never_mid_html(limit):
+    huge = lead(adres_opisowy="ul. Długa & " * 300, inwestor="Firma <b> & Syn " * 150, organ="Starosta & " * 80)
+    text = MessageFormatter().telegram(huge, NEW, limit=limit).text
+    assert len(text) <= limit
+    assert text.count("<b>") == text.count("</b>") and text.count("<code>") == text.count("</code>")
+    assert not re.search(r"&(?!amp;|lt;|gt;|quot;)", text)  # każda encja cała
+    assert "🔖 Sprawa:" in text  # ostatnie pola też są widoczne
+
+
 def test_missing_investor_and_approximate_position_are_described():
     text = MessageFormatter().telegram(lead(inwestor=None, precyzja_geo="obreb", geoportal_url=None), NEW).text
     assert "niejawny" in text
