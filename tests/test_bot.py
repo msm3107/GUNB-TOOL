@@ -1003,3 +1003,81 @@ def test_hidden_investment_leaves_the_report(bot, api, repo):
     bot.handle_update(click(MIETEK, f"h:{repo.get('DOM/1').nr}"))
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
     assert "Budowa budynku mieszkalnego jednorodzinnego" not in api.last_to(MIETEK)["text"]
+
+
+# --- P0.4: wyniki zgodne z filtrami, pełne przeglądanie historii --------------------------------------
+
+def seed_far_and_one_match(repo):
+    """1000 nowszych inwestycji spoza obszaru i jedna starsza, pasująca (Olsztyn)."""
+    with repo.transaction():
+        for i in range(1000):
+            day = f"2026-09-{20 + i % 8:02d}"
+            repo.upsert(lead(f"DALEKO/{i}", data_aktualizacji=day, powiat_teryt="3021", gmina_teryt="3021085",
+                             gmina="Kostrzyn", miejscowosc="Wróblewo", adres_opisowy="Wróblewo"))
+        repo.upsert(lead("OLSZTYN/1", nazwa_zamierzenia="Dom w Olsztynie", data_aktualizacji="2026-09-05",
+                         powiat_teryt="2862", gmina_teryt="2862011", gmina="Olsztyn (miasto)", miejscowosc="Olsztyn",
+                         adres_opisowy="Olsztyn", powiat="powiat Olsztyn"))
+
+
+def test_match_older_than_a_thousand_others_is_found(bot, api, repo):
+    activate(bot, api)
+    seed_far_and_one_match(repo)
+    # pasująca była już kiedyś wysłana – znaleźć ją można tylko w przeglądzie historii
+    BotStore(repo).record_delivery(MIETEK, [repo.get("OLSZTYN/1")], "raport")
+    BotStore(repo).set_filters(MIETEK, UserFilters(powiaty=("2862",)))
+
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+
+    text = api.last_to(MIETEK)["text"]
+    assert "Dom w Olsztynie" in text
+    assert "(1)" in text  # liczba odpowiada temu, co da się zobaczyć
+
+
+def history_pages(api):
+    return [m for m in api.sent + api.edits if m.get("text") and "Pasujące" in m["text"]]
+
+
+def seed_matches(repo, count):
+    with repo.transaction():
+        for i in range(count):
+            repo.upsert(lead(f"P/{i:02d}", nazwa_zamierzenia=f"Inwestycja numer {i:02d}",
+                             data_aktualizacji=f"2026-09-{1 + i % 28:02d}"))
+
+
+def test_history_is_browsed_with_stable_next_and_back(bot, api, repo):
+    activate(bot, api)
+    seed_matches(repo, 25)
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))  # 25 nowych → raport zużywa pokazane
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))  # nic nowego → przegląd historii
+    first = api.last_to(MIETEK)
+    assert "(25)" in first["text"]
+    assert ("Dalej ▶️", "hp:1") in buttons(first["markup"])
+    shown = set()
+    for page in range(3):
+        bot.handle_update(click(MIETEK, f"hp:{page}", message_id=first["message_id"]))
+        page_text = api.edits[-1]["text"]
+        shown |= {line for line in page_text.splitlines() if "Inwestycja numer" in line}
+    assert len(shown) == 25  # każda pasująca dokładnie raz na którejś stronie
+    assert ("◀️ Wstecz", "hp:1") in buttons(api.edits[-1]["markup"])
+    assert "Dalej ▶️" not in [t for t, _ in buttons(api.edits[-1]["markup"])]
+
+
+def test_browsing_history_does_not_consume_new_notifications(bot, api, repo):
+    activate(bot, api)
+    seed_matches(repo, 3)
+    bot.handle_update(click(MIETEK, "hp:0"))  # przegląd historii zanim przyszedł raport
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    assert "Znaleziono 3 nowe inwestycje" in api.last_to(MIETEK)["text"]
+
+
+def test_no_results_means_really_nothing_matches(bot, api, repo):
+    activate(bot, api)
+    seed_matches(repo, 3)
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    BotStore(repo).set_filters(MIETEK, UserFilters(miejsca=("Gdańsk",)))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    text = api.last_to(MIETEK)["text"]
+    assert "brak pasujących" in text.lower()
+    assert "Gdańsk" in text  # pokazane aktywne filtry, bez kasowania
+    assert BotStore(repo).get_user(MIETEK).filtry.miejsca == ("Gdańsk",)

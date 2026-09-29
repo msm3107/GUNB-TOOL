@@ -706,21 +706,21 @@ class LeadBot:
             self.store.record_delivery(user.chat_id, skipped, "pominiety")
             self.store.mark_report(user.chat_id, now_iso)
             return False
-        recent: list[Investment] = []
-        if not leads:
-            date_from = (self._clock().date() - timedelta(days=self.settings.recent_days)).isoformat()
-            recent = _ranked([inv for inv in self.store.recent_leads(user.chat_id, date_from) if self._wanted(user, inv)],
-                             nearest)
+        if not leads:  # na żądanie, a nic nowego nie pasuje – przegląd historii (pełny, stronami)
+            head = ui.nothing_new_head(total_new=len(candidates), watched=watched)
+            text, markup = self._history_screen(user, 0, head=head)
+            self._send(user.chat_id, text, markup)
+            self.store.record_delivery(user.chat_id, skipped, "pominiety")
+            self.store.mark_report(user.chat_id, now_iso)
+            return True
 
         def build(count: int) -> tuple[str, dict | None]:
             return ui.report(
                 f"{self._clock():%d.%m}", total_new=len(candidates), leads=leads[:count], matching=len(leads),
-                hot=sum(1 for inv in leads if inv.priorytet == HOT), watched=watched,
-                recent=recent[:count], recent_total=len(recent), recent_days=self.settings.recent_days,
-                distance=distance,
+                hot=sum(1 for inv in leads if inv.priorytet == HOT), watched=watched, distance=distance,
             )
 
-        shown = min(len(leads or recent), self.settings.max_leads_in_report)
+        shown = min(len(leads), self.settings.max_leads_in_report)
         text, markup = build(shown)
         while len(text) > TELEGRAM_LIMIT and shown > 1:  # długie opisy/adresy – mniej pozycji na liście
             shown = max(1, shown - 3)
@@ -730,6 +730,31 @@ class LeadBot:
         self.store.record_delivery(user.chat_id, skipped, "pominiety")
         self.store.mark_report(user.chat_id, now_iso)
         return True
+
+    def _history_matches(self, user: BotUser) -> list[Investment]:
+        """Wszystkie inwestycje z ostatnich ``recent_days`` dni pasujące do filtrów (także już wysłane)."""
+        date_from = (self._clock().date() - timedelta(days=self.settings.recent_days)).isoformat()
+        matches = [inv for inv in self.store.recent_leads(user.chat_id, date_from) if self._wanted(user, inv)]
+        return _ranked(matches, user.filtry.distance_km if user.filtry.radius_active else None)
+
+    def _history_screen(self, user: BotUser, page: int, *, head: Sequence[str] = ()) -> tuple[str, dict | None]:
+        """Strona przeglądu historii; nic nie oznacza jako wysłane (kolejka nowych zostaje nietknięta)."""
+        matches = self._history_matches(user)
+        pages = max(1, -(-len(matches) // ui.HISTORY_PAGE_SIZE))
+        page = min(max(page, 0), pages - 1)
+        start = page * ui.HISTORY_PAGE_SIZE
+        return ui.history_page(
+            matches[start:start + ui.HISTORY_PAGE_SIZE], page=page, pages=pages, total=len(matches),
+            days=self.settings.recent_days, head=head,
+            distance=user.filtry.distance_km if user.filtry.baza else None,
+            filters=ui.filters_summary(user, self._place_names()),
+        )
+
+    def _cb_history(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """„◀️ Wstecz / Dalej ▶️” w przeglądzie historii – edytuje tę samą wiadomość."""
+        text, markup = self._history_screen(user, int(arg) if arg.isdigit() else 0)
+        self.api.edit_message_text(user.chat_id, message_id, text, markup)
+        return None
 
     def deliver_stage_reminders(self) -> int:
         """Poranne przypomnienia „⏰ Kiedy dzwonić” dla osób z wybraną branżą; zwraca liczbę wiadomości."""
@@ -909,6 +934,7 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "r0": LeadBot._cb_unreviewed,
     "h": LeadBot._cb_hide,
     "u": LeadBot._cb_unhide,
+    "hp": LeadBot._cb_history,
     "wi": LeadBot._cb_watch_investor,
     "wg": LeadBot._cb_watch_gmina,
     "f": LeadBot._cb_filters,

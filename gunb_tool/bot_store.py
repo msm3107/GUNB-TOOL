@@ -405,10 +405,12 @@ class BotStore:
         ).fetchall()
         return [investment_from_row(row) for row in rows]
 
-    def recent_leads(self, chat_id: int, date_from: str, limit: int = 1000) -> list[Investment]:
-        """Leady (bez szumu i ukrytych) z datą zdarzenia od ``date_from`` (RRRR-MM-DD), także już widziane.
+    def recent_leads(self, chat_id: int, date_from: str) -> list[Investment]:
+        """Wszystkie inwestycje (bez szumu i ukrytych) z datą zdarzenia od ``date_from``, także już widziane.
 
-        Służy do „pasujących z ostatnich dni” – np. zaraz po zmianie filtrów.
+        Bez limitu: filtry użytkownika (promień, rodzaj, kubatura, inwestor) stosuje wywołujący, a limit
+        przed filtrowaniem dawał fałszywe „brak pasujących”, gdy pasująca była starsza niż tysiąc innych.
+        Kolejność jest stała (data, numer), więc strony „Dalej/Wstecz” się nie przesuwają.
         """
         rows = self._conn.execute(
             """
@@ -416,10 +418,10 @@ class BotStore:
             WHERE i.is_noise = 0 AND i.data_aktualizacji >= ?
               AND NOT EXISTS (SELECT 1 FROM user_leads u
                               WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
-            ORDER BY i.data_aktualizacji DESC, i.nr DESC LIMIT ?
+            ORDER BY i.data_aktualizacji DESC, i.nr DESC
             """,
-            (date_from, chat_id, limit),
-        ).fetchall()
+            (date_from, chat_id),
+        )
         return [investment_from_row(row) for row in rows]
 
     def stage_candidates(self, chat_id: int, rewizja: str, decided_since: str) -> list[Investment]:
