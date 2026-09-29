@@ -247,6 +247,13 @@ def _trial_and_access(conn: sqlite3.Connection, from_version: int) -> None:
         conn.execute("UPDATE bot_users SET dostep_bez_limitu = 1 WHERE status IN ('aktywny', 'zablokowany')")
 
 
+_SETUP_STEP = """
+ALTER TABLE bot_users ADD COLUMN konfiguracja TEXT;
+UPDATE bot_users SET konfiguracja = 'gotowe';
+"""
+"""v10: krok pierwszej konfiguracji (branża → obszar → gotowe); dotychczasowi użytkownicy jej nie powtarzają."""
+
+
 Migration = str | Callable[[sqlite3.Connection, int], None]
 
 _MIGRATIONS: tuple[Migration, ...] = (
@@ -259,6 +266,7 @@ _MIGRATIONS: tuple[Migration, ...] = (
     _independent_lead_flags,                              # v7: zapisany / przejrzany / ukryty niezależnie
     _jobs_in_utc,                                         # v8: zadania w UTC, kolejka wysyłek, blokady
     _trial_and_access,                                    # v9: 7-dniowy test, dostęp dotychczasowych
+    _SETUP_STEP,                                          # v10: krok pierwszej konfiguracji
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

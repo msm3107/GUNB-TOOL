@@ -18,6 +18,8 @@ from .storage import LeadRepository, investment_from_row
 from .text import normalize_text
 
 MODES: tuple[str, ...] = ("natychmiast", "rano", "wieczor")
+SETUP_STEPS: tuple[str, ...] = ("branza", "obszar")
+SETUP_DONE = "gotowe"
 LEAD_STATES: tuple[str, ...] = ("zapisany", "przejrzany", "ukryty")
 _STATE_FLAG = {"zapisany": "saved", "przejrzany": "reviewed", "ukryty": "hidden"}
 WATCH_KINDS: tuple[str, ...] = ("inwestor", "gmina")
@@ -181,6 +183,12 @@ class BotUser:
     test_dozwolony: bool = False
     test_start: str | None = None
     test_koniec: str | None = None
+    konfiguracja: str | None = None
+
+    @property
+    def setup_done(self) -> bool:
+        """Czy pierwsza konfiguracja (branża, obszar) jest za nim."""
+        return self.konfiguracja == SETUP_DONE
 
     @property
     def display_name(self) -> str:
@@ -402,6 +410,25 @@ class BotStore:
     def set_trade(self, chat_id: int, branza: str | None) -> None:
         """Branża użytkownika do przypomnień „Kiedy dzwonić” (``None`` – bez przypomnień)."""
         self._update(chat_id, branza=branza)
+
+    def set_setup_step(self, chat_id: int, step: str) -> None:
+        """Krok pierwszej konfiguracji: ``branza``, ``obszar`` albo ``gotowe``."""
+        self._update(chat_id, konfiguracja=step)
+
+    def place_is_known(self, name: str) -> bool:
+        """Czy w danych (monitorowany obszar) jest inwestycja z tej miejscowości lub gminy."""
+        wanted = normalize_text(name)
+        if not wanted:
+            return False
+        rows = self._conn.execute(
+            "SELECT DISTINCT gmina, miejscowosc, adres_opisowy, powiat FROM investments WHERE is_noise = 0"
+        ).fetchall()
+        return any(wanted in normalize_text(" ".join(value for value in row if value)) for row in rows)
+
+    def nearest_investment_km(self, point: tuple[float, float]) -> float | None:
+        """Odległość (w linii prostej) od punktu do najbliższej inwestycji w danych; ``None`` – brak danych."""
+        rows = self._conn.execute("SELECT lat, lon FROM investments WHERE lat IS NOT NULL AND lon IS NOT NULL")
+        return min((haversine_km(point, (row["lat"], row["lon"])) for row in rows), default=None)
 
     def mark_report(self, chat_id: int, when_iso: str) -> None:
         self._update(chat_id, ostatni_raport=when_iso)
@@ -728,6 +755,7 @@ def _user(row) -> BotUser:
         test_dozwolony=bool(row["test_dozwolony"]),
         test_start=row["test_start"],
         test_koniec=row["test_koniec"],
+        konfiguracja=row["konfiguracja"],
     )
 
 

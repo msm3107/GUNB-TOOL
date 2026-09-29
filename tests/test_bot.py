@@ -6,7 +6,8 @@ import pytest
 
 from gunb_tool.bot import MENU_BUTTONS
 from gunb_tool.bot_store import BotStore, UserFilters
-from tests.bot_helpers import ADMIN, MIETEK, OBCY, activate, buttons, callback_for, click, lead, make_bot, message
+from tests.bot_helpers import (ADMIN, MIETEK, OBCY, activate, buttons, callback_for, click, configured, lead,
+                               make_bot, message)
 
 
 @pytest.fixture
@@ -25,7 +26,7 @@ BIG_WARSAW = dict(kategoria="mieszkaniowa-wielorodzinna", kubatura=26265.0, prio
 
 def test_admin_is_active_at_once_and_gets_big_menu_buttons(bot, api):
     bot.handle_update(message(ADMIN, "/start"))
-    welcome = api.last_to(ADMIN)
+    welcome = next(m for m in api.to(ADMIN) if "keyboard" in (m["markup"] or {}))
     keyboard = [button["text"] for row in welcome["markup"]["keyboard"] for button in row]
     assert keyboard == list(MENU_BUTTONS)
     assert welcome["markup"]["resize_keyboard"] is True
@@ -73,7 +74,7 @@ def test_admin_activates_subscription_with_command(bot, api):
     user = BotStore(bot.repo).get_user(MIETEK)
     assert user.is_active is True
     assert user.subscription_ends == "2026-10-29T05:00:00+00:00"  # teraz + 30 dni
-    welcome = api.last_to(MIETEK)
+    welcome = next(m for m in api.to(MIETEK) if m["text"].startswith("✅ Twój abonament"))
     assert welcome["text"].startswith("✅ Twój abonament został aktywowany na 30 dni!")
     assert welcome["markup"]["keyboard"]  # od razu dostaje menu
     assert "29.10.2026" in api.last_to(ADMIN)["text"]
@@ -91,12 +92,14 @@ def test_activation_extends_a_running_subscription(bot, api):
 def test_trial_command_works_like_the_card_button(bot, api):
     """Szczegóły 7-dniowego testu: tests/test_bot_access.py."""
     bot.handle_update(message(MIETEK, "/start"))
+    configured(bot)
 
     bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
     bot.handle_update(click(MIETEK, "ts"))
 
     assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-10-06T05:00:00+00:00"
-    assert api.last_to(MIETEK)["text"].startswith(TRIAL_TEXT)
+    started, review = api.to(MIETEK)[-2:]  # start testu, a po nim przegląd ostatnich 30 dni
+    assert started["text"].startswith(TRIAL_TEXT) and "ostatnich 30 dni" in review["text"]
 
 
 def test_trial_does_not_shorten_a_paid_subscription(bot, api):
@@ -207,6 +210,7 @@ def test_unknown_text_shows_help_with_menu(bot, api):
 
 def test_filters_are_set_with_buttons_and_one_typed_place(bot, api):
     activate(bot, api)
+    bot.repo.upsert(lead("WAW/1", **BIG_WARSAW))  # wpisana miejscowość musi być w monitorowanych danych
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
     screen = api.last_to(MIETEK)
     assert "Twoje filtry" in screen["text"]
@@ -397,7 +401,7 @@ def test_blocked_user_is_marked_and_skipped(bot, api, repo):
 
 def test_bot_commands_are_registered_on_setup(bot, api):
     bot.setup()
-    assert ("filtry", "🔎 Ustaw, jakie inwestycje chcesz dostawać") in api.commands
+    assert [command for command, _ in api.commands] == ["nowe", "zapisane", "ustawienia", "konto", "pomoc"]
 
 
 def test_long_report_is_shortened_to_fit_telegram_limit(bot, api, repo):
@@ -555,6 +559,7 @@ def test_nearby_button_asks_for_a_location_pin(bot, api):
 
 def test_pin_sets_base_with_default_radius_and_brings_menu_back(bot, api, repo):
     activate(bot, api)
+    seed_olsztyn(repo)
     BotStore(repo).set_filters(MIETEK, UserFilters(powiaty=("2862",)))
 
     bot.handle_update(pin(MIETEK, *BASE))

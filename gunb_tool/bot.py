@@ -24,7 +24,8 @@ from datetime import datetime, time as clock_time, timedelta, timezone
 from typing import Any, Callable, Sequence
 
 from . import bot_ui as ui
-from .bot_store import BotStore, BotUser, Send, UserFilters, investor_key, watch_match
+from .bot_store import (SETUP_DONE, SETUP_STEPS, BotStore, BotUser, Send, UserFilters, investor_key,
+                        watch_match)
 from .bot_ui import BOT_COMMANDS, MENU_BUTTONS
 from .clock import WARSAW, at_local_time, local
 from .config import BotConfig
@@ -77,9 +78,13 @@ ACCESS_END_JOB = "dostep_koniec"
 NO_ACCESS_TOAST = "⛔ Brak aktywnego dostępu (test albo abonament) – szczegóły: /konto"
 
 MENU_ACTIONS: dict[str, str] = {
+    "📊 Inwestycje": "_show_news",
+    "⭐ Zapisane": "_show_saved",
+    "⚙️ Ustawienia": "_show_settings",
+    "❓ Pomoc": "_show_help",
+    # przyciski poprzedniego menu (ui.LEGACY_MENU_BUTTONS) – działają dalej
     "📊 Co nowego?": "_show_news",
     "🔎 Filtry": "_show_filters",
-    "⭐ Zapisane": "_show_saved",
     "👀 Obserwowane": "_show_watchlist",
     "⏰ Kiedy wysyłać": "_show_mode",
     "🔥 Tylko HOT": "_toggle_hot",
@@ -97,12 +102,13 @@ COMMAND_ACTIONS: dict[str, str] = {
     "/tylkohot": "_toggle_hot",
     "/pomoc": "_show_help",
     "/konto": "_show_account",
+    "/ustawienia": "_show_settings",
     "/uzytkownicy": "_show_users",
 }
 ACTION_LEVELS: dict[str, int] = {
     "_show_news": FULL, "_show_saved": FULL, "_show_watchlist": FULL,
     "_show_filters": SETUP, "_show_nearby": SETUP, "_show_trade": SETUP, "_show_mode": SETUP, "_toggle_hot": SETUP,
-    "_cancel_input": NONE, "_show_help": NONE, "_show_account": NONE, "_show_users": NONE,
+    "_cancel_input": NONE, "_show_help": NONE, "_show_account": NONE, "_show_users": NONE, "_show_settings": NONE,
 }
 """Jaki poziom uprawnień jest potrzebny do ekranu z menu albo komendy (sprawdzane w jednym miejscu)."""
 ADMIN_COMMANDS: dict[str, str] = {
@@ -430,13 +436,14 @@ class LeadBot:
             self._send(chat_id, ui.rejected_text())
             return
         level = self._level(user)
-        if level == FULL:
-            self._send(chat_id, ui.welcome_text(user.imie), ui.menu_keyboard())
-        elif level == SETUP:
-            self._send(chat_id, ui.welcome_text(user.imie), ui.menu_keyboard())
-            self._send(chat_id, *ui.trial_offer())
-        else:
+        if level == NONE:
             self._send(chat_id, self._gate_text(user))
+        else:
+            self._send(chat_id, ui.welcome_text(user.imie), ui.menu_keyboard())
+            if not user.setup_done:  # pierwsze kroki – także po przerwie wracamy do tego samego pytania
+                self._show_setup_step(user)
+            elif level == SETUP:
+                self._send(chat_id, *ui.trial_offer())
         if not existed and level < FULL:
             text, markup = ui.new_user_card(user)
             for admin in self.settings.admins:
@@ -546,6 +553,8 @@ class LeadBot:
             self.store.set_status(user.chat_id, "aktywny")
         ends_on = self._local_date(ends_iso, with_time=True)
         delivered = self._notify(user.chat_id, ui.activated_text(ends_on, user.imie, days=days), ui.menu_keyboard())
+        if delivered and not user.setup_done:
+            self._safely(lambda: self._show_setup_step(user))
         return ui.admin_granted_text(user, ends_on, days=days, delivered=delivered)
 
     def _allow_trial(self, user: BotUser) -> str:
@@ -559,11 +568,13 @@ class LeadBot:
         self.store.allow_trial(user.chat_id)
         if user.status != "aktywny":
             self.store.set_status(user.chat_id, "aktywny")
-        delivered = self._notify(user.chat_id, *ui.trial_offer())
+        delivered = self._notify(user.chat_id, *ui.trial_offer(setup_done=user.setup_done))
+        if delivered and not user.setup_done:  # najpierw branża i obszar, start testu na końcu
+            self._safely(lambda: self._show_setup_step(user))
         return ui.admin_trial_allowed_text(user, delivered=delivered)
 
     def _cb_trial_start(self, user: BotUser, arg: str, message_id: int) -> str | None:
-        """„▶️ Zacznij 7-dniowy test” – świadomy start; kolejne kliknięcia (także stare przyciski) nic nie zmieniają."""
+        """„▶️ Zacznij 7-dniowy test” – świadomy start po ustawieniach; kolejne kliknięcia nic nie zmieniają."""
         if user.trial_used:
             ends_on = self._local_date(user.test_koniec, with_time=True)
             if user.on_trial and self._has_access(user):
@@ -573,12 +584,86 @@ class LeadBot:
             return "✅ Masz już pełny dostęp"
         if not user.test_dozwolony:
             return "⛔ Test nie jest jeszcze dostępny – czekamy na administratora"
+        if not user.setup_done:
+            self._show_setup_step(user)
+            return "⚙️ Najpierw dwa krótkie pytania – potem start testu"
         now = self._now()
         if not self.store.start_trial(user.chat_id, now, now + TRIAL_LENGTH):
             return None  # drugie kliknięcie w tej samej chwili – test już ruszył
         ends_on = self._local_date(_utc_iso(now + TRIAL_LENGTH), with_time=True)
         self._send(user.chat_id, ui.trial_started_text(ends_on), ui.menu_keyboard())
+        self._send(user.chat_id, *self._history_screen(self.store.get_user(user.chat_id) or user, 0,
+                                                       head=ui.first_review_head()))
         return "🎁 Test wystartował"
+
+    # === Pierwsze kroki: branża → obszar → gotowe ========================================================
+
+    def _show_setup_step(self, user: BotUser, message_id: int | None = None) -> None:
+        """Bieżący krok pierwszej konfiguracji (nowa wiadomość albo podmiana ``message_id``)."""
+        step = user.konfiguracja if user.konfiguracja in SETUP_STEPS else "branza"
+        if user.konfiguracja != step:
+            self.store.set_setup_step(user.chat_id, step)
+        screen = ui.setup_trade_step() if step == "branza" else \
+            ui.setup_area_step(self.store.place_options(self.powiat_codes), self._region_label())
+        if message_id is None:
+            self._send(user.chat_id, *screen)
+        else:
+            self.api.edit_message_text(user.chat_id, message_id, *screen)
+
+    def _cb_setup_trade(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """Krok 1/2 – branża („ob:<branża>”, „ob:none”); „ob:resume” wraca do przerwanego kroku."""
+        if arg == "resume":
+            self._show_setup_step(user)
+            return None
+        trade = get_trade(arg)
+        if trade is None and arg != "none":
+            return None
+        self.store.set_trade(user.chat_id, trade.key if trade else None)
+        self.store.set_setup_step(user.chat_id, "obszar")
+        self._show_setup_step(self.store.get_user(user.chat_id) or user, message_id)
+        return f"🧰 {trade.label}" if trade else "🏗️ Wszystkie etapy"
+
+    def _cb_setup_area(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """Krok 2/2 – obszar: powiat („oa:p:<kod>”), cały obszar, pinezka bazy albo wpisana miejscowość."""
+        if arg == "loc":
+            self._send(user.chat_id, *ui.location_request())
+            return "👇 Wyślij pinezkę przyciskiem na dole ekranu"
+        if arg == "txt":
+            return self._ask(user, "miejsce")
+        if arg == "all":
+            filters = replace(user.filtry, powiaty=(), miejsca=(), promien_km=None)
+        elif arg.startswith("p:") and arg[2:] in self.powiat_codes:
+            filters = replace(user.filtry, powiaty=(arg[2:],), miejsca=(), promien_km=None)
+        else:
+            return None
+        self.store.set_filters(user.chat_id, filters)
+        self._finish_setup(user, message_id)
+        return "📍 Zapisano obszar"
+
+    def _finish_setup(self, user: BotUser, message_id: int | None = None) -> None:
+        """Koniec pierwszej konfiguracji: podsumowanie; z dostępem od razu przegląd ostatnich 30 dni."""
+        self.store.set_setup_step(user.chat_id, SETUP_DONE)
+        user = self.store.get_user(user.chat_id) or user
+        level = self._level(user)
+        text, markup = ui.setup_summary(user, ui.place_label(user.filtry, self._place_names()), self.settings,
+                                        can_start_trial=level == SETUP)
+        if message_id is None:
+            self._send(user.chat_id, text, markup or ui.menu_keyboard())
+        else:
+            self.api.edit_message_text(user.chat_id, message_id, text, markup)
+        if level == FULL:
+            self._send(user.chat_id, *self._history_screen(user, 0, head=ui.first_review_head()))
+
+    def _region_label(self) -> str:
+        """Monitorowany obszar słowami (np. „Olsztyn, powiat olsztyński”)."""
+        names = [label for _, label in self.store.place_options(self.powiat_codes)]
+        return ", ".join(names) if names else "cały monitorowany obszar"
+
+    def _safely(self, action: Callable[[], None]) -> None:
+        try:
+            action()
+        except TelegramApiError as exc:
+            log.warning("Nie udało się wysłać wiadomości: %s", exc)
 
     def notify_access_changes(self) -> None:
         """Jedno przypomnienie przed końcem testu/abonamentu i jedna informacja po nim (przez kolejkę wysyłek).
@@ -740,7 +825,13 @@ class LeadBot:
             self.store.set_awaiting(user.chat_id, None)
         self.store.set_filters(user.chat_id, filters)
         self._send(user.chat_id, ui.base_saved_text(filters), ui.menu_keyboard())
-        self._send(user.chat_id, *ui.nearby_screen(filters))
+        nearest = self.store.nearest_investment_km(base)
+        if nearest is None or nearest > (filters.promien_km or 0):  # baza spoza monitorowanego obszaru
+            self._send(user.chat_id, ui.base_far_text(nearest, self._region_label()))
+        if user.konfiguracja == "obszar":
+            self._finish_setup(user)
+        else:
+            self._send(user.chat_id, *ui.nearby_screen(filters))
 
     def _show_help(self, user: BotUser) -> None:
         self._send(user.chat_id, ui.help_text(self.settings, admin=user.chat_id in self.settings.admins),
@@ -748,10 +839,40 @@ class LeadBot:
 
     def _show_account(self, user: BotUser) -> None:
         """„👤 Konto” – jaki dostęp, do kiedy i jak przedłużyć; działa także po końcu dostępu."""
+        self._send(user.chat_id, *self._account_screen(user))
+
+    def _account_screen(self, user: BotUser) -> tuple[str, dict | None]:
         state, ends_on = self._access_state(user)
-        markup = ui.inline([[ui.START_TRIAL_BUTTON]]) if state == "test_dostepny" else None
-        self._send(user.chat_id, ui.account_text(state=state, ends_on=ends_on, contact_html=self._contact_html()),
-                   markup)
+        markup = None
+        if state == "test_dostepny":
+            markup = ui.inline([[ui.START_TRIAL_BUTTON if user.setup_done else ui.SETUP_RESUME_BUTTON]])
+        return ui.account_text(state=state, ends_on=ends_on, contact_html=self._contact_html()), markup
+
+    def _show_settings(self, user: BotUser) -> None:
+        self._send(user.chat_id, *self._settings_screen(user))
+
+    def _settings_screen(self, user: BotUser) -> tuple[str, dict]:
+        return ui.settings_screen(user, place=ui.place_label(user.filtry, self._place_names()), settings=self.settings,
+                                  watch_count=len(self.store.watchlist(user.chat_id)),
+                                  account=self._subscription_label(user))
+
+    def _cb_settings(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """Przyciski „⚙️ Ustawienia”: każdy ekran ma swój poziom uprawnień (konto – zawsze)."""
+        screens: dict[str, tuple[int, Callable[[], tuple[str, dict | None]]]] = {
+            "f": (SETUP, lambda: ui.filters_screen(user, self._place_names(), self.settings)),
+            "b": (SETUP, lambda: ui.trade_picker(user.branza)),
+            "m": (SETUP, lambda: ui.mode_screen(user, self.settings)),
+            "w": (FULL, lambda: ui.watch_screen(self.store.watchlist(user.chat_id))),
+            "k": (NONE, lambda: self._account_screen(user)),
+            "0": (NONE, lambda: self._settings_screen(user)),
+        }
+        if arg not in screens:
+            return None
+        needed, screen = screens[arg]
+        if self._level(user) < needed:
+            return "▶️ Najpierw zacznij 7-dniowy test – /konto" if user.trial_available else NO_ACCESS_TOAST
+        self.api.edit_message_text(user.chat_id, message_id, *screen())
+        return None
 
     def _show_users(self, user: BotUser) -> None:
         if user.chat_id not in self.settings.admins:
@@ -966,6 +1087,14 @@ class LeadBot:
         filters = user.filtry
         value = " ".join(text.split())[:60]
         if what == "miejsce":
+            if not self.store.place_is_known(value):  # spoza monitorowanego obszaru albo literówka
+                self.store.set_awaiting(user.chat_id, "miejsce")
+                self._send(user.chat_id, ui.place_unknown_text(value, self._region_label()))
+                return
+            if user.konfiguracja == "obszar":  # pierwsze kroki: dokładnie ta miejscowość
+                self.store.set_filters(user.chat_id, replace(filters, miejsca=(value,), powiaty=(), promien_km=None))
+                self._finish_setup(user)
+                return
             filters = replace(filters, miejsca=tuple(dict.fromkeys((*filters.miejsca, value))), promien_km=None)
             note = f"✅ Dodano miejsce: {value}\n\n"
         elif what == "inwestor":
@@ -1312,10 +1441,14 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "sv": LeadBot._cb_saved_page,
     "wd": LeadBot._cb_watch_delete,
     "ts": LeadBot._cb_trial_start,
+    "ob": LeadBot._cb_setup_trade,
+    "oa": LeadBot._cb_setup_area,
+    "st": LeadBot._cb_settings,
 }
 _CALLBACK_LEVELS: dict[str, int] = {
-    **{prefix: SETUP for prefix in ("f", "fp", "fpr", "fr", "fb", "ft", "fv", "fi", "m")},
+    **{prefix: SETUP for prefix in ("f", "fp", "fpr", "fr", "fb", "ft", "fv", "fi", "m", "ob", "oa")},
     "ts": NONE,
+    "st": NONE,  # ekran ustawień sam sprawdza poziom dla każdego przycisku
 }
 """Poziom uprawnień przycisków (domyślnie pełny dostęp – inwestycje, zapisane, obserwowane)."""
 

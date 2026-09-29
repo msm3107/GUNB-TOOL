@@ -21,25 +21,24 @@ Markup = dict[str, Any]
 Distance = Callable[[Investment], float | None]
 
 MENU_BUTTONS: tuple[str, ...] = (
-    "📊 Co nowego?", "🔎 Filtry",
-    "⭐ Zapisane", "👀 Obserwowane",
-    "⏰ Kiedy wysyłać", "🔥 Tylko HOT",
-    "📍 Blisko mnie",
+    "📊 Inwestycje", "⭐ Zapisane",
+    "⚙️ Ustawienia", "❓ Pomoc",
 )
+LEGACY_MENU_BUTTONS: tuple[str, ...] = (
+    "📊 Co nowego?", "🔎 Filtry", "👀 Obserwowane", "⏰ Kiedy wysyłać", "🔥 Tylko HOT", "📍 Blisko mnie",
+)
+"""Przyciski poprzedniego menu – kto ma je jeszcze na ekranie, może z nich dalej korzystać."""
 CANCEL_BUTTON = "↩️ Anuluj"
 SEND_LOCATION_BUTTON = "📍 Wyślij moją lokalizację"
 
 BOT_COMMANDS: tuple[tuple[str, str], ...] = (
-    ("nowe", "📊 Pokaż nowe leady"),
-    ("filtry", "🔎 Ustaw, jakie inwestycje chcesz dostawać"),
-    ("blisko", "📍 Budowy blisko Twojej bazy"),
-    ("branza", "🧰 Twoja branża – przypomnę, kiedy dzwonić"),
-    ("zapisane", "⭐ Twoje zapisane leady"),
-    ("obserwowane", "👀 Obserwowani inwestorzy i gminy"),
-    ("tryb", "⏰ Kiedy wysyłać leady"),
-    ("tylkohot", "🔥 Włącz/wyłącz tylko HOT"),
+    ("nowe", "📊 Inwestycje – nowe i z ostatnich 30 dni"),
+    ("zapisane", "⭐ Zapisane inwestycje"),
+    ("ustawienia", "⚙️ Obszar, rodzaj, branża, godziny raportów"),
+    ("konto", "👤 Twój dostęp – do kiedy"),
     ("pomoc", "❓ Jak to działa"),
 )
+"""Menu pod „/”; starsze komendy (/filtry, /blisko, /branza, /obserwowane, /tryb, /tylkohot) nadal działają."""
 
 CATEGORY_CHOICES: tuple[tuple[str, str], ...] = (
     ("mieszkaniowa-jednorodzinna", "🏠 Domy jednorodzinne"),
@@ -82,14 +81,13 @@ def number_buttons(numbers: Sequence[tuple[int, int]], per_row: int = 5) -> list
 def welcome_text(name: str | None) -> str:
     who = f", {escape_html(name)}" if name else ""
     return (
-        f"👷 Cześć{who}! Będę Ci wysyłał <b>nowe pozwolenia na budowę</b> z Twojej okolicy.\n\n"
-        "Wszystko ustawisz przyciskami na dole ekranu 👇\n"
-        "• <b>📍 Blisko mnie</b> – wyślij pinezkę bazy, a dostaniesz budowy w promieniu, np. 15 km\n"
-        "• <b>🧰 Branża</b> (w 🔎 Filtry) – przypomnę o budowie, gdy dojdzie do Twojego etapu, np. dachu\n"
-        "• <b>🔎 Filtry</b> – gdzie i jakie inwestycje chcesz dostawać\n"
-        "• <b>⏰ Kiedy wysyłać</b> – od razu, raport rano albo wieczorem\n"
-        "• <b>🔥 Tylko HOT</b> – tylko najlepsze, duże roboty\n\n"
-        "Pod każdym leadem masz przyciski: ⭐ Zapisz, ✅ Przejrzane, 🗑️ Ukryj, 👀 Obserwuj."
+        f"👷 Cześć{who}! Tu <b>Żółta Tablica</b> – pokazuję <b>nowe pozwolenia na budowę</b> z Twojej okolicy "
+        "(dane z rejestru GUNB).\n\n"
+        "Na dole ekranu masz cztery przyciski 👇\n"
+        "📊 <b>Inwestycje</b> – nowe budowy pasujące do Twoich ustawień\n"
+        "⭐ <b>Zapisane</b> – Twoja lista ciekawych inwestycji\n"
+        "⚙️ <b>Ustawienia</b> – obszar, rodzaj budynków, branża, godziny raportów, konto\n"
+        "❓ <b>Pomoc</b> – jak to działa"
     )
 
 
@@ -160,12 +158,92 @@ def activated_text(ends_on: str, name: str | None, *, days: int | None = None) -
     return f"{head}\nWażny do <b>{ends_on}</b>.\n\n" + welcome_text(name)
 
 
-def trial_offer() -> tuple[str, Markup]:
-    """Admin pozwolił na test – osoba sama decyduje, kiedy go zacząć."""
-    return ("🎁 Możesz wypróbować Żółtą Tablicę przez <b>7 dni za darmo</b>.\n"
-            "Test ruszy dopiero wtedy, gdy klikniesz <b>▶️ Zacznij</b> – najpierw ustaw branżę i obszar "
-            "(🔎 Filtry), żeby od pierwszego dnia dostawać właściwe inwestycje.",
-            inline([[START_TRIAL_BUTTON]]))
+def trial_offer(*, setup_done: bool = True) -> tuple[str, Markup | None]:
+    """Admin pozwolił na test – osoba sama decyduje, kiedy go zacząć (po ustawieniu branży i obszaru)."""
+    text = ("🎁 Możesz wypróbować Żółtą Tablicę przez <b>7 dni za darmo</b>.\n"
+            "Test ruszy dopiero wtedy, gdy klikniesz <b>▶️ Zacznij</b>")
+    if not setup_done:
+        return text + " – najpierw dwa krótkie pytania 👇", None
+    return text + ".", inline([[START_TRIAL_BUTTON]])
+
+
+# --- Pierwsze kroki (branża → obszar → gotowe) ----------------------------------------------------------
+
+SETUP_RESUME_BUTTON = ("⚙️ Dokończ ustawienia", "ob:resume")
+
+
+def setup_trade_step() -> tuple[str, Markup]:
+    rows = [[(trade.label, f"ob:{trade.key}")] for trade in TRADES]
+    rows.append([("🏗️ Inna branża / wszystkie etapy", "ob:none")])
+    return ("<b>1/2</b> 🧰 <b>Czym się zajmujesz?</b>\n"
+            "Podpowiem, kiedy warto zadzwonić – gdy budowa będzie mniej więcej na Twoim etapie.", inline(rows))
+
+
+def setup_area_step(options: Sequence[tuple[str, str]], region: str) -> tuple[str, Markup]:
+    rows = [[(f"📌 {label}", f"oa:p:{code}")] for code, label in options]
+    rows += [[("📍 W promieniu od mojej bazy", "oa:loc")], [("✏️ Wpisz miejscowość", "oa:txt")],
+             [("🗺️ Cały monitorowany obszar", "oa:all")]]
+    return ("<b>2/2</b> 📍 <b>Gdzie szukać inwestycji?</b>\n"
+            f"Monitoruję: {escape_html(region)}.\n"
+            "Wybierz powiat albo wpisz miejscowość – bieżącej lokalizacji nie trzeba udostępniać.", inline(rows))
+
+
+def setup_summary(user: BotUser, place: str, settings: BotConfig, *, can_start_trial: bool) -> tuple[str, Markup | None]:
+    trade = get_trade(user.branza)
+    lines = ["✅ <b>Gotowe!</b>",
+             f"🧰 Branża: {escape_html(trade.label) if trade else 'bez przypomnień o etapach budowy'}",
+             f"📍 Obszar: {escape_html(place)}",
+             f"⏰ Raport: {_mode_sentence(user.tryb, settings)} (zmienisz w ⚙️ Ustawienia)"]
+    if can_start_trial:
+        lines += ["", "▶️ Kliknij, aby zacząć 7-dniowy test – od tej chwili liczy się 7 dni."]
+        return "\n".join(lines), inline([[START_TRIAL_BUTTON]])
+    return "\n".join(lines), None
+
+
+def first_review_head() -> list[str]:
+    return ["🔎 <b>Na początek – przegląd ostatnich 30 dni.</b>",
+            "To historia z rejestru, nie nowości: nowe inwestycje przyjdą w raporcie."]
+
+
+def place_unknown_text(name: str, region: str) -> str:
+    return (f"🤔 W monitorowanym obszarze ({escape_html(region)}) nie ma inwestycji z miejscowości "
+            f"„{escape_html(name)}”. Bot pokazuje tylko ten obszar – wpisz inną nazwę albo wybierz powiat "
+            "(⚙️ Ustawienia → 🔎 Obszar i rodzaj).")
+
+
+def base_far_text(km: float | None, region: str) -> str:
+    where = f"najbliższa znana inwestycja jest ok. {km:.0f} km stąd (w linii prostej)" if km is not None \
+        else "nie mam jeszcze inwestycji z lokalizacją"
+    return (f"⚠️ Ta baza jest poza monitorowanym obszarem ({escape_html(region)}) – {where}. "
+            "W wybranym promieniu nic nie znajdę; wybierz powiat albo zwiększ promień.")
+
+
+def place_label(filters: UserFilters, place_names: dict[str, str]) -> str:
+    """Obszar słowami: promień od bazy, wybrane powiaty i miejscowości albo cały monitorowany obszar."""
+    if filters.radius_active:
+        return f"do {filters.promien_km} km od Twojej bazy"
+    places = [place_names.get(code, code) for code in filters.powiaty] + list(filters.miejsca)
+    return ", ".join(places) if places else "cały monitorowany obszar"
+
+
+# --- Ustawienia -------------------------------------------------------------------------------------
+
+def settings_screen(user: BotUser, *, place: str, settings: BotConfig, watch_count: int,
+                    account: str) -> tuple[str, Markup]:
+    categories = [label for key, label in CATEGORY_CHOICES if key in user.filtry.kategorie]
+    lines = ["⚙️ <b>Ustawienia</b>",
+             f"📍 Obszar: {escape_html(place)}",
+             f"🏗️ Rodzaj: {escape_html(', '.join(categories)) if categories else 'wszystkie'}"
+             f" · 📦 {_volume_label(user.filtry.min_kubatura)}",
+             f"🧰 Branża: {_trade_label(get_trade(user.branza))}",
+             f"⏰ Raporty: {_mode_label(user.tryb, settings)}",
+             f"👀 Obserwowane: {watch_count}",
+             f"👤 Dostęp: {account}",
+             "", "Kliknij, co chcesz zmienić 👇"]
+    rows = [[("🔎 Obszar i rodzaj", "st:f"), ("🧰 Branża", "st:b")],
+            [("👀 Obserwowane", "st:w"), ("⏰ Harmonogram", "st:m")],
+            [("👤 Konto", "st:k")]]
+    return "\n".join(lines), inline(rows)
 
 
 def trial_started_text(ends_on: str) -> str:
@@ -352,7 +430,7 @@ def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConf
     if f.radius_active:
         place_label = f"do {f.promien_km} km od Twojej bazy"
     else:
-        place_label = escape_html(", ".join(places)) if places else "wszędzie"
+        place_label = escape_html(", ".join(places)) if places else "cały monitorowany obszar"
     lines = [
         prefix + "🔎 <b>Twoje filtry</b>" if prefix else "🔎 <b>Twoje filtry</b>",
         f"📍 Miejsce: {place_label}",
@@ -432,7 +510,7 @@ def place_picker(filters: UserFilters, options: Sequence[tuple[str, str]]) -> tu
     rows.append([("✏️ Wpisz miejscowość", "fp:txt")])
     rows.append([("✔️ Gotowe", "f:show")])
     text = ("📍 <b>Gdzie szukać?</b>\nPromień od Twojej bazy albo powiaty / wpisana miejscowość lub gmina.\n"
-            "Nic nie zaznaczone = wszędzie.")
+            "Nic nie zaznaczone = cały monitorowany obszar.")
     return text, inline(rows)
 
 
@@ -734,6 +812,14 @@ def _mode_label(mode: str, settings: BotConfig) -> str:
     if mode == "wieczor":
         return f"🌙 Raport wieczorem ({settings.evening_time})"
     return MODE_LABELS.get(mode, mode)
+
+
+def _mode_sentence(mode: str, settings: BotConfig) -> str:
+    if mode == "rano":
+        return f"codziennie rano o {settings.morning_time}"
+    if mode == "wieczor":
+        return f"codziennie wieczorem o {settings.evening_time}"
+    return "od razu, gdy pojawi się coś nowego"
 
 
 def _volume_label(value: float | None) -> str:

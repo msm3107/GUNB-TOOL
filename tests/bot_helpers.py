@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from gunb_tool.bot import LeadBot
+from gunb_tool.bot_store import BotStore
 from gunb_tool.config import BotConfig
 from gunb_tool.exporter import MessageFormatter
 from gunb_tool.models import Investment
@@ -117,9 +118,15 @@ def lead(id_sprawy, **overrides) -> Investment:
     return Investment(**base)
 
 
+def configured(bot, chat_id=MIETEK):
+    """Osoba ma za sobą pierwsze kroki (branża, obszar) – testy innych funkcji ich nie przechodzą."""
+    BotStore(bot.repo).set_setup_step(chat_id, "gotowe")
+
+
 def activate(bot, api, chat_id=MIETEK):
-    """Rejestracja i przycisk admina „✅ 30 dni” – osoba z dostępem, liczniki atrapy wyczyszczone."""
+    """Rejestracja, pierwsze kroki za sobą i przycisk admina „✅ 30 dni”; liczniki atrapy wyczyszczone."""
     bot.handle_update(message(chat_id, "/start"))
+    configured(bot, chat_id)
     if chat_id != ADMIN:
         bot.handle_update(click(ADMIN, f"adm:ok:{chat_id}"))
     api.sent.clear()

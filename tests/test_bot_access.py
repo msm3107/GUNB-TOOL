@@ -6,7 +6,7 @@ import pytest
 
 from gunb_tool.bot_store import BotStore
 from gunb_tool.storage import LeadRepository
-from tests.bot_helpers import ADMIN, MIETEK, OBCY, activate, buttons, click, lead, make_bot, message
+from tests.bot_helpers import ADMIN, MIETEK, OBCY, activate, buttons, click, configured, lead, make_bot, message
 
 START = "ts"  # przycisk „▶️ Zacznij 7-dniowy test”
 TRIAL_END = "06.10.2026, 07:00"  # start 29.09 07:00 czasu polskiego + 7 × 24 h
@@ -18,8 +18,12 @@ def bot(repo, api, clock):
 
 
 def offer_trial(bot, api, chat_id=MIETEK):
-    """Nowa osoba pisze /start, admin pozwala na test przyciskiem z karty."""
+    """Nowa osoba pisze /start i ma za sobą pierwsze kroki; admin pozwala na test przyciskiem z karty.
+
+    Same pierwsze kroki (branża, obszar) – tests/test_bot_onboarding.py.
+    """
     bot.handle_update(message(chat_id, "/start"))
+    configured(bot, chat_id)
     bot.handle_update(click(ADMIN, f"adm:trial:{chat_id}"))
 
 
@@ -51,7 +55,7 @@ def test_admin_allows_the_trial_but_it_starts_only_when_the_user_clicks_start(bo
     started = user(repo)
     assert started.test_start == "2026-10-01T05:00:00+00:00"
     assert started.subscription_ends == "2026-10-08T05:00:00+00:00"  # dokładnie 7 × 24 h
-    assert "08.10.2026, 07:00" in api.last_to(MIETEK)["text"]  # dokładna data i godzina końca
+    assert "08.10.2026, 07:00" in api.to(MIETEK)[-2]["text"]  # dokładna data i godzina końca (potem przegląd)
 
 
 def test_trial_waiting_for_start_allows_setup_but_not_data(bot, api, repo):
@@ -206,7 +210,7 @@ def test_admin_grants_access_until_a_date(bot, api, repo):
     bot.handle_update(message(MIETEK, "/start"))
     bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 31.12.2026"))
     assert user(repo).subscription_ends == "2026-12-31T22:59:00+00:00"  # 23:59 czasu polskiego (zima)
-    assert "31.12.2026" in api.last_to(MIETEK)["text"]
+    assert any("31.12.2026, 23:59" in m["text"] for m in api.to(MIETEK))
 
 
 def test_admin_extends_from_the_current_end(bot, api, repo):
