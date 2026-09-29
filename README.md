@@ -122,8 +122,8 @@ Całość ustawień jest w [`config.yaml`](config.yaml) (plik jest opisany komen
 ```yaml
 gunb:
   sources: [pozwolenia, zgloszenia]
-  voivodeships: ["12"]                 # kody TERYT lub nazwy województw
-  powiats: ["1206", "1219", "1261"]    # 4-cyfrowe kody TERYT; pusta lista = całe województwo
+  voivodeships: ["28"]                 # kody TERYT lub nazwy województw (28 – warmińsko-mazurskie)
+  powiats: ["2862", "2814"]            # m. Olsztyn + powiat olsztyński; pusta lista = całe województwo
   date_field: decyzja                  # decyzja | wplyw
   lookback_days: 60
   page_size: 200
@@ -279,8 +279,43 @@ python main.py --bot-once     # jeden cykl (odbierz wiadomości + zaległe zadan
 ```
 
 Na Windows najprościej: Harmonogram zadań → „Przy logowaniu” → `python main.py --bot` (albo usługa
-przez NSSM). Komputer musi być włączony – do pracy 24/7 lepszy jest mały serwer VPS lub Raspberry Pi.
+przez NSSM). Komputer musi być jednak włączony – do pracy 24/7 służy [mały serwer](#serwer-247-vps-lub-raspberry-pi).
 Tryb bota zastępuje `--notify-telegram` (nie uruchamiaj obu dla tego samego czatu).
+
+## Serwer 24/7 (VPS lub Raspberry Pi)
+
+Bot tylko **wychodzi** do internetu (Telegram long polling, GUNB, ULDK) – nie potrzebuje publicznego
+IP, domeny ani otwartych portów. Wystarczy najmniejszy VPS z Debianem/Ubuntu (np. Hetzner, OVHcloud,
+Mikrus) albo Raspberry Pi w domu: 1 rdzeń, 512 MB RAM, 2 GB dysku.
+
+Instalacja jednym poleceniem (Debian 12+, Ubuntu 22.04+, Raspberry Pi OS Bookworm+):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/msm3107/GUNB-TOOL/main/deploy/install.sh | sudo bash
+```
+
+[`deploy/install.sh`](deploy/install.sh):
+
+1. instaluje Pythona i gita, zakłada konto systemowe `gunb` i pobiera kod do `/opt/gunb-tool`,
+2. pyta o token bota (od razu sprawdza go w Telegramie) i Twój ID czatu → `/opt/gunb-tool/.env`
+   (uprawnienia 600, plik nigdy nie trafia do repozytorium),
+3. uruchamia test połączeń (`sanity_check.py`) i pierwsze pobieranie danych GUNB,
+4. instaluje usługę systemd [`gunb-bot`](deploy/gunb-bot.service): start razem z serwerem, restart po
+   awarii, godziny z konfiguracji liczone w czasie polskim (`TZ=Europe/Warsaw`, choć VPS-y zwykle
+   działają w UTC), zapis wyłącznie do `/opt/gunb-tool`.
+
+**Aktualizacja** to to samo polecenie – kod się odświeży, a baza, filtry i zapisane leady zostaną.
+Region (`gunb.voivodeships` / `gunb.powiats`) zmieniaj w `config.yaml` w repozytorium, potem aktualizuj.
+
+| Co | Polecenie na serwerze |
+|---|---|
+| logi na żywo | `journalctl -u gunb-bot -f` |
+| stan / restart / stop | `systemctl status gunb-bot` · `sudo systemctl restart gunb-bot` · `sudo systemctl stop gunb-bot` |
+| kopia bazy | `/opt/gunb-tool/data/gunb_leads.sqlite` (np. `scp` na komputer) |
+
+> **Jeden token = jeden działający bot.** Dwa procesy odbierające aktualizacje tym samym tokenem
+> dostają od Telegrama błąd 409 (bot loguje ostrzeżenie i czeka) – po instalacji na serwerze wyłącz
+> bota na komputerze.
 
 ## Google Sheets
 

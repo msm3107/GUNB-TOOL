@@ -1,0 +1,28 @@
+[Unit]
+Description=GUNB Lead Tool - bot Telegram z leadami z rejestru GUNB
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=gunb
+Group=gunb
+WorkingDirectory=/opt/gunb-tool
+ExecStart=/opt/gunb-tool/.venv/bin/python main.py --config /opt/gunb-tool/config.yaml --bot
+# Bot ma działać stale: po awarii lub restarcie serwera wstaje sam.
+Restart=always
+RestartSec=15
+# Godziny w config.yaml (pobieranie 6:30, raporty 7:00/19:00) liczone są w czasie polskim,
+# niezależnie od strefy czasowej serwera (VPS-y zwykle chodzą w UTC).
+Environment=TZ=Europe/Warsaw
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+# Ograniczenia bezpieczeństwa: usługa pisze tylko do własnego katalogu.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/gunb-tool
+
+[Install]
+WantedBy=multi-user.target

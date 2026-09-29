@@ -18,11 +18,12 @@ gunb:
   #   10 łódzkie       12 małopolskie         14 mazowieckie 16 opolskie
   #   18 podkarpackie  20 podlaskie           22 pomorskie   24 śląskie
   #   26 świętokrzyskie 28 warmińsko-mazurskie 30 wielkopolskie 32 zachodniopomorskie
-  voivodeships: ["12"]
+  voivodeships: ["28"]
 
   # Powiaty do monitorowania (4-cyfrowe kody TERYT). Pusta lista = całe województwo.
-  # Przykład: 1206 – powiat krakowski, 1219 – wielicki, 1261 – m. Kraków.
-  powiats: ["1206", "1219", "1261"]
+  # 2862 – m. Olsztyn (miasto na prawach powiatu), 2814 – powiat olsztyński (gminy wokół miasta).
+  # Inne przykłady: 1261 – m. Kraków, 1206 – powiat krakowski, 1465 – m.st. Warszawa.
+  powiats: ["2862", "2814"]
 
   # Data używana przy filtrowaniu pozwoleń: "decyzja" (data wydania) lub "wplyw" (data złożenia).
   # Zgłoszenia mają wyłącznie datę wpływu i zawsze są filtrowane po niej.
