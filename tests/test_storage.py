@@ -45,7 +45,7 @@ def lead(id_sprawy: str = "PL-OP/WNIOSEK/1/2026", **overrides) -> Investment:
         lat=50.47,
         lon=17.33,
         precyzja_geo="dzialka",
-        google_maps_url="https://www.google.com/maps/search/?api=1&query=50.470000,17.330000",
+        google_maps_url="https://www.google.com/maps?q=50.470000,17.330000",
         projektant="Jan Testowy",
         kubatura=650.5,
         is_residential=True,

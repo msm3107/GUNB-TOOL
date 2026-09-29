@@ -15,7 +15,7 @@ from gunb_tool.models import Investment
 from gunb_tool.storage import StatusChange
 from tests.fakes import FakeResponse, make_client
 
-MAPS = "https://www.google.com/maps/search/?api=1&query=50.470000,17.330000"
+MAPS = "https://www.google.com/maps?q=50.470000,17.330000"
 GEOPORTAL = "https://mapy.geoportal.gov.pl/imap/Imgp_2.html?identifyParcel=160705_4.0005.13"
 
 
