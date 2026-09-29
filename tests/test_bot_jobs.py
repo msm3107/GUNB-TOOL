@@ -4,6 +4,7 @@ Zegar jest sterowany z testu (UTC); bot sam przelicza go na czas Europe/Warsaw.
 """
 
 import logging
+import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -15,7 +16,7 @@ from gunb_tool.http_client import HttpError
 from gunb_tool.pipeline import ImportSkipped
 from gunb_tool.storage import LeadRepository
 from gunb_tool.telegram_api import TelegramApiError
-from tests.bot_helpers import ADMIN, MIETEK, OBCY, activate, click, lead, make_bot, message
+from tests.bot_helpers import ADMIN, MIETEK, OBCY, FakeApi, activate, click, lead, make_bot, message
 
 TODAY_0701 = datetime(2026, 9, 29, 5, 1, tzinfo=timezone.utc)  # 07:01 czasu polskiego (CEST, UTC+2)
 MORNING_JOB = "raport_rano:2026-09-29"
@@ -370,3 +371,62 @@ def test_scheduled_import_leaves_another_running_import_alone(repo, api, clock):
     assert calls == []
     assert (store.job_status("import").stan, store.job_status("import").start) == ("trwa", started)
     assert store.job_time("pobieranie_ponow") is not None
+
+
+# --- Odbieranie wiadomości a chwilowo zajęta baza (np. VACUUM w wątku zadań) --------------------------------
+
+class PollingApi(FakeApi):
+    """Jak Telegram: oddaje aktualizacje od ``offset`` – nieprzesunięty offset = ta sama aktualizacja jeszcze raz."""
+
+    def __init__(self, updates):
+        super().__init__()
+        self.updates = updates
+
+    def get_updates(self, offset, timeout):
+        return [u for u in self.updates if offset is None or u["update_id"] >= offset]
+
+
+def numbered(update_id, chat_id, text):
+    update = message(chat_id, text)
+    update["update_id"] = update_id
+    return update
+
+
+def test_update_hit_by_a_locked_database_is_handled_again(repo, clock):
+    api = PollingApi([numbered(1, MIETEK, "/start"), numbered(2, MIETEK, "/pomoc")])
+    bot = make_bot(repo, api, clock)
+    real_handle = bot.handle_update
+    locked_once = [2]
+
+    def flaky(update):
+        if update["update_id"] in locked_once:
+            locked_once.remove(update["update_id"])
+            raise sqlite3.OperationalError("database is locked")
+        real_handle(update)
+
+    bot.handle_update = flaky
+    bot.poll_once(0)
+    bot.poll_once(0)
+
+    assert "Jak to działa" in api.last_to(MIETEK)["text"]  # druga aktualizacja nie przepadła
+    assert bot.poll_once(0) == 0  # i nie jest obsługiwana w kółko
+
+
+def test_receiving_loop_survives_a_locked_database(repo, clock, monkeypatch):
+    api = PollingApi([numbered(1, MIETEK, "/start"), numbered(2, MIETEK, "/pomoc")])
+    bot = make_bot(repo, api, clock)
+    real_mark = bot.store.mark_job
+    failures = [sqlite3.OperationalError("database is locked")]
+
+    def flaky_mark(name, value):
+        if failures:
+            raise failures.pop()
+        real_mark(name, value)
+
+    monkeypatch.setattr(bot.store, "mark_job", flaky_mark)
+    polls = []
+
+    bot.run_forever(should_stop=lambda: len(polls) >= 3 or bool(polls.append(1)), sleep=lambda seconds: None)
+
+    assert "Jak to działa" in api.last_to(MIETEK)["text"]
+    assert BotStore(repo).job_last_run("telegram_offset") == "3"

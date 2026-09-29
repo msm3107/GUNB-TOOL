@@ -16,6 +16,7 @@ każda osoba jest obsługiwana osobno – błąd jednej nie zatrzymuje innych, n
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 import uuid
@@ -78,6 +79,8 @@ ACCESS_END_JOB = "dostep_koniec"
 ACCESS_JOBS = (ACCESS_REMINDER_JOB, ACCESS_END_JOB)
 NO_ACCESS_TOAST = "⛔ Brak aktywnego dostępu (test albo abonament) – szczegóły: /konto"
 SETUP_DONE_TOAST = "✅ To już ustawione – zmienisz w ⚙️ Ustawienia"
+DB_BUSY_RETRIES = 3
+"""Ile razy obsłużyć ponownie aktualizację, przy której baza była chwilowo zajęta."""
 WATCH_DIGEST_AFTER = 3
 """Więcej alertów obserwowanych naraz (np. po wznowieniu powiadomień) idzie jedną wiadomością."""
 
@@ -168,6 +171,7 @@ class LeadBot:
         self.fetcher = fetcher
         self._now = clock or repo.now
         self._offset: int | None = None
+        self._db_busy: dict[int, int] = {}
         self.should_stop: Callable[[], bool] = lambda: False
         """Prośba o zakończenie (ustawia :class:`JobsWorker`) – długie pętle wysyłek kończą się po bieżącej osobie."""
 
@@ -191,20 +195,42 @@ class LeadBot:
             except TelegramApiError as exc:
                 log.warning("Telegram: %s", exc)
                 sleep(30 if exc.code == 409 else 5)  # 409 = drugi proces bota odbiera te same aktualizacje
+            except sqlite3.Error as exc:  # np. baza chwilowo zajęta przez VACUUM w wątku zadań
+                log.warning("Baza chwilowo niedostępna: %s – ponawiam", exc)
+                sleep(1)
+            except Exception:  # pętla odbierania nie może paść – bez niej bot jest głuchy
+                log.exception("Nieoczekiwany błąd pętli odbierania wiadomości")
+                sleep(5)
 
     def poll_once(self, timeout: int) -> int:
-        """Pobiera i obsługuje oczekujące aktualizacje; zwraca ich liczbę."""
+        """Pobiera i obsługuje oczekujące aktualizacje; zwraca ich liczbę.
+
+        Aktualizacja, której nie dało się obsłużyć przez chwilowo zajętą bazę, nie przesuwa offsetu –
+        Telegram odda ją przy kolejnym pobraniu (najwyżej ``DB_BUSY_RETRIES`` razy, potem jest pomijana).
+        """
         if self._offset is None:
             stored = self.store.job_last_run("telegram_offset")
             self._offset = int(stored) if stored else None
         updates = self.api.get_updates(self._offset, timeout)
         for update in updates:
+            update_id = int(update["update_id"])
             try:
                 self.handle_update(update)
+            except sqlite3.OperationalError as exc:
+                attempts = self._db_busy.get(update_id, 0) + 1
+                self._db_busy[update_id] = attempts
+                if attempts <= DB_BUSY_RETRIES:
+                    log.warning("Aktualizacja %s: baza zajęta (%s) – obsłużę ją ponownie", update_id, exc)
+                    break
+                log.exception("Aktualizacja %s: baza zajęta %d razy – pomijam", update_id, attempts)
             except Exception:  # błąd jednej wiadomości nie może zatrzymać bota
-                log.exception("Błąd obsługi aktualizacji %s", update.get("update_id"))
-            self._offset = int(update["update_id"]) + 1
-            self.store.mark_job("telegram_offset", str(self._offset))
+                log.exception("Błąd obsługi aktualizacji %s", update_id)
+            self._db_busy.pop(update_id, None)
+            self._offset = update_id + 1
+            try:
+                self.store.mark_job("telegram_offset", str(self._offset))
+            except sqlite3.Error as exc:  # offset zostaje w pamięci; zapisze się przy następnej aktualizacji
+                log.warning("Nie zapisano offsetu Telegrama: %s", exc)
         return len(updates)
 
     def run_due_jobs(self) -> list[str]:
