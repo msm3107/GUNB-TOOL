@@ -231,6 +231,17 @@ def test_admin_revokes_access_at_once(bot, api, repo):
     assert api.last_to(MIETEK)["text"].startswith("⛔")
 
 
+def test_account_screen_says_access_was_turned_off(bot, api, repo):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 30"))
+    bot.handle_update(message(ADMIN, f"/odbierz {MIETEK}"))
+
+    bot.handle_update(message(MIETEK, "/konto"))
+
+    account = api.last_to(MIETEK)["text"]
+    assert "wyłączony" in account and "jeszcze nieaktywny" not in account
+
+
 def test_admin_date_in_the_past_is_refused(bot, api, repo):
     bot.handle_update(message(MIETEK, "/start"))
     bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 2026-09-01"))

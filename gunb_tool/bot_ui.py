@@ -298,10 +298,12 @@ def account_text(*, state: str, ends_on: str | None, contact_html: str) -> str:
         "test_dostepny": "🎁 Czeka na Ciebie 7-dniowy darmowy test – ruszy, gdy klikniesz ▶️ Zacznij.",
         "test_koniec": f"⌛ Darmowy test skończył się {ends_on}.",
         "platny_koniec": f"⌛ Abonament wygasł {ends_on}.",
+        "wylaczony": "⛔ Dostęp został wyłączony przez administratora. Zapisane inwestycje i ustawienia zostają.",
         "brak": "⏳ Dostęp jeszcze nieaktywny.",
     }
+    verb = {"brak": "uzyskać", "wylaczony": "przywrócić"}.get(state, "przedłużyć")
     extend = ("" if state in ("admin", "open", "bez_limitu")
-              else f"\nAby {'przedłużyć' if state != 'brak' else 'uzyskać'} dostęp, skontaktuj się z {contact_html}.")
+              else f"\nAby {verb} dostęp, skontaktuj się z {contact_html}.")
     return "👤 <b>Twoje konto</b>\n\n" + lines.get(state, lines["brak"]) + extend
 
 
