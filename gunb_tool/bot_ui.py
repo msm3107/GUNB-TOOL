@@ -848,13 +848,14 @@ def filters_summary(user: BotUser, place_names: dict[str, str]) -> str:
         places = [place_names.get(code, code) for code in f.powiaty] + list(f.miejsca)
         place = ", ".join(places) if places else "cały monitorowany obszar"
     categories = [label for key, label in CATEGORY_CHOICES if key in f.kategorie]
-    parts = [f"📍 {place}", f"🏗️ {', '.join(categories) if categories else 'wszystkie rodzaje'}",
+    parts = [f"📍 {escape_html(place)}",
+             f"🏗️ {escape_html(', '.join(categories)) if categories else 'wszystkie rodzaje'}",
              f"📦 {_volume_label(f.min_kubatura)}"]
     if f.inwestor:
-        parts.append(f"💼 {_investor_label(f.inwestor)}")
+        parts.append(f"💼 {_investor_label(f.inwestor)}")  # już z escapowaniem
     if user.tylko_hot:
         parts.append("🔥 tylko HOT")
-    return "Twoje filtry: " + escape_html(" · ".join(parts)).replace("&amp;", "&")
+    return "Twoje filtry: " + " · ".join(parts)
 
 
 def saved_list(leads: Sequence[Investment], page: int, total: int,

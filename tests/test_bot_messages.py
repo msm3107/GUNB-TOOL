@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from gunb_tool import bot_ui as ui
-from gunb_tool.bot_store import BotStore, UserFilters
+from gunb_tool.bot_store import BotStore, BotUser, UserFilters
 from gunb_tool.config import BotConfig
 from gunb_tool.http_client import HttpError
 from gunb_tool.stages import LONGEST_WINDOW_DAYS, get_trade
@@ -165,6 +165,14 @@ def test_history_import_covers_the_longest_stage_window_by_default():
 def test_installer_uses_the_same_history_window():
     script = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
     assert "18 months" not in script and "--historical" in script
+
+
+def test_filters_summary_escapes_every_part_exactly_once():
+    person = BotUser(chat_id=1, imie=None, username=None, status="aktywny", tryb="rano", tylko_hot=False,
+                     filtry=UserFilters(miejsca=("Kowale & Syn <x>",), inwestor="Dom & Ogród"))
+    text = ui.filters_summary(person, {})
+    assert "Kowale &amp; Syn &lt;x&gt;" in text and "Dom &amp; Ogród" in text
+    assert "&amp;amp;" not in text and " & " not in text
 
 
 def test_filters_are_never_widened_behind_the_users_back(bot, api, repo):
