@@ -6,7 +6,7 @@ i zmieniać bez dotykania logiki bota.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from .bot_store import BotUser, UserFilters, WatchItem
 from .config import BotConfig
@@ -15,16 +15,21 @@ from .models import Investment
 from .scoring import HOT
 
 Markup = dict[str, Any]
+Distance = Callable[[Investment], float | None]
 
 MENU_BUTTONS: tuple[str, ...] = (
     "📊 Co nowego?", "🔎 Filtry",
     "⭐ Zapisane", "👀 Obserwowane",
     "⏰ Kiedy wysyłać", "🔥 Tylko HOT",
+    "📍 Blisko mnie",
 )
+CANCEL_BUTTON = "↩️ Anuluj"
+SEND_LOCATION_BUTTON = "📍 Wyślij moją lokalizację"
 
 BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("nowe", "📊 Pokaż nowe leady"),
     ("filtry", "🔎 Ustaw, jakie inwestycje chcesz dostawać"),
+    ("blisko", "📍 Budowy blisko Twojej bazy"),
     ("zapisane", "⭐ Twoje zapisane leady"),
     ("obserwowane", "👀 Obserwowani inwestorzy i gminy"),
     ("tryb", "⏰ Kiedy wysyłać leady"),
@@ -42,6 +47,8 @@ CATEGORY_CHOICES: tuple[tuple[str, str], ...] = (
     ("inna", "🔧 Inne"),
 )
 VOLUME_CHOICES: tuple[int, ...] = (0, 1000, 3000, 10000, 30000)
+RADIUS_CHOICES: tuple[int, ...] = (10, 15, 20, 30, 50)
+DEFAULT_RADIUS_KM = 15
 MODE_LABELS: dict[str, str] = {"natychmiast": "⚡ Od razu", "rano": "🌅 Raport rano", "wieczor": "🌙 Raport wieczorem"}
 SAVED_PAGE_SIZE = 10
 
@@ -73,6 +80,7 @@ def welcome_text(name: str | None) -> str:
     return (
         f"👷 Cześć{who}! Będę Ci wysyłał <b>nowe pozwolenia na budowę</b> z Twojej okolicy.\n\n"
         "Wszystko ustawisz przyciskami na dole ekranu 👇\n"
+        "• <b>📍 Blisko mnie</b> – wyślij pinezkę bazy, a dostaniesz budowy w promieniu, np. 15 km\n"
         "• <b>🔎 Filtry</b> – gdzie i jakie inwestycje chcesz dostawać\n"
         "• <b>⏰ Kiedy wysyłać</b> – od razu, raport rano albo wieczorem\n"
         "• <b>🔥 Tylko HOT</b> – tylko najlepsze, duże roboty\n\n"
@@ -85,6 +93,7 @@ def help_text(settings: BotConfig) -> str:
         "❓ <b>Jak to działa</b>\n\n"
         "Codziennie sprawdzam rejestr pozwoleń na budowę (GUNB) i wysyłam Ci to, co pasuje do filtrów.\n\n"
         "📊 <b>Co nowego?</b> – pokaż nowe leady teraz\n"
+        "📍 <b>Blisko mnie</b> – budowy w promieniu od Twojej bazy (pinezka w Telegramie)\n"
         "🔎 <b>Filtry</b> – miejsce, rodzaj budynku, kubatura, inwestor\n"
         "⭐ <b>Zapisane</b> – Twoja lista ciekawych inwestycji\n"
         "👀 <b>Obserwowane</b> – inwestorzy i gminy, o których dostajesz alert od razu\n"
@@ -123,9 +132,13 @@ def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConf
     f = user.filtry
     places = [place_names.get(code, code) for code in f.powiaty] + list(f.miejsca)
     categories = [label for key, label in CATEGORY_CHOICES if key in f.kategorie]
+    if f.radius_active:
+        place_label = f"do {f.promien_km} km od Twojej bazy"
+    else:
+        place_label = escape_html(", ".join(places)) if places else "wszędzie"
     lines = [
         prefix + "🔎 <b>Twoje filtry</b>" if prefix else "🔎 <b>Twoje filtry</b>",
-        f"📍 Miejsce: {escape_html(', '.join(places)) if places else 'wszędzie'}",
+        f"📍 Miejsce: {place_label}",
         f"🏗️ Rodzaj: {escape_html(', '.join(categories)) if categories else 'wszystkie'}",
         f"📦 Kubatura: {_volume_label(f.min_kubatura)}",
         f"💼 Inwestor: {_investor_label(f.inwestor)}",
@@ -144,13 +157,51 @@ def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConf
 
 
 def place_picker(filters: UserFilters, options: Sequence[tuple[str, str]]) -> tuple[str, Markup]:
-    rows = [[(("✅ " if code in filters.powiaty else "▫️ ") + label, f"fp:{code}")] for code, label in options]
+    nearby = f"✅ 📍 Blisko mnie: do {filters.promien_km} km" if filters.radius_active else "📍 Blisko mnie (promień od bazy)"
+    rows = [[(nearby, "f:near")]]
+    rows += [[(("✅ " if code in filters.powiaty else "▫️ ") + label, f"fp:{code}")] for code, label in options]
     rows += [[(f"❌ {place}", f"fpr:{index}")] for index, place in enumerate(filters.miejsca)]
     rows.append([("✏️ Wpisz miejscowość", "fp:txt")])
     rows.append([("✔️ Gotowe", "f:show")])
-    text = ("📍 <b>Gdzie szukać?</b>\nZaznacz powiaty albo wpisz miejscowość lub gminę.\n"
+    text = ("📍 <b>Gdzie szukać?</b>\nPromień od Twojej bazy albo powiaty / wpisana miejscowość lub gmina.\n"
             "Nic nie zaznaczone = wszędzie.")
     return text, inline(rows)
+
+
+def location_request() -> tuple[str, Markup]:
+    """Prośba o pinezkę bazy – przycisk z natywnym udostępnieniem lokalizacji Telegrama."""
+    text = ("📍 <b>Gdzie jest Twoja baza?</b>\n"
+            f"Kliknij na dole <b>{SEND_LOCATION_BUTTON}</b> – wyślesz miejsce, w którym teraz jesteś.\n"
+            "Jesteś gdzie indziej? Wyślij pinezkę bazy: 📎 → Lokalizacja → przesuń mapę na bazę.")
+    markup = {"keyboard": [[{"text": SEND_LOCATION_BUTTON, "request_location": True}], [{"text": CANCEL_BUTTON}]],
+              "resize_keyboard": True, "one_time_keyboard": True}
+    return text, markup
+
+
+def base_saved_text(filters: UserFilters) -> str:
+    return (f"✅ Baza zapisana. Pokazuję budowy do <b>{filters.promien_km} km</b> od niej "
+            "(w linii prostej) – przy każdej zobaczysz odległość 🚗.")
+
+
+def nearby_screen(filters: UserFilters) -> tuple[str, Markup]:
+    """„📍 Blisko mnie”: wybór promienia od bazy (albo prośba o pinezkę, gdy bazy jeszcze nie ma)."""
+    if filters.baza is None:
+        text = ("📍 <b>Blisko mnie</b>\nWyślij pinezkę swojej bazy, a pokażę tylko budowy, "
+                "do których dojedziesz – np. do 15 km.")
+        return text, inline([[("📍 Wyślij pinezkę bazy", "fr:loc")], [("◀️ Filtry", "f:show")]])
+    state = f"do <b>{filters.promien_km} km</b> od bazy" if filters.radius_active else "wyłączony"
+    choices = [((f"✅ {km} km" if filters.radius_active and filters.promien_km == km else f"{km} km"), f"fr:{km}")
+               for km in RADIUS_CHOICES]
+    rows = [choices[:3], choices[3:], [("📍 Zmień bazę", "fr:loc")] + ([("🚫 Wyłącz", "fr:0")]
+                                                                     if filters.radius_active else [])]
+    rows += [[("📊 Pokaż pasujące", "f:go")], [("◀️ Filtry", "f:show")]]
+    text = (f"📍 <b>Blisko mnie</b>\nPromień: {state}.\n"
+            "Jak daleko jeździsz? Odległość liczę w linii prostej od Twojej bazy.")
+    return text, inline(rows)
+
+
+def distance_label(km: float) -> str:
+    return "<1 km" if km < 1 else f"{km:.0f} km"
 
 
 def type_picker(filters: UserFilters) -> tuple[str, Markup]:
@@ -240,13 +291,15 @@ def watch_header(item: WatchItem, inv: Investment) -> tuple[str, str, str]:
 # --- Raport ---------------------------------------------------------------------------------------
 
 def report(date_label: str, *, total_new: int, leads: Sequence[Investment], matching: int, hot: int, watched: int,
-           recent: Sequence[Investment] = (), recent_total: int = 0, recent_days: int = 30) -> tuple[str, Markup | None]:
+           recent: Sequence[Investment] = (), recent_total: int = 0, recent_days: int = 30,
+           distance: Distance | None = None) -> tuple[str, Markup | None]:
     """Raport: podsumowanie + ponumerowana lista (numery otwierają szczegóły leada).
 
     Args:
         total_new: nowe (jeszcze niewidziane) inwestycje od ostatniego raportu.
         leads: pokazywane nowe leady pasujące do filtrów; ``matching`` – ile pasuje łącznie.
         recent: gdy nowych pasujących brak – pasujące z ostatnich ``recent_days`` dni (już widziane).
+        distance: odległość leada od bazy użytkownika (pokazywana jako „🚗 12 km”).
     """
     watched_text = (f"{watched} {_plural(watched, 'dotyczy obserwowanego inwestora lub gminy', 'dotyczą obserwowanych inwestorów lub gmin', 'dotyczy obserwowanych inwestorów lub gmin')}"
                     if watched else "")
@@ -262,7 +315,7 @@ def report(date_label: str, *, total_new: int, leads: Sequence[Investment], matc
             extra.append(watched_text + ".")
         lines = [f"📊 <b>Raport {date_label}</b>", " ".join(summary)] + ([" ".join(extra)] if extra else [])
         lines.append("")
-        lines += [_report_entry(position, inv) for position, inv in enumerate(leads, start=1)]
+        lines += [_report_entry(position, inv, distance) for position, inv in enumerate(leads, start=1)]
         if matching > len(leads):
             lines.append(f"\n…i {matching - len(leads)} więcej – kliknij 📊 Co nowego?, żeby zobaczyć kolejne.")
         lines.append("\n👇 Kliknij numer, żeby zobaczyć szczegóły i zapisać.")
@@ -280,19 +333,20 @@ def report(date_label: str, *, total_new: int, leads: Sequence[Investment], matc
         head.append(f"\n🔎 Z ostatnich {recent_days} dni brak pasujących do Twoich filtrów – poszerz 🔎 Filtry.")
         return "\n".join(head), None
     lines = head + ["", f"🔎 <b>Pasujące do Twoich filtrów z ostatnich {recent_days} dni</b> ({recent_total}):", ""]
-    lines += [_report_entry(position, inv) for position, inv in enumerate(recent, start=1)]
+    lines += [_report_entry(position, inv, distance) for position, inv in enumerate(recent, start=1)]
     if recent_total > len(recent):
         lines.append(f"\n…i {recent_total - len(recent)} więcej – zawęź 🔎 Filtry.")
     lines.append("\n👇 Kliknij numer, żeby otworzyć lead.")
     return "\n".join(lines), inline(number_buttons([(p, inv.nr) for p, inv in enumerate(recent, start=1)]))
 
 
-def saved_list(leads: Sequence[Investment], page: int, total: int) -> tuple[str, Markup | None]:
+def saved_list(leads: Sequence[Investment], page: int, total: int,
+               distance: Distance | None = None) -> tuple[str, Markup | None]:
     if total == 0:
         return "⭐ Nie masz jeszcze zapisanych leadów.\nKliknij <b>⭐ Zapisz</b> pod ciekawą inwestycją.", None
     first = page * SAVED_PAGE_SIZE + 1
     lines = [f"⭐ <b>Zapisane</b> ({total})", ""]
-    lines += [_report_entry(first + offset, inv) for offset, inv in enumerate(leads)]
+    lines += [_report_entry(first + offset, inv, distance) for offset, inv in enumerate(leads)]
     lines.append("\n👇 Kliknij numer, żeby otworzyć lead.")
     rows = number_buttons([(first + offset, inv.nr) for offset, inv in enumerate(leads)])
     navigation = []
@@ -326,9 +380,11 @@ def unknown_text() -> str:
 
 # --- Pomocnicze ---------------------------------------------------------------------------------
 
-def _report_entry(position: int, inv: Investment) -> str:
+def _report_entry(position: int, inv: Investment, distance: Distance | None = None) -> str:
     icon = ("🔥" if inv.priorytet == HOT else "") + CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+    km = distance(inv) if distance else None
     facts = [p for p in (
+        f"🚗 {distance_label(km)}" if km is not None else None,
         inv.adres_opisowy or inv.miejscowosc,
         f"{_thousands(inv.kubatura)} m³" if inv.kubatura else None,
         _short_date(inv.data_aktualizacji),

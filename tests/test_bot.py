@@ -517,3 +517,148 @@ def test_fetch_crash_is_logged_and_retried_later(repo, api, clock, caplog):
     clock.advance(hours=1, minutes=1)
     bot.run_due_jobs()
     assert len(calls) == 1  # ponowienie po godzinie
+
+
+# --- „📍 Blisko mnie”: pinezka bazy i promień --------------------------------------------------------
+
+BASE = (53.7784, 20.4801)                    # baza firmy w Olsztynie
+NEAREST = dict(lat=53.7800, lon=20.4900)     # < 1 km
+NEAR = dict(lat=53.8285, lon=20.4867)        # Dywity, ok. 6 km
+FAR = dict(lat=53.8649, lon=20.9569)         # Biskupiec, ok. 33 km
+
+
+def pin(chat_id, lat, lon):
+    return {"update_id": 3, "message": {"message_id": 3, "location": {"latitude": lat, "longitude": lon},
+                                        "chat": {"id": chat_id, "type": "private"},
+                                        "from": {"id": chat_id, "first_name": "Mietek", "username": None}}}
+
+
+def seed_olsztyn(repo):
+    repo.upsert(lead("DALEKO/1", nazwa_zamierzenia="Dom C daleko", **FAR))
+    repo.upsert(lead("BLISKO/1", nazwa_zamierzenia="Dom B blisko", **NEAR))
+    repo.upsert(lead("TUZ/1", nazwa_zamierzenia="Dom A tuż obok", **NEAREST))
+
+
+def test_nearby_button_asks_for_a_location_pin(bot, api):
+    activate(bot, api)
+    bot.handle_update(message(MIETEK, "📍 Blisko mnie"))
+    request = api.last_to(MIETEK)
+    assert request["markup"]["keyboard"][0][0] == {"text": "📍 Wyślij moją lokalizację", "request_location": True}
+
+
+def test_pin_sets_base_with_default_radius_and_brings_menu_back(bot, api, repo):
+    activate(bot, api)
+    BotStore(repo).set_filters(MIETEK, UserFilters(powiaty=("2862",)))
+
+    bot.handle_update(pin(MIETEK, *BASE))
+
+    filters = BotStore(repo).get_user(MIETEK).filtry
+    assert filters.baza == BASE and filters.promien_km == 15
+    assert filters.powiaty == ()  # promień zastępuje wybór powiatów
+    confirmation, picker = api.to(MIETEK)[-2:]
+    assert confirmation["markup"]["keyboard"]  # stałe menu wraca na dół ekranu
+    assert ("✅ 15 km", "fr:15") in buttons(picker["markup"])
+
+
+def test_report_lists_only_leads_within_radius_nearest_first_with_distance(bot, api, repo):
+    activate(bot, api)
+    seed_olsztyn(repo)
+    bot.handle_update(pin(MIETEK, *BASE))
+
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+
+    text = api.last_to(MIETEK)["text"]
+    assert "Dom C daleko" not in text
+    assert text.index("Dom A tuż obok") < text.index("Dom B blisko")
+    assert "🚗 &lt;1 km" in text and "🚗 6 km" in text
+
+
+def test_hot_leads_stay_on_top_within_radius(bot, api, repo):
+    activate(bot, api)
+    repo.upsert(lead("TUZ/1", nazwa_zamierzenia="Dom tuż obok", **NEAREST))
+    repo.upsert(lead("HOT/1", nazwa_zamierzenia="Blok HOT", priorytet="hot", punkty=9, **NEAR))
+    bot.handle_update(pin(MIETEK, *BASE))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    text = api.last_to(MIETEK)["text"]
+    assert text.index("Blok HOT") < text.index("Dom tuż obok")
+
+
+def test_radius_is_changed_with_one_click(bot, api, repo):
+    activate(bot, api)
+    seed_olsztyn(repo)
+    bot.handle_update(pin(MIETEK, *BASE))
+
+    bot.handle_update(click(MIETEK, "fr:50"))
+
+    assert BotStore(repo).get_user(MIETEK).filtry.promien_km == 50
+    assert ("✅ 50 km", "fr:50") in buttons(api.edits[-1]["markup"])
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    assert "Dom C daleko" in api.last_to(MIETEK)["text"]
+
+
+def test_radius_can_be_switched_off_and_base_is_remembered(bot, api, repo):
+    activate(bot, api)
+    bot.handle_update(pin(MIETEK, *BASE))
+    bot.handle_update(click(MIETEK, "fr:0"))
+    filters = BotStore(repo).get_user(MIETEK).filtry
+    assert filters.promien_km is None and filters.baza == BASE
+
+
+def test_choosing_a_powiat_switches_radius_off(bot, api, repo):
+    activate(bot, api)
+    bot.handle_update(pin(MIETEK, *BASE))
+    bot.handle_update(click(MIETEK, "fp:2862"))
+    filters = BotStore(repo).get_user(MIETEK).filtry
+    assert filters.powiaty == ("2862",) and filters.promien_km is None
+
+
+def test_lead_card_shows_distance_from_base(bot, api, repo):
+    activate(bot, api)
+    seed_olsztyn(repo)
+    bot.handle_update(pin(MIETEK, *BASE))
+    bot.handle_update(click(MIETEK, f"o:{repo.get('BLISKO/1').nr}"))
+    assert "🚗 6 km od Twojej bazy" in api.last_to(MIETEK)["text"]
+
+
+def test_filters_screen_shows_radius(bot, api, repo):
+    activate(bot, api)
+    bot.handle_update(pin(MIETEK, *BASE))
+    bot.handle_update(message(MIETEK, "🔎 Filtry"))
+    assert "do 15 km od Twojej bazy" in api.last_to(MIETEK)["text"]
+
+
+def test_radius_without_base_asks_for_pin_first(bot, api, repo):
+    activate(bot, api)
+    bot.handle_update(click(MIETEK, "fr:20"))
+    assert BotStore(repo).get_user(MIETEK).filtry.promien_km is None
+    assert api.last_to(MIETEK)["markup"]["keyboard"][0][0]["request_location"] is True
+
+
+def test_cancel_on_location_request_brings_menu_back(bot, api, repo):
+    activate(bot, api)
+    bot.handle_update(message(MIETEK, "📍 Blisko mnie"))
+    bot.handle_update(message(MIETEK, "↩️ Anuluj"))
+    reply = api.last_to(MIETEK)
+    assert [b["text"] for row in reply["markup"]["keyboard"] for b in row] == list(MENU_BUTTONS)
+    assert BotStore(repo).get_user(MIETEK).filtry.baza is None
+
+
+def test_clearing_filters_keeps_the_base(bot, api, repo):
+    activate(bot, api)
+    bot.handle_update(pin(MIETEK, *BASE))
+    bot.handle_update(click(MIETEK, "f:clear"))
+    filters = BotStore(repo).get_user(MIETEK).filtry
+    assert filters.baza == BASE and filters.is_empty()
+
+
+def test_pin_from_user_waiting_for_approval_is_ignored(bot, api, repo):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(pin(MIETEK, *BASE))
+    assert BotStore(repo).get_user(MIETEK).filtry.baza is None
+    assert "akceptac" in api.last_to(MIETEK)["text"]
+
+
+def test_blisko_command_works_like_the_button(bot, api):
+    activate(bot, api)
+    bot.handle_update(message(MIETEK, "/blisko"))
+    assert api.last_to(MIETEK)["markup"]["keyboard"][0][0]["request_location"] is True

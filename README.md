@@ -253,11 +253,13 @@ Obsługa wyłącznie przyciskami („proste jak drut”):
 │ 📊 Co nowego?     │ 🔎 Filtry         │   ← stałe menu na dole ekranu
 │ ⭐ Zapisane       │ 👀 Obserwowane    │
 │ ⏰ Kiedy wysyłać  │ 🔥 Tylko HOT      │
-└──────────────────┴──────────────────┘
+│           📍 Blisko mnie             │
+└─────────────────────────────────────┘
 ```
 
 | Funkcja | Jak działa |
 |---|---|
+| **📍 Blisko mnie** | Jedno kliknięcie „📍 Wyślij moją lokalizację” (albo dowolna pinezka 📎 → Lokalizacja) zapisuje bazę firmy i od razu włącza promień 15 km; przyciski 10 / 15 / 20 / 30 / 50 km. Raporty pokazują „🚗 6 km” przy każdej budowie, najpierw 🔥 HOT, a w każdej grupie od najbliższych. Odległość w linii prostej od bazy do działki (ULDK). Promień zastępuje powiaty i miejscowości; wybór powiatu go wyłącza, baza zostaje zapamiętana. |
 | **🔎 Filtry** | Miejsce (powiaty z listy albo wpisana miejscowość/gmina), rodzaj budynku (🏠 domy, 🏢 bloki, 🏭 hale…), minimalna kubatura (przyciski „od 10 000 m³”), inwestor (dowolny / tylko firmy / nazwa). Przykład: „Warszawa + bloki + od 10 000 m³”. |
 | **🔥 HOT / 🟡 NORMAL / ⚪ LOW** | Punkty bez AI: kubatura, rodzaj budynku, kilka budynków, nowa budowa, inwestor-firma; minus za garaże, wiaty, drobne roboty i zmiany starych pozwoleń. Każdy lead pokazuje punkty i powody. **🔥 Tylko HOT** włącza tylko najlepsze. |
 | **Przyciski pod leadem** | 📍 Mapa · 🏛️ Geoportal · ⭐ Zapisz · ✅ Przejrzane · 🗑️ Ukryj (z „↩️ Przywróć”) · 👀 Obserwuj inwestora · 📌 Obserwuj gminę |

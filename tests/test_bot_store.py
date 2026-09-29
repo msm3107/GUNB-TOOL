@@ -84,6 +84,46 @@ def test_empty_filters_match_everything_and_round_trip_json():
     assert UserFilters.from_json("{zepsuty json") == UserFilters()
 
 
+# --- „Blisko mnie”: promień od bazy firmy ------------------------------------------------------------
+
+BAZA_OLSZTYN = (53.7784, 20.4801)
+DYWITY = dict(lat=53.8285, lon=20.4867)     # ok. 5,6 km od bazy
+BISKUPIEC = dict(lat=53.8649, lon=20.9569)  # ok. 33 km od bazy
+
+
+def test_distance_from_base_is_measured_in_a_straight_line():
+    filters = UserFilters(baza=BAZA_OLSZTYN)
+    assert filters.distance_km(lead(**DYWITY)) == pytest.approx(5.6, abs=0.2)
+    assert filters.distance_km(lead(**BISKUPIEC)) == pytest.approx(32.8, abs=0.5)
+    assert filters.distance_km(lead()) is None  # lead bez współrzędnych
+    assert UserFilters().distance_km(lead(**DYWITY)) is None  # brak bazy
+
+
+def test_radius_keeps_only_leads_within_reach():
+    filters = UserFilters(baza=BAZA_OLSZTYN, promien_km=15)
+    assert filters.matches(lead(**DYWITY))
+    assert not filters.matches(lead(**BISKUPIEC))
+    assert not filters.matches(lead())  # bez lokalizacji nie wiadomo, czy blisko
+    assert UserFilters(baza=BAZA_OLSZTYN, promien_km=50).matches(lead(**BISKUPIEC))
+
+
+def test_radius_decides_instead_of_place_names():
+    filters = UserFilters(baza=BAZA_OLSZTYN, promien_km=15, miejsca=("Gdańsk",))
+    assert filters.matches(lead(**DYWITY))
+
+
+def test_base_without_radius_does_not_filter():
+    filters = UserFilters(baza=BAZA_OLSZTYN)
+    assert filters.matches(lead(**BISKUPIEC))
+    assert filters.is_empty()
+    assert not UserFilters(baza=BAZA_OLSZTYN, promien_km=15).is_empty()
+
+
+def test_base_and_radius_survive_saving():
+    filters = UserFilters(baza=BAZA_OLSZTYN, promien_km=20, kategorie=("mieszkaniowa-jednorodzinna",))
+    assert UserFilters.from_json(filters.to_json()) == filters
+
+
 # --- Watchlista ----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(

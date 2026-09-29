@@ -44,10 +44,13 @@ MENU_ACTIONS: dict[str, str] = {
     "👀 Obserwowane": "_show_watchlist",
     "⏰ Kiedy wysyłać": "_show_mode",
     "🔥 Tylko HOT": "_toggle_hot",
+    "📍 Blisko mnie": "_show_nearby",
+    ui.CANCEL_BUTTON: "_cancel_input",
 }
 COMMAND_ACTIONS: dict[str, str] = {
     "/nowe": "_show_news",
     "/filtry": "_show_filters",
+    "/blisko": "_show_nearby",
     "/zapisane": "_show_saved",
     "/obserwowane": "_show_watchlist",
     "/tryb": "_show_mode",
@@ -190,6 +193,9 @@ class LeadBot:
         if user.status != "aktywny":
             self._send(chat_id, ui.pending_text() if user.status == "oczekuje" else ui.rejected_text())
             return
+        if message.get("location"):
+            self._set_base(user, message["location"])
+            return
         action = COMMAND_ACTIONS.get(command) if command else MENU_ACTIONS.get(text)
         if action:
             if user.oczekuje_na:
@@ -285,6 +291,30 @@ class LeadBot:
         self.store.set_hot_only(user.chat_id, not user.tylko_hot)
         self._send(user.chat_id, ui.hot_only_text(not user.tylko_hot), ui.menu_keyboard())
 
+    def _show_nearby(self, user: BotUser) -> None:
+        if user.filtry.baza is None:
+            self._send(user.chat_id, *ui.location_request())  # bez bazy od razu prośba o pinezkę
+            return
+        self._send(user.chat_id, *ui.nearby_screen(user.filtry))
+
+    def _cancel_input(self, user: BotUser) -> None:
+        self._send(user.chat_id, "👌 Bez zmian.", ui.menu_keyboard())
+
+    def _set_base(self, user: BotUser, location: dict[str, Any]) -> None:
+        """Pinezka z Telegrama = baza firmy; promień (domyślnie 15 km) od razu zastępuje powiaty i miejscowości."""
+        try:
+            base = (round(float(location["latitude"]), 5), round(float(location["longitude"]), 5))
+        except (KeyError, TypeError, ValueError):
+            self._send(user.chat_id, ui.unknown_text(), ui.menu_keyboard())
+            return
+        filters = replace(user.filtry, baza=base, promien_km=user.filtry.promien_km or ui.DEFAULT_RADIUS_KM,
+                          powiaty=(), miejsca=())
+        if user.oczekuje_na:  # pinezka zamiast wpisywanego tekstu – kończymy tamto pytanie
+            self.store.set_awaiting(user.chat_id, None)
+        self.store.set_filters(user.chat_id, filters)
+        self._send(user.chat_id, ui.base_saved_text(filters), ui.menu_keyboard())
+        self._send(user.chat_id, *ui.nearby_screen(filters))
+
     def _show_help(self, user: BotUser) -> None:
         self._send(user.chat_id, ui.help_text(self.settings), ui.menu_keyboard())
 
@@ -365,14 +395,15 @@ class LeadBot:
 
     def _cb_filters(self, user: BotUser, arg: str, message_id: int) -> str | None:
         if arg == "clear":
-            self.store.set_filters(user.chat_id, UserFilters())
+            self.store.set_filters(user.chat_id, UserFilters(baza=user.filtry.baza))  # bazę firmy pamiętamy
             self._edit_filters(user, message_id)
             return "🧹 Filtry wyczyszczone"
         if arg == "go":
             self.send_report(user, on_demand=True)
             return None
         screens = {"place": lambda f: ui.place_picker(f, self.store.place_options(self.powiat_codes)),
-                   "type": ui.type_picker, "vol": ui.volume_picker, "inv": ui.investor_picker}
+                   "type": ui.type_picker, "vol": ui.volume_picker, "inv": ui.investor_picker,
+                   "near": ui.nearby_screen}
         if arg in screens:
             text, markup = screens[arg](user.filtry)
             self.api.edit_message_text(user.chat_id, message_id, text, markup)
@@ -386,7 +417,25 @@ class LeadBot:
         powiaty = tuple(p for p in user.filtry.powiaty if p != arg)
         if powiaty == user.filtry.powiaty:
             powiaty += (arg,)
-        return self._update_filters(user, replace(user.filtry, powiaty=powiaty), message_id, "place")
+        # wybór powiatów zastępuje promień „📍 Blisko mnie” (baza zostaje zapamiętana)
+        return self._update_filters(user, replace(user.filtry, powiaty=powiaty, promien_km=None), message_id, "place")
+
+    def _cb_radius(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        if arg == "loc" or (arg.isdigit() and int(arg) > 0 and user.filtry.baza is None):
+            self._send(user.chat_id, *ui.location_request())
+            return "👇 Wyślij pinezkę przyciskiem na dole ekranu"
+        if not arg.isdigit():
+            return None
+        km = int(arg)
+        if km == 0:
+            filters = replace(user.filtry, promien_km=None)
+            toast = "📍 Promień wyłączony"
+        else:
+            filters = replace(user.filtry, promien_km=km, powiaty=(), miejsca=())
+            toast = f"📍 Szukam do {km} km od Twojej bazy"
+        self.store.set_filters(user.chat_id, filters)
+        self.api.edit_message_text(user.chat_id, message_id, *ui.nearby_screen(filters))
+        return toast
 
     def _cb_place_remove(self, user: BotUser, arg: str, message_id: int) -> str | None:
         places = tuple(p for index, p in enumerate(user.filtry.miejsca) if str(index) != arg)
@@ -443,7 +492,7 @@ class LeadBot:
         filters = user.filtry
         value = " ".join(text.split())[:60]
         if what == "miejsce":
-            filters = replace(filters, miejsca=tuple(dict.fromkeys((*filters.miejsca, value))))
+            filters = replace(filters, miejsca=tuple(dict.fromkeys((*filters.miejsca, value))), promien_km=None)
             note = f"✅ Dodano miejsce: {value}\n\n"
         elif what == "inwestor":
             filters = replace(filters, inwestor=value)
@@ -494,7 +543,9 @@ class LeadBot:
         candidates = self.store.candidates(user.chat_id, self._window_start(user))
         if leads is None:
             leads = [inv for inv in candidates if self._wanted(user, inv)]
-        leads = _ranked(leads)
+        nearest = user.filtry.distance_km if user.filtry.radius_active else None
+        distance = user.filtry.distance_km if user.filtry.baza else None
+        leads = _ranked(leads, nearest)
         chosen = {inv.id_sprawy for inv in leads}
         skipped = [inv for inv in candidates if inv.id_sprawy not in chosen]
         now_iso = _utc_iso(self.repo.now())
@@ -506,13 +557,15 @@ class LeadBot:
         recent: list[Investment] = []
         if not leads:
             date_from = (self._clock().date() - timedelta(days=self.settings.recent_days)).isoformat()
-            recent = _ranked([inv for inv in self.store.recent_leads(user.chat_id, date_from) if self._wanted(user, inv)])
+            recent = _ranked([inv for inv in self.store.recent_leads(user.chat_id, date_from) if self._wanted(user, inv)],
+                             nearest)
 
         def build(count: int) -> tuple[str, dict | None]:
             return ui.report(
                 f"{self._clock():%d.%m}", total_new=len(candidates), leads=leads[:count], matching=len(leads),
                 hot=sum(1 for inv in leads if inv.priorytet == HOT), watched=watched,
                 recent=recent[:count], recent_total=len(recent), recent_days=self.settings.recent_days,
+                distance=distance,
             )
 
         shown = min(len(leads or recent), self.settings.max_leads_in_report)
@@ -573,7 +626,11 @@ class LeadBot:
 
     def _card(self, user: BotUser, inv: Investment, header: tuple[str, str, str] | None = None) -> tuple[str, dict]:
         message = self.formatter.telegram(inv, self.repo.last_status_change(inv.id_sprawy), header=header)
-        return message.text, self._keyboard(user, inv)
+        text = message.text
+        km = user.filtry.distance_km(inv)
+        if km is not None:
+            text += f"\n🚗 {escape_html(ui.distance_label(km))} od Twojej bazy"
+        return text, self._keyboard(user, inv)
 
     def _keyboard(self, user: BotUser, inv: Investment) -> dict:
         items = self.store.watchlist(user.chat_id)
@@ -610,7 +667,8 @@ class LeadBot:
 
     def _saved_page(self, user: BotUser, page: int) -> tuple[str, dict | None]:
         leads = self.store.saved(user.chat_id, limit=ui.SAVED_PAGE_SIZE, offset=page * ui.SAVED_PAGE_SIZE)
-        return ui.saved_list(leads, page, self.store.saved_count(user.chat_id))
+        distance = user.filtry.distance_km if user.filtry.baza else None
+        return ui.saved_list(leads, page, self.store.saved_count(user.chat_id), distance)
 
     def _place_names(self) -> dict[str, str]:
         return dict(self.store.place_options(self.powiat_codes))
@@ -658,6 +716,7 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "f": LeadBot._cb_filters,
     "fp": LeadBot._cb_place,
     "fpr": LeadBot._cb_place_remove,
+    "fr": LeadBot._cb_radius,
     "ft": LeadBot._cb_type,
     "fv": LeadBot._cb_volume,
     "fi": LeadBot._cb_investor,
@@ -667,9 +726,17 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
 }
 
 
-def _ranked(leads: Sequence[Investment]) -> list[Investment]:
-    """Najpierw 🔥 HOT i więcej punktów, w obrębie tego samego – najnowsze."""
+def _ranked(leads: Sequence[Investment], nearest: Callable[[Investment], float | None] | None = None) -> list[Investment]:
+    """Najpierw 🔥 HOT i więcej punktów, w obrębie tego samego – najnowsze.
+
+    Z „📍 Blisko mnie” (``nearest`` = odległość od bazy): najpierw 🔥 HOT, a w każdej grupie od najbliższych.
+    """
     newest_first = sorted(leads, key=lambda i: i.data_aktualizacji or "", reverse=True)
+    if nearest is not None:
+        def by_distance(inv: Investment) -> tuple[int, float]:
+            km = nearest(inv)
+            return _PRIORITY_RANK.get(inv.priorytet or "", 3), km if km is not None else float("inf")
+        return sorted(newest_first, key=by_distance)
     return sorted(newest_first, key=lambda i: (_PRIORITY_RANK.get(i.priorytet or "", 3), -(i.punkty or 0)))
 
 

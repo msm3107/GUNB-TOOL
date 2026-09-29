@@ -7,10 +7,11 @@ doręczeń – lead trafia do niego raz na każdą „rewizję” (pojawienie si
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta, timezone
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, TypeGuard
 
 from .models import Investment
 from .storage import LeadRepository, investment_from_row
@@ -41,6 +42,9 @@ class UserFilters:
         kategorie: kategorie leadów (``mieszkaniowa-wielorodzinna``…); puste = dowolne.
         min_kubatura: minimalna kubatura w m³ (leady bez kubatury nie przechodzą).
         inwestor: ``None`` – dowolny, ``"firma"`` – tylko jawni inwestorzy, inny tekst – fragment nazwy.
+        baza: ``(lat, lon)`` bazy firmy z pinezki Telegrama – od niej liczona jest odległość do budów.
+        promien_km: „📍 Blisko mnie” – tylko budowy w tym promieniu od bazy (w linii prostej);
+            zastępuje wtedy powiaty i miejscowości.
     """
 
     powiaty: tuple[str, ...] = ()
@@ -48,10 +52,27 @@ class UserFilters:
     kategorie: tuple[str, ...] = ()
     min_kubatura: float | None = None
     inwestor: str | None = None
+    baza: tuple[float, float] | None = None
+    promien_km: int | None = None
+
+    @property
+    def radius_active(self) -> bool:
+        """Czy działa filtr „📍 Blisko mnie” (jest baza i promień)."""
+        return self.baza is not None and bool(self.promien_km)
+
+    def distance_km(self, inv: Investment) -> float | None:
+        """Odległość budowy od bazy w km (w linii prostej); ``None`` bez bazy lub współrzędnych."""
+        if self.baza is None or inv.lat is None or inv.lon is None:
+            return None
+        return haversine_km(self.baza, (inv.lat, inv.lon))
 
     def matches(self, inv: Investment) -> bool:
         """Czy lead spełnia wszystkie ustawione warunki."""
-        if self.powiaty or self.miejsca:
+        if self.radius_active:
+            distance = self.distance_km(inv)
+            if distance is None or distance > (self.promien_km or 0):
+                return False
+        elif self.powiaty or self.miejsca:
             place = normalize_text(" ".join(p for p in (inv.gmina, inv.miejscowosc, inv.adres_opisowy, inv.powiat) if p))
             in_powiat = inv.powiat_teryt in self.powiaty
             in_place = any(normalize_text(m) in place for m in self.miejsca if normalize_text(m))
@@ -68,8 +89,9 @@ class UserFilters:
         return True
 
     def is_empty(self) -> bool:
-        """Czy nie ustawiono żadnego warunku."""
-        return self == UserFilters()
+        """Czy nie ustawiono żadnego warunku (sama zapamiętana baza, bez promienia, niczego nie filtruje)."""
+        return not (self.powiaty or self.miejsca or self.kategorie or self.min_kubatura is not None
+                    or self.inwestor or self.radius_active)
 
     def to_json(self) -> str:
         """Postać zapisywana w bazie."""
@@ -79,6 +101,8 @@ class UserFilters:
             "kategorie": list(self.kategorie),
             "min_kubatura": self.min_kubatura,
             "inwestor": self.inwestor,
+            "baza": list(self.baza) if self.baza else None,
+            "promien_km": self.promien_km,
         }, ensure_ascii=False)
 
     @classmethod
@@ -91,13 +115,29 @@ class UserFilters:
         if not isinstance(data, dict):
             return cls()
         kubatura = data.get("min_kubatura")
+        baza = data.get("baza")
+        promien = data.get("promien_km")
         return cls(
             powiaty=tuple(str(v) for v in data.get("powiaty") or ()),
             miejsca=tuple(str(v) for v in data.get("miejsca") or ()),
             kategorie=tuple(str(v) for v in data.get("kategorie") or ()),
             min_kubatura=float(kubatura) if isinstance(kubatura, (int, float)) else None,
             inwestor=str(data["inwestor"]) if data.get("inwestor") else None,
+            baza=(float(baza[0]), float(baza[1])) if _is_point(baza) else None,
+            promien_km=int(promien) if isinstance(promien, (int, float)) and promien > 0 else None,
         )
+
+
+def haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Odległość w km między punktami ``(lat, lon)`` po powierzchni Ziemi (wzór haversine)."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * 6371.0 * math.asin(math.sqrt(h))
+
+
+def _is_point(value: object) -> TypeGuard[Sequence[float]]:
+    return (isinstance(value, (list, tuple)) and len(value) == 2
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value))
 
 
 @dataclass(frozen=True)

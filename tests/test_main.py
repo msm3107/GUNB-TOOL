@@ -140,7 +140,7 @@ def test_bot_once_runs_single_cycle(workdir, monkeypatch, capsys):
 
     monkeypatch.setattr(main, "TelegramApi", Api)
     assert run(workdir, "--bot-once") == 0
-    assert calls == {"token": "123:ABC", "commands": 7, "timeout": 0}
+    assert calls == {"token": "123:ABC", "commands": 8, "timeout": 0}
     assert "Bot:" in capsys.readouterr().out
 
 
