@@ -68,7 +68,13 @@ DATE_FIELDS: tuple[str, ...] = ("decyzja", "wplyw")
 
 @dataclass(frozen=True)
 class HttpConfig:
-    """Polityka sieciowa wspólna dla GUNB i ULDK."""
+    """Polityka sieciowa wspólna dla GUNB i ULDK.
+
+    Attributes:
+        circuit_breaker_failures: po tylu kolejnych nieudanych zapytaniach (każde już po ponowieniach)
+            do jednego serwera kolejne są od razu odrzucane; 0 wyłącza bezpiecznik.
+        circuit_breaker_cooldown: po ilu sekundach przepuścić zapytanie próbne do niedostępnego serwera.
+    """
 
     timeout: float = 60.0
     max_retries: int = 5
@@ -77,6 +83,8 @@ class HttpConfig:
     min_delay: float = 1.0
     max_delay: float = 3.0
     user_agents: tuple[str, ...] = DEFAULT_USER_AGENTS
+    circuit_breaker_failures: int = 3
+    circuit_breaker_cooldown: float = 600.0
 
 
 @dataclass(frozen=True)
@@ -121,9 +129,21 @@ class GeocodingConfig:
 
 @dataclass(frozen=True)
 class StorageConfig:
-    """Lokalizacja bazy SQLite."""
+    """Baza SQLite i jej higiena.
+
+    Attributes:
+        backup_dir: katalog kopii bazy (domyślnie ``backups`` obok pliku bazy).
+        backup_every_days: co ile dni robić kopię (przed pobieraniem danych).
+        backup_keep: ile najnowszych kopii zachować.
+        vacuum_threshold: od tylu nowych/zmienionych leadów w jednym pobieraniu import jest „duży”
+            i po nim wykonywany jest ``VACUUM``.
+    """
 
     db_path: Path = Path("data/gunb_leads.sqlite")
+    backup_dir: Path | None = None
+    backup_every_days: int = 7
+    backup_keep: int = 8
+    vacuum_threshold: int = 500
 
 
 @dataclass(frozen=True)
@@ -143,11 +163,16 @@ class NotificationsConfig:
 
 @dataclass(frozen=True)
 class TelegramConfig:
-    """Bot Telegrama (token z @BotFather, identyfikator czatu/kanału)."""
+    """Bot Telegrama (token z @BotFather, identyfikator czatu/kanału).
+
+    Attributes:
+        admin_chat_id: osobny czat na alerty o awariach (puste = alerty wyłączone).
+    """
 
     bot_token: str = ""
     chat_id: str = ""
     delay_seconds: float = 1.0
+    admin_chat_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -342,6 +367,10 @@ def _http(data: dict[str, Any]) -> HttpConfig:
         min_delay=min_delay,
         max_delay=max_delay,
         user_agents=agents,
+        circuit_breaker_failures=int(
+            _number(data, "http", "circuit_breaker_failures", defaults.circuit_breaker_failures)
+        ),
+        circuit_breaker_cooldown=_number(data, "http", "circuit_breaker_cooldown", defaults.circuit_breaker_cooldown),
     )
 
 
@@ -434,7 +463,16 @@ def _geocoding(data: dict[str, Any]) -> GeocodingConfig:
 
 
 def _storage(data: dict[str, Any], base_dir: Path) -> StorageConfig:
-    return StorageConfig(db_path=_path(data.get("db_path", StorageConfig.db_path), base_dir))
+    defaults = StorageConfig()
+    db_path = _path(data.get("db_path", defaults.db_path), base_dir)
+    backup_dir = data.get("backup_dir")
+    return StorageConfig(
+        db_path=db_path,
+        backup_dir=_path(backup_dir, base_dir) if backup_dir else db_path.parent / "backups",
+        backup_every_days=int(_number(data, "storage", "backup_every_days", defaults.backup_every_days, minimum=1)),
+        backup_keep=int(_number(data, "storage", "backup_keep", defaults.backup_keep, minimum=1)),
+        vacuum_threshold=int(_number(data, "storage", "vacuum_threshold", defaults.vacuum_threshold, minimum=1)),
+    )
 
 
 def _notifications(data: dict[str, Any]) -> NotificationsConfig:
@@ -458,6 +496,7 @@ def _telegram(data: dict[str, Any]) -> TelegramConfig:
         chat_id=str(data.get("chat_id") or "").strip(),
         # Telegram przyjmuje ~1 wiadomość/s na czat – szybsze tempo kończy się błędami 429.
         delay_seconds=_number(data, "telegram", "delay_seconds", defaults.delay_seconds, minimum=1),
+        admin_chat_id=str(data.get("admin_chat_id") or "").strip(),
     )
 
 

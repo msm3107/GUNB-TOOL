@@ -268,7 +268,7 @@ def test_version_1_database_is_migrated_with_segment_column(tmp_path, clock):
     legacy.close()
 
     with LeadRepository(path, now=clock) as repo:
-        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 3
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         assert repo.get("OLD/1").segment is None
         repo.upsert(lead("NEW/1", segment="domki"))
         assert repo.get("NEW/1").segment == "domki"
@@ -294,12 +294,49 @@ def test_version_2_database_is_migrated_to_bot_schema(tmp_path, clock):
     legacy.close()
 
     with LeadRepository(path, now=clock) as repo:
-        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 3
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         old = repo.get("OLD/1")
         assert old.nr == 1
         assert old.priorytet is None
         tables = {row[0] for row in repo.connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {"bot_users", "watchlist", "user_leads", "deliveries", "bot_jobs"} <= tables
+
+
+# --- Migracja v3 -> v4 (kontakty z surowych pól) -------------------------------------------------
+
+def test_version_3_database_gets_contact_columns(tmp_path, clock):
+    import sqlite3
+    from gunb_tool import storage
+
+    path = tmp_path / "v3.sqlite"
+    legacy = sqlite3.connect(path)
+    for script in storage._MIGRATIONS[:3]:
+        legacy.executescript(script)
+    legacy.execute("PRAGMA user_version = 3")
+    legacy.execute(
+        "INSERT INTO investments (id_sprawy, zrodlo, status, utworzono, zmieniono, status_zmieniony, ostatnio_widziany)"
+        " VALUES ('OLD/1', 'pozwolenia', 'decyzja', 'x', 'x', 'x', 'x')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repo:
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 4
+        old = repo.get("OLD/1")
+        assert (old.telefon, old.email) == (None, None)
+        repo.upsert(lead("NEW/1", telefon="+48600123456", email="biuro@test.pl"))
+        assert (repo.get("NEW/1").telefon, repo.get("NEW/1").email) == ("+48600123456", "biuro@test.pl")
+
+
+def test_found_contact_updates_lead_without_sending_it_again(repo):
+    repo.upsert(lead("A/1"))
+    repo.mark_sent("A/1", "telegram")
+
+    result = repo.upsert(lead("A/1", telefon="+48600123456"))
+
+    assert result.change is ChangeType.UPDATED
+    assert repo.get("A/1").telefon == "+48600123456"
+    assert repo.pending_notifications("telegram", limit=10) == []  # nowa kolumna nie powtarza powiadomień
 
 
 def test_leads_get_sequential_numbers_that_survive_updates(repo):

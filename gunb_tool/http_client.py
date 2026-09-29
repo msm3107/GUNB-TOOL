@@ -1,7 +1,11 @@
-"""Odporny klient HTTP: retry z backoffem, ``Retry-After``, rotacja User-Agent, losowe opóźnienia.
+"""Odporny klient HTTP: retry z backoffem, ``Retry-After``, bezpiecznik, rotacja User-Agent, opóźnienia.
 
 Ten sam klient obsługuje pobieranie paczek GUNB (warunkowe i wznawiane), zapytania do ULDK
 oraz wysyłkę powiadomień – każdy z tych kanałów dostaje własną instancję z własnymi limitami.
+
+Bezpiecznik (circuit breaker): gdy serwer urzędu nie odpowiada mimo ponowień kilka zapytań z rzędu,
+kolejne zapytania do niego są od razu odrzucane (:class:`CircuitOpenError`), zamiast czekać na każdy
+backoff osobno. Po przerwie przepuszczane jest jedno zapytanie próbne: sukces przywraca ruch.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 import requests
 
@@ -57,6 +62,45 @@ class HttpError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
         self.url = url
+
+
+class CircuitOpenError(HttpError):
+    """Zapytanie odrzucone bez wysyłania – serwer jest chwilowo uznany za niedostępny."""
+
+
+class CircuitBreaker:
+    """Bezpiecznik: po ``threshold`` kolejnych porażkach odcina wywołania na ``cooldown`` sekund.
+
+    Po przerwie przepuszcza wywołanie próbne (stan półotwarty): sukces zamyka obwód, porażka
+    otwiera go na kolejną przerwę. ``threshold <= 0`` wyłącza bezpiecznik.
+    """
+
+    def __init__(self, threshold: int, cooldown: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self.threshold = threshold
+        self.cooldown = cooldown
+        self._clock = clock
+        self.failures = 0
+        self._opened_at: float | None = None
+
+    @property
+    def is_open(self) -> bool:
+        """Czy wywołania są teraz odcinane (obwód otwarty, a przerwa jeszcze trwa)."""
+        return self._opened_at is not None and self._clock() - self._opened_at < self.cooldown
+
+    def record_success(self) -> bool:
+        """Zeruje licznik porażek; ``True``, gdy obwód był otwarty (usługa wróciła)."""
+        recovered = self._opened_at is not None
+        self.failures, self._opened_at = 0, None
+        return recovered
+
+    def record_failure(self) -> bool:
+        """Liczy porażkę; ``True``, gdy właśnie otworzyła obwód po okresie normalnej pracy."""
+        self.failures += 1
+        if self.threshold <= 0 or self.failures < self.threshold:
+            return False
+        opened_now = self._opened_at is None
+        self._opened_at = self._clock()  # nieudana próba po przerwie – kolejna przerwa
+        return opened_now
 
 
 @dataclass(frozen=True)
@@ -114,6 +158,7 @@ class ResilientHttpClient:
         self._rng = rng or random.Random()
         self._agents = UserAgentRotator(config.user_agents, self._rng)
         self._last_request_at: float | None = None
+        self._breakers: dict[str, CircuitBreaker] = {}
 
     # --- Zapytania -------------------------------------------------------------
 
@@ -138,8 +183,17 @@ class ResilientHttpClient:
 
         Raises:
             HttpError: gdy wyczerpano limit ponowień.
+            CircuitOpenError: serwer zawiódł kilka razy z rzędu – zapytanie odrzucone bez wysyłania.
         """
         safe_url = redact_url(url)
+        host = urlsplit(url).hostname or ""
+        breaker = self._breaker(host)
+        if breaker.is_open:
+            raise CircuitOpenError(
+                f"{method} {safe_url}: {host} chwilowo niedostępny ({breaker.failures} nieudane zapytania z rzędu)"
+                " – zapytanie pominięte",
+                url=safe_url,
+            )
         merged = {"Accept-Language": "pl-PL,pl;q=0.9,en;q=0.5"}
         merged.update(headers or {})
         kwargs.setdefault("timeout", self.config.timeout)
@@ -156,6 +210,8 @@ class ResilientHttpClient:
                 delay = self._backoff(attempt)
             else:
                 if response.status_code not in RETRYABLE_STATUS:
+                    if breaker.record_success():
+                        log.warning("%s znów odpowiada – wznawiam zapytania", host, extra={"alert": True})
                     return response
                 last_status = response.status_code
                 last_error = HttpError(f"HTTP {response.status_code}", status_code=last_status, url=safe_url)
@@ -172,6 +228,11 @@ class ResilientHttpClient:
                 )
                 self._sleep(delay)
 
+        if breaker.record_failure():
+            log.error(
+                "%s nie odpowiada: %d nieudane zapytania z rzędu (ostatni błąd: %s) – przerwa w zapytaniach %d min",
+                host, breaker.failures, last_error, round(breaker.cooldown / 60),
+            )
         raise HttpError(
             f"{method} {safe_url}: wyczerpano limit ponowień ({self.config.max_retries}); ostatni błąd: {last_error}",
             status_code=last_status,
@@ -286,6 +347,15 @@ class ResilientHttpClient:
         raise HttpError(f"Nie udało się pobrać {url}: {last_error}", url=url) from last_error
 
     # --- Pomocnicze ------------------------------------------------------------
+
+    def _breaker(self, host: str) -> CircuitBreaker:
+        """Bezpiecznik danego serwera (tworzony przy pierwszym zapytaniu)."""
+        breaker = self._breakers.get(host)
+        if breaker is None:
+            breaker = self._breakers[host] = CircuitBreaker(
+                self.config.circuit_breaker_failures, self.config.circuit_breaker_cooldown, self._clock
+            )
+        return breaker
 
     def _throttle(self) -> None:
         """Losowy odstęp od poprzedniego zapytania (``min_delay``–``max_delay``)."""

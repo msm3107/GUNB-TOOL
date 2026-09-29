@@ -14,12 +14,14 @@ from tests.test_pipeline import FakeScraper, gunb_case
 @pytest.fixture
 def workdir(tmp_path, monkeypatch):
     """Katalog z minimalną konfiguracją; bez dostępu do prawdziwych sekretów z otoczenia."""
-    for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL", "GOOGLE_SHEET_ID"):
+    for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_ADMIN_CHAT_ID", "DISCORD_WEBHOOK_URL",
+                 "GOOGLE_SHEET_ID"):
         monkeypatch.delenv(name, raising=False)
     (tmp_path / "config.yaml").write_text(
         "gunb:\n  voivodeships: ['16']\n  powiats: ['1607']\n"
         "storage:\n  db_path: data/test.sqlite\n"
         "telegram:\n  bot_token: ${TELEGRAM_BOT_TOKEN}\n  chat_id: ${TELEGRAM_CHAT_ID}\n"
+        "  admin_chat_id: ${TELEGRAM_ADMIN_CHAT_ID}\n"
         "logging:\n  level: INFO\n",
         encoding="utf-8",
     )
@@ -140,3 +142,59 @@ def test_bot_once_runs_single_cycle(workdir, monkeypatch, capsys):
     assert run(workdir, "--bot-once") == 0
     assert calls == {"token": "123:ABC", "commands": 7, "timeout": 0}
     assert "Bot:" in capsys.readouterr().out
+
+
+# --- Utwardzenie: kopia bazy, alerty admina, awarie ------------------------------------------------
+
+def fake_pipeline_factory(cases):
+    def factory(config, repo, *, geocode=True):
+        return LeadPipeline(repo, scraper=FakeScraper(cases), lead_filter=LeadFilter(FilterConfig()))
+    return factory
+
+
+def test_fetch_makes_weekly_database_backup_first(workdir, monkeypatch):
+    seed(workdir)
+    monkeypatch.setattr(main, "create_pipeline", fake_pipeline_factory([gunb_case("B/1")]))
+
+    assert run(workdir, "--fetch", "--no-geocode") == 0
+    assert run(workdir, "--fetch", "--no-geocode") == 0  # druga tego samego tygodnia – bez nowej kopii
+
+    backups = list((workdir / "data" / "backups").glob("test-*.sqlite"))
+    assert len(backups) == 1
+
+
+def test_test_alert_requires_admin_chat(workdir, caplog):
+    assert run(workdir, "--test-alert") == 1
+    assert "TELEGRAM_ADMIN_CHAT_ID" in caplog.text
+
+
+def test_test_alert_is_sent_to_admin_chat(workdir, monkeypatch, capsys):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "42")
+    sent = []
+    monkeypatch.setattr(main, "telegram_sender", lambda token, chat_id, **kwargs: sent.append)
+
+    assert run(workdir, "--test-alert") == 0
+
+    assert len(sent) == 1 and "Test kanału admina" in sent[0]
+    assert "wysłany" in capsys.readouterr().out
+
+
+def test_errors_during_run_reach_admin_chat(workdir, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "42")
+    sent = []
+    monkeypatch.setattr(main, "telegram_sender", lambda token, chat_id, **kwargs: sent.append)
+
+    assert run(workdir, "--notify-discord") == 1  # brak webhooka → błąd w logu
+
+    assert len(sent) == 1 and sent[0].startswith("🚨 BŁĄD:")
+
+
+def test_unexpected_crash_is_logged_as_critical(workdir, monkeypatch, caplog):
+    def crash(*args, **kwargs):
+        raise RuntimeError("nieoczekiwany błąd")
+
+    monkeypatch.setattr(main, "_run_fetch", crash)
+    assert run(workdir, "--fetch") == 1
+    assert any(r.levelname == "CRITICAL" and r.exc_info for r in caplog.records)

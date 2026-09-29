@@ -331,6 +331,9 @@ class BotStore:
             (nazwa, when_iso),
         )
 
+    def clear_job(self, nazwa: str) -> None:
+        self._conn.execute("DELETE FROM bot_jobs WHERE nazwa = ?", (nazwa,))
+
     def place_options(self, powiat_codes: Sequence[str], limit: int = 30) -> list[tuple[str, str]]:
         """Powiaty do wyboru w filtrach: ``(kod, nazwa)`` – nazwa z danych ULDK, gdy już jest w bazie.
 

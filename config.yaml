@@ -135,16 +135,26 @@ geocoding:
 
 http:
   timeout: 60
-  max_retries: 5
-  backoff_base: 2        # wykładniczy backoff: 2, 4, 8... s (z losowym jitterem)
+  max_retries: 3         # każde zapytanie: 3 ponowienia po błędzie sieci / 429 / 5xx, potem błąd
+  backoff_base: 2        # wykładniczy backoff: 2, 4, 8 s (z losowym jitterem; Retry-After ma pierwszeństwo)
   backoff_max: 60
   min_delay: 1.0         # losowe opóźnienie między zapytaniami do GUNB
   max_delay: 3.0
+  # Bezpiecznik: po 3 nieudanych zapytaniach z rzędu do jednego serwera (GUNB, ULDK) kolejne są od razu
+  # odrzucane przez 10 min, zamiast czekać na każdy backoff – potem jedno zapytanie próbne. 0 = wyłączony.
+  circuit_breaker_failures: 3
+  circuit_breaker_cooldown: 600
   # user_agents:         # własna pula User-Agent (domyślnie 5 popularnych przeglądarek)
   #   - "Mozilla/5.0 ..."
 
 storage:
   db_path: data/gunb_leads.sqlite
+  # Kopia bazy raz w tygodniu, przed pobieraniem danych (data w nazwie pliku; zostaje 8 najnowszych).
+  backup_dir: data/backups
+  backup_every_days: 7
+  backup_keep: 8
+  # Od tylu nowych/zmienionych leadów w jednym pobieraniu po imporcie wykonywany jest VACUUM.
+  vacuum_threshold: 500
 
 notifications:
   # Najwięcej leadów obsłużonych na kanał w jednym uruchomieniu (reszta pójdzie przy następnym).
@@ -157,6 +167,9 @@ notifications:
 telegram:
   bot_token: ${TELEGRAM_BOT_TOKEN}
   chat_id: ${TELEGRAM_CHAT_ID}
+  # Cichy kanał admina: awarie (GUNB/ULDK nie odpowiada, blokada bazy…) idą tylko tutaj, nie do klientów.
+  # Puste = alerty wyłączone. Sprawdzenie: python main.py --test-alert
+  admin_chat_id: ${TELEGRAM_ADMIN_CHAT_ID}
   delay_seconds: 1.0     # odstęp między wiadomościami; minimum 1 s (limit Telegrama: ~1 wiadomość/s na czat)
 
 discord:

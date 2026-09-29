@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from typing import Any, Callable, Protocol, Sequence
 
 from .config import AppConfig, GunbConfig
+from .contacts import extract_contact
 from .data_filter import FilterDecision, LeadFilter
 from .exporter import MessageFormatter, NotificationError, Notifier, OutgoingMessage, SheetsSyncResult
 from .geocoding_uldk import GeocodeResult, GeoPrecision, UldkClient, UldkGeocoder, google_maps_url
@@ -247,6 +248,9 @@ def build_investment(case: GunbCase, decision: FilterDecision) -> Investment:
     """Buduje rekord leada ze sprawy GUNB i wyniku filtrowania (bez lokalizacji)."""
     classification = decision.classification
     designer = decision.designer
+    # Tylko pola inwestora i projektanta – w opisach zamierzeń bywają stopki urzędów (telefon starostwa).
+    telefon, email = extract_contact(case.inwestor_raw, case.projektant_imie, case.projektant_nazwisko,
+                                     case.projektant_uprawnienia)
     investment = Investment(
         id_sprawy=case.id_sprawy,
         zrodlo=case.source.value,
@@ -278,6 +282,8 @@ def build_investment(case: GunbCase, decision: FilterDecision) -> Investment:
         is_residential=classification.is_residential,
         is_commercial=classification.is_commercial,
         is_noise=classification.is_noise,
+        telefon=telefon,
+        email=email,
     )
     score = score_investment(investment)
     investment.punkty, investment.priorytet = score.points, score.priority
@@ -331,6 +337,7 @@ def create_pipeline(config: AppConfig, repo: LeadRepository, *, geocode: bool = 
             repo.geocode_cache(),
             max_parcels=config.geocoding.max_parcels_per_case,
             region_fallback=config.geocoding.region_fallback,
+            cooldown=config.http.circuit_breaker_cooldown,
         )
     return LeadPipeline(
         repo,
@@ -347,8 +354,12 @@ def build_formatter(config: AppConfig) -> MessageFormatter:
 
 
 def notification_http_client(config: AppConfig) -> ResilientHttpClient:
-    """Klient HTTP dla powiadomień: bez losowych opóźnień (tempo wyznacza ``delay_seconds``)."""
-    return ResilientHttpClient(replace(config.http, min_delay=0.0, max_delay=0.0, max_retries=3))
+    """Klient HTTP dla powiadomień: bez losowych opóźnień (tempo wyznacza ``delay_seconds``).
+
+    Bez bezpiecznika – serię nieudanych wysyłek przerywa już ``LeadPipeline.notify``.
+    """
+    return ResilientHttpClient(replace(config.http, min_delay=0.0, max_delay=0.0, max_retries=3,
+                                       circuit_breaker_failures=0))
 
 
 def _iso(value: date | None) -> str | None:

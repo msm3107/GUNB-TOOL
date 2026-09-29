@@ -10,13 +10,14 @@ from __future__ import annotations
 import enum
 import logging
 import re
+import time
 from dataclasses import asdict, dataclass, replace
-from typing import Any, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 from urllib.parse import quote
 
 import requests
 
-from .http_client import HttpError, ResilientHttpClient
+from .http_client import CircuitBreaker, HttpError, ResilientHttpClient
 from .models import Parcel
 
 log = logging.getLogger(__name__)
@@ -140,8 +141,10 @@ class UldkGeocoder:
         cache: cache wyników (także negatywnych); domyślnie w pamięci.
         max_parcels: ile działek sprawy sprawdzić, zanim użyjemy środka obrębu.
         region_fallback: czy używać środka obrębu, gdy żadnej działki nie znaleziono.
-        failure_threshold: po tylu kolejnych błędach sieci geokodowanie jest wyłączane
-            do końca uruchomienia (chroni przed zawieszeniem przy awarii ULDK).
+        failure_threshold: po tylu kolejnych błędach ULDK geokodowanie jest wstrzymywane
+            (chroni przed zawieszeniem przy awarii ULDK)...
+        cooldown: ...na tyle sekund; potem próbuje ponownie (bot działa tygodniami bez restartu).
+        clock: zegar monotoniczny (wstrzykiwany w testach).
     """
 
     def __init__(
@@ -152,18 +155,19 @@ class UldkGeocoder:
         max_parcels: int = 3,
         region_fallback: bool = True,
         failure_threshold: int = 3,
+        cooldown: float = 600.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.client = client
         self.cache = cache if cache is not None else MemoryGeocodeCache()
         self.max_parcels = max_parcels
         self.region_fallback = region_fallback
-        self.failure_threshold = failure_threshold
-        self._consecutive_failures = 0
+        self._breaker = CircuitBreaker(failure_threshold, cooldown, clock)
 
     @property
     def disabled(self) -> bool:
-        """Czy zadziałał bezpiecznik (zbyt wiele kolejnych błędów ULDK)."""
-        return self._consecutive_failures >= self.failure_threshold
+        """Czy geokodowanie jest wstrzymane po serii błędów ULDK (do końca przerwy)."""
+        return self._breaker.is_open
 
     def geocode(self, parcels: Sequence[Parcel], *, gmina_teryt: str | None = None) -> GeocodeResult | None:
         """Zwraca lokalizację pierwszej odnalezionej działki, a w razie potrzeby – obrębu.
@@ -190,11 +194,10 @@ class UldkGeocoder:
                         return result
             return None
         except (HttpError, UldkError, requests.RequestException) as exc:
-            self._consecutive_failures += 1
             log.warning("ULDK: błąd geokodowania (%s)", exc)
-            if self.disabled:
-                log.error("ULDK: %d kolejnych błędów – geokodowanie wyłączone do końca uruchomienia",
-                          self._consecutive_failures)
+            if self._breaker.record_failure():
+                log.error("ULDK: %d kolejne błędy (ostatni: %s) – geokodowanie wstrzymane na %d min",
+                          self._breaker.failures, exc, round(self._breaker.cooldown / 60))
             return None
 
     def _cached(self, key: str, lookup) -> GeocodeResult | None:
@@ -202,7 +205,7 @@ class UldkGeocoder:
         if cached is not None:
             return cached.result
         result = lookup()
-        self._consecutive_failures = 0
+        self._breaker.record_success()
         self.cache.set(key, result)
         return result
 

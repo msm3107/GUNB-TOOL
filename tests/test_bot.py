@@ -454,3 +454,66 @@ def test_nothing_matching_in_recent_days_says_so(bot, api, repo):
     text = api.last_to(MIETEK)["text"]
     assert "Nic nowego" in text
     assert "brak pasujących" in text
+
+
+# --- Harmonogram: nieudane pobieranie GUNB jest ponawiane ------------------------------------------
+
+def scheduled_fetcher(results):
+    calls = []
+
+    def fetcher():
+        calls.append(1)
+        return results.pop(0)
+
+    return fetcher, calls
+
+
+def test_failed_scheduled_fetch_is_retried_hourly_until_it_succeeds(repo, api, clock):
+    fetcher, calls = scheduled_fetcher([False, False, True])
+    bot = make_bot(repo, api, clock, fetch_times=("06:30",))
+    bot.fetcher = fetcher
+    clock.utc = datetime(2026, 9, 29, 4, 31, tzinfo=timezone.utc)  # 06:31 czasu lokalnego
+
+    bot.run_due_jobs()
+    assert len(calls) == 1  # 06:31 – GUNB nie odpowiada
+    clock.advance(minutes=30)
+    bot.run_due_jobs()
+    assert len(calls) == 1  # 07:01 – za wcześnie na ponowienie
+    clock.advance(minutes=31)
+    bot.run_due_jobs()
+    assert len(calls) == 2  # 07:32 – ponowienie, nadal awaria
+    clock.advance(hours=1)
+    bot.run_due_jobs()
+    assert len(calls) == 3  # 08:32 – udane
+    clock.advance(hours=3)
+    bot.run_due_jobs()
+    assert len(calls) == 3  # po sukcesie spokój do następnego terminu
+
+
+def test_successful_fetch_is_not_repeated(repo, api, clock):
+    fetcher, calls = scheduled_fetcher([None])  # dotychczasowe fetchery nic nie zwracają = sukces
+    bot = make_bot(repo, api, clock, fetch_times=("06:30",))
+    bot.fetcher = fetcher
+    clock.utc = datetime(2026, 9, 29, 4, 31, tzinfo=timezone.utc)
+    bot.run_due_jobs()
+    clock.advance(hours=2)
+    bot.run_due_jobs()
+    assert len(calls) == 1
+
+
+def test_fetch_crash_is_logged_and_retried_later(repo, api, clock, caplog):
+    def crashing_fetcher():
+        raise RuntimeError("database is locked")
+
+    bot = make_bot(repo, api, clock, fetch_times=("06:30",))
+    bot.fetcher = crashing_fetcher
+    clock.utc = datetime(2026, 9, 29, 4, 31, tzinfo=timezone.utc)
+    with caplog.at_level("ERROR"):
+        bot.run_due_jobs()  # wyjątek nie zatrzymuje harmonogramu bota
+    assert any(r.levelname == "ERROR" and r.exc_info for r in caplog.records)
+
+    fetcher, calls = scheduled_fetcher([True])
+    bot.fetcher = fetcher
+    clock.advance(hours=1, minutes=1)
+    bot.run_due_jobs()
+    assert len(calls) == 1  # ponowienie po godzinie

@@ -8,6 +8,7 @@ Przykłady::
     python main.py --notify-telegram --dry-run      # podgląd wiadomości bez wysyłania
     python main.py --fetch --notify-telegram --sync-sheets   # typowe uruchomienie z harmonogramu
     python main.py --bot                            # interaktywny bot Telegram (działa stale)
+    python main.py --test-alert                     # sprawdź kanał alertów admina (TELEGRAM_ADMIN_CHAT_ID)
 """
 
 from __future__ import annotations
@@ -15,12 +16,14 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import socket
 import sys
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Sequence
 
+from gunb_tool.alerts import install_admin_alerts, telegram_sender
 from gunb_tool.bot import LeadBot
 from gunb_tool.config import AppConfig, ConfigError, LoggingConfig, load_config, override_scope
 from gunb_tool.exporter import (
@@ -33,6 +36,7 @@ from gunb_tool.exporter import (
 )
 from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError
 from gunb_tool.http_client import HttpError, ResilientHttpClient
+from gunb_tool.maintenance import vacuum_after_import, weekly_backup
 from gunb_tool.models import Source
 from gunb_tool.pipeline import (
     FetchReport,
@@ -74,6 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="uruchom interaktywnego bota Telegram (działa stale, Ctrl+C kończy)")
     actions.add_argument("--bot-once", action="store_true",
                          help="jeden cykl bota: odbierz wiadomości i wykonaj zaległe zadania, potem zakończ")
+    actions.add_argument("--test-alert", action="store_true",
+                         help="wyślij wiadomość testową na czat admina (TELEGRAM_ADMIN_CHAT_ID)")
 
     fetch = parser.add_argument_group("opcje --fetch")
     fetch.add_argument("--since", type=_parse_date, metavar="RRRR-MM-DD", help="data początkowa (nadpisuje okno)")
@@ -100,7 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not (args.fetch or args.notify_telegram or args.notify_discord or args.sync_sheets
-            or args.mark_sent or args.stats or args.bot or args.bot_once):
+            or args.mark_sent or args.stats or args.bot or args.bot_once or args.test_alert):
         parser.print_help()
         return EXIT_USAGE
 
@@ -113,7 +119,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_USAGE
     setup_logging(config.logging, verbose=args.verbose)
 
+    telegram = config.telegram
+    alerts = None
+    if telegram.bot_token and telegram.admin_chat_id:
+        alerts = install_admin_alerts(telegram.bot_token, telegram.admin_chat_id,
+                                      send=telegram_sender(telegram.bot_token, telegram.admin_chat_id))
+    try:
+        return _run_actions(args, config)
+    except Exception:  # awaria trafia do logu i na czat admina, zamiast zniknąć w konsoli
+        log.critical("Nieoczekiwany błąd – program przerwany", exc_info=True)
+        return EXIT_PARTIAL_FAILURE
+    finally:
+        if alerts is not None:
+            alerts.stop()
+
+
+def _run_actions(args: argparse.Namespace, config: AppConfig) -> int:
+    """Wykonuje akcje z linii poleceń w ustalonej kolejności."""
     exit_code = EXIT_OK
+    if args.test_alert:
+        exit_code = max(exit_code, _run_test_alert(config))
     with LeadRepository(config.storage.db_path, negative_cache_days=config.geocoding.negative_cache_days) as repo:
         pipeline = LeadPipeline(repo, formatter=build_formatter(config))
         if args.fetch:
@@ -166,11 +191,42 @@ def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespa
         f" do {query.date_to}" if query.date_to else "",
     )
     try:
-        report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=args.limit)
+        report = fetch_with_maintenance(pipeline, config, query, limit=args.limit)
     except (HttpError, GunbFormatError) as exc:
         log.error("Pobieranie danych GUNB nie powiodło się: %s", exc)
         return EXIT_PARTIAL_FAILURE
     _print_fetch_report(report)
+    return EXIT_OK
+
+
+def fetch_with_maintenance(
+    pipeline: LeadPipeline, config: AppConfig, query: FetchQuery, *, limit: int | None = None
+) -> FetchReport:
+    """Pobieranie z higieną bazy: cotygodniowa kopia przed importem, ``VACUUM`` po dużym imporcie."""
+    storage = config.storage
+    weekly_backup(pipeline.repo, storage.backup_dir or storage.db_path.parent / "backups", today=date.today(),
+                  every_days=storage.backup_every_days, keep=storage.backup_keep)
+    report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=limit)
+    vacuum_after_import(pipeline.repo, changed=report.new + report.status_changed + report.updated,
+                        threshold=storage.vacuum_threshold)
+    return report
+
+
+def _run_test_alert(config: AppConfig) -> int:
+    """Wysyła wiadomość testową na czat admina – sprawdza token i ``TELEGRAM_ADMIN_CHAT_ID``."""
+    telegram = config.telegram
+    if not (telegram.bot_token and telegram.admin_chat_id):
+        log.error("Alert testowy: ustaw TELEGRAM_BOT_TOKEN i TELEGRAM_ADMIN_CHAT_ID (sekcja telegram / plik .env)")
+        return EXIT_PARTIAL_FAILURE
+    try:
+        telegram_sender(telegram.bot_token, telegram.admin_chat_id)(
+            f"✅ Test kanału admina GUNB Lead Tool ({socket.gethostname()}): tu będą przychodzić alerty "
+            "o awariach GUNB, ULDK i bazy danych."
+        )
+    except RuntimeError as exc:
+        log.error("Alert testowy nie został wysłany: %s", exc)
+        return EXIT_PARTIAL_FAILURE
+    print("Alert testowy wysłany na czat admina")
     return EXIT_OK
 
 
@@ -226,19 +282,21 @@ def _run_bot(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
     if not config.telegram.bot_token:
         log.error("Bot: brak TELEGRAM_BOT_TOKEN (sekcja telegram / plik .env)")
         return EXIT_PARTIAL_FAILURE
+    # Bez bezpiecznika: pętla bota sama odczekuje po błędach Telegrama i musi wrócić od razu, gdy sieć wróci.
     http = ResilientHttpClient(replace(config.http, min_delay=0.0, max_delay=0.0, max_retries=3,
-                                       timeout=config.bot.poll_timeout + 20))
+                                       timeout=config.bot.poll_timeout + 20, circuit_breaker_failures=0))
     api = TelegramApi(http, config.telegram.bot_token, min_interval_per_chat=config.telegram.delay_seconds)
     fetch_pipeline = create_pipeline(config, repo)
 
-    def fetcher() -> None:
+    def fetcher() -> bool:
         query = build_query(config.gunb, today=date.today())
         try:
-            report = fetch_pipeline.fetch(query, page_size=config.gunb.page_size)
+            report = fetch_with_maintenance(fetch_pipeline, config, query)
         except (HttpError, GunbFormatError) as exc:
-            log.error("Bot: pobieranie danych GUNB nie powiodło się: %s", exc)
-            return
+            log.error("Bot: pobieranie danych GUNB nie powiodło się (ponowię za godzinę): %s", exc)
+            return False
         log.info("Bot: pobrano dane GUNB – nowe %d, zmiana statusu %d", report.new, report.status_changed)
+        return True
 
     bot = LeadBot(
         repo, api,

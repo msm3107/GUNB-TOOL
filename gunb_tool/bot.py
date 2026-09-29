@@ -3,7 +3,8 @@
 Bot działa jako jeden stale uruchomiony proces (``python main.py --bot``):
 
 * odbiera wiadomości i kliknięcia przycisków (long polling ``getUpdates``),
-* o ustalonych godzinach sam pobiera dane GUNB (``bot.fetch_times``),
+* o ustalonych godzinach sam pobiera dane GUNB (``bot.fetch_times``); nieudane pobieranie
+  (np. awaria serwera GUNB) ponawia co godzinę aż do skutku,
 * alerty 👀 watchlisty i tryb „⚡ od razu” obsługuje co ``instant_every_minutes`` minut,
 * raporty „🌅 rano” i „🌙 wieczorem” wysyła raz dziennie o ustawionych godzinach.
 """
@@ -31,6 +32,10 @@ log = logging.getLogger(__name__)
 __all__ = ["LeadBot", "MENU_BUTTONS", "BOT_COMMANDS"]
 
 _PRIORITY_RANK = {"hot": 0, "normal": 1, "low": 2}
+
+FETCH_RETRY_JOB = "pobieranie_ponow"
+"""Zadanie w ``bot_jobs`` z terminem ponowienia nieudanego pobierania (brak wpisu = nic do ponowienia)."""
+FETCH_RETRY_AFTER = timedelta(hours=1)
 
 MENU_ACTIONS: dict[str, str] = {
     "📊 Co nowego?": "_show_news",
@@ -63,7 +68,8 @@ class LeadBot:
         formatter: formater kart leadów.
         digest_threshold: tryb „od razu”: powyżej tylu leadów zamiast serii wiadomości idzie raport.
         max_age_days: starsze zmiany nie są doręczane.
-        fetcher: funkcja pobierająca dane GUNB (wywoływana o ``fetch_times``).
+        fetcher: funkcja pobierająca dane GUNB (wywoływana o ``fetch_times``); zwrócone ``False``
+            oznacza nieudane pobieranie – bot ponowi je za godzinę.
         clock: czas lokalny (harmonogram i daty w raportach).
     """
 
@@ -77,7 +83,7 @@ class LeadBot:
         formatter: MessageFormatter,
         digest_threshold: int = 10,
         max_age_days: int = 14,
-        fetcher: Callable[[], object] | None = None,
+        fetcher: Callable[[], bool | None] | None = None,
         clock: Callable[[], datetime] = datetime.now,
     ) -> None:
         self.repo = repo
@@ -138,8 +144,13 @@ class LeadBot:
             if self.fetcher is not None and self._due(name, now, hhmm):
                 self.store.mark_job(name, _local_iso(now))
                 log.info("Harmonogram: pobieranie danych GUNB (%s)", hhmm)
-                self.fetcher()
+                self._fetch(now)
                 ran.append(name)
+        retry_at = self.store.job_last_run(FETCH_RETRY_JOB)
+        if self.fetcher is not None and retry_at and datetime.fromisoformat(retry_at) <= now:
+            log.info("Harmonogram: ponowienie nieudanego pobierania danych GUNB")
+            self._fetch(now)
+            ran.append(FETCH_RETRY_JOB)
         for name, hhmm, mode in (("raport_rano", self.settings.morning_time, "rano"),
                                  ("raport_wieczor", self.settings.evening_time, "wieczor")):
             if self._due(name, now, hhmm):
@@ -612,6 +623,20 @@ class LeadBot:
             self._send(chat_id, text, markup)
         except TelegramApiError as exc:
             log.warning("Nie udało się wysłać do %s: %s", chat_id, exc)
+
+    def _fetch(self, now: datetime) -> None:
+        """Pobiera dane GUNB; po nieudanej próbie planuje ponowienie za godzinę."""
+        if self.fetcher is None:
+            return
+        try:
+            succeeded = self.fetcher() is not False
+        except Exception:  # np. zablokowana baza – bot działa dalej, pobieranie wróci za godzinę
+            log.exception("Pobieranie danych GUNB przerwane nieoczekiwanym błędem – ponowię za godzinę")
+            succeeded = False
+        if succeeded:
+            self.store.clear_job(FETCH_RETRY_JOB)
+        else:
+            self.store.mark_job(FETCH_RETRY_JOB, _local_iso(now + FETCH_RETRY_AFTER))
 
     def _due(self, name: str, now: datetime, hhmm: str) -> bool:
         hour, minute = (int(part) for part in hhmm.split(":"))

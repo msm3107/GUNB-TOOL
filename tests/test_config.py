@@ -160,3 +160,32 @@ def test_telegram_cannot_send_faster_than_one_message_per_second(tmp_path):
     body = "gunb:\n  voivodeships: ['16']\ntelegram:\n  delay_seconds: 0.5\n"
     with pytest.raises(ConfigError, match="delay_seconds"):
         load_config(write_config(tmp_path, body), env={})
+
+
+# --- Utwardzenie backendu ------------------------------------------------------------------------
+
+def test_hardening_defaults(tmp_path):
+    cfg = load_config(write_config(tmp_path, "gunb:\n  voivodeships: ['16']\n"), env={})
+    assert (cfg.http.circuit_breaker_failures, cfg.http.circuit_breaker_cooldown) == (3, 600.0)
+    assert cfg.telegram.admin_chat_id == ""
+    assert cfg.storage.backup_dir == tmp_path / "data" / "backups"  # obok bazy
+    assert (cfg.storage.backup_every_days, cfg.storage.backup_keep, cfg.storage.vacuum_threshold) == (7, 8, 500)
+
+
+def test_hardening_settings_are_read_from_file(tmp_path):
+    cfg = load_config(write_config(
+        tmp_path,
+        "gunb:\n  voivodeships: ['16']\n"
+        "http:\n  circuit_breaker_failures: 5\n  circuit_breaker_cooldown: 120\n"
+        "telegram:\n  admin_chat_id: ${ADMIN}\n"
+        "storage:\n  db_path: baza/leady.sqlite\n  backup_dir: kopie\n  backup_every_days: 1\n"
+        "  backup_keep: 2\n  vacuum_threshold: 50\n",
+    ), env={"ADMIN": "-100777"})
+    assert (cfg.http.circuit_breaker_failures, cfg.http.circuit_breaker_cooldown) == (5, 120.0)
+    assert cfg.telegram.admin_chat_id == "-100777"
+    assert cfg.storage.backup_dir == tmp_path / "kopie"
+    assert (cfg.storage.backup_every_days, cfg.storage.backup_keep, cfg.storage.vacuum_threshold) == (1, 2, 50)
+
+
+def test_repository_config_retries_each_request_three_times():
+    assert load_config(REPO_ROOT / "config.yaml", env={}).http.max_retries == 3

@@ -3,7 +3,7 @@ import json
 import pytest
 import requests
 
-from gunb_tool.http_client import HttpError
+from gunb_tool.http_client import CircuitOpenError, HttpError
 from tests.fakes import FakeResponse, FakeTime, make_client
 
 AGENTS = ("UA-one", "UA-two", "UA-three")
@@ -109,6 +109,90 @@ def test_polite_delay_is_skipped_when_enough_time_has_passed():
     fake_time.now += 10
     client.get("https://example.test/2")
     assert fake_time.sleeps == []
+
+
+# --- Bezpiecznik (circuit breaker) ---------------------------------------------
+
+DOWN = [FakeResponse(503)] * 4  # make_client: max_retries=3 → 4 próby na jedno zapytanie
+
+
+def test_circuit_opens_after_consecutive_failed_requests_and_then_fails_fast():
+    client, session, clock = make_client(DOWN * 2, circuit_breaker_failures=2)
+    for _ in range(2):
+        with pytest.raises(HttpError):
+            client.get("https://uldk.test/?id=1")
+    calls, sleeps = len(session.calls), len(clock.sleeps)
+
+    with pytest.raises(CircuitOpenError) as excinfo:
+        client.get("https://uldk.test/?id=2")
+
+    # otwarty obwód: bez ruchu sieciowego i bez czekania na ponowienia
+    assert (len(session.calls), len(clock.sleeps)) == (calls, sleeps)
+    assert isinstance(excinfo.value, HttpError)  # dotychczasowa obsługa błędów HTTP działa bez zmian
+
+
+def test_opening_the_circuit_is_logged_once_as_error(caplog):
+    client, _, _ = make_client(DOWN * 3, circuit_breaker_failures=2)
+    with caplog.at_level("ERROR"):
+        for _ in range(3):
+            with pytest.raises(HttpError):
+                client.get("https://uldk.test/")
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "uldk.test" in errors[0].getMessage() and "HTTP 503" in errors[0].getMessage()
+
+
+def test_circuit_lets_a_trial_request_through_after_cooldown_and_closes_on_success(caplog):
+    fake_time = FakeTime()
+    client, session, _ = make_client(DOWN * 2 + [FakeResponse(200), FakeResponse(200)], fake_time=fake_time,
+                                     circuit_breaker_failures=2, circuit_breaker_cooldown=600)
+    for _ in range(2):
+        with pytest.raises(HttpError):
+            client.get("https://uldk.test/")
+    fake_time.now += 601
+
+    with caplog.at_level("INFO"):
+        assert client.get("https://uldk.test/").status_code == 200
+    assert client.get("https://uldk.test/").status_code == 200
+    recovered = [r for r in caplog.records if "znów odpowiada" in r.getMessage()]
+    assert recovered and getattr(recovered[0], "alert", False)  # admin dostaje informację o powrocie usługi
+
+
+def test_failed_trial_request_reopens_the_circuit():
+    fake_time = FakeTime()
+    client, session, _ = make_client(DOWN * 3, fake_time=fake_time,
+                                     circuit_breaker_failures=2, circuit_breaker_cooldown=600)
+    for _ in range(2):
+        with pytest.raises(HttpError):
+            client.get("https://uldk.test/")
+    fake_time.now += 601
+    with pytest.raises(HttpError):
+        client.get("https://uldk.test/")  # próba po przerwie – nadal awaria
+    with pytest.raises(CircuitOpenError):
+        client.get("https://uldk.test/")
+
+
+def test_client_errors_do_not_trip_the_circuit():
+    client, _, _ = make_client([FakeResponse(404)] * 3 + [FakeResponse(200)], circuit_breaker_failures=2)
+    for _ in range(3):
+        assert client.get("https://uldk.test/").status_code == 404  # serwer działa, tylko brak zasobu
+    assert client.get("https://uldk.test/").status_code == 200
+
+
+def test_circuit_is_tracked_per_host():
+    client, _, _ = make_client(DOWN * 2 + [FakeResponse(200)], circuit_breaker_failures=2)
+    for _ in range(2):
+        with pytest.raises(HttpError):
+            client.get("https://uldk.test/")
+    assert client.get("https://gunb.test/wynik.zip").status_code == 200
+
+
+def test_circuit_breaker_can_be_disabled():
+    client, _, _ = make_client(DOWN * 3, circuit_breaker_failures=0)
+    for _ in range(3):
+        with pytest.raises(HttpError) as excinfo:
+            client.get("https://uldk.test/")
+        assert not isinstance(excinfo.value, CircuitOpenError)
 
 
 # --- download(): warunkowe i wznawiane pobieranie ----------------------------

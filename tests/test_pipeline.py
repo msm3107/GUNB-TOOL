@@ -150,6 +150,21 @@ def test_designer_studio_is_stored_as_projektant_and_pracownia(repo):
     assert stored.projektant == stored.pracownia == "Pracownia Projektowa Testowa"
 
 
+def test_phone_and_email_from_raw_investor_and_designer_fields_are_stored(repo):
+    case = gunb_case("A/1", inwestor_raw="Firma Testowa Sp. z o.o., biuro@firma.test",
+                     projektant_uprawnienia="733-110-133")
+    make_pipeline(repo, [case]).fetch(QUERY, page_size=10)
+    stored = repo.get("A/1")
+    assert (stored.telefon, stored.email) == ("+48733110133", "biuro@firma.test")
+
+
+def test_contacts_in_project_description_are_not_used(repo):
+    # w opisach bywają stopki urzędów – to nie jest kontakt do inwestora ani projektanta
+    case = gunb_case("A/1", "Budowa domu. Starostwo Powiatowe, tel. 89 527 00 00, sekretariat@starostwo.test")
+    make_pipeline(repo, [case]).fetch(QUERY, page_size=10)
+    assert (repo.get("A/1").telefon, repo.get("A/1").email) == (None, None)
+
+
 def test_limit_stops_processing(repo):
     report = make_pipeline(repo, [gunb_case(f"X/{i}") for i in range(5)]).fetch(QUERY, page_size=2, limit=3)
     assert report.cases == 3

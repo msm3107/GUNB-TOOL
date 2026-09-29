@@ -20,7 +20,7 @@ from gunb_tool.geocoding_uldk import (
 )
 from gunb_tool.geocoding_uldk import GeocodeResult
 from gunb_tool.models import Parcel
-from tests.fakes import FakeResponse, make_client
+from tests.fakes import FakeResponse, FakeTime, make_client
 
 SQUARE_WKT = "SRID=4326;POLYGON((17.000 51.000,17.002 51.000,17.002 51.002,17.000 51.002,17.000 51.000))"
 PARCEL_FIELDS = "id,voivodeship,county,commune,geom_extent,geom_wkt"
@@ -188,6 +188,24 @@ def test_network_failures_are_not_cached_and_trip_circuit_breaker():
     calls_before = len(session.calls)
     assert geo.geocode([P2]) is None
     assert len(session.calls) == calls_before  # po zadziałaniu bezpiecznika brak zapytań
+
+
+def test_geocoding_resumes_after_breaker_cooldown():
+    """Bot działa tygodniami – chwilowa awaria ULDK nie może wyłączyć geokodowania aż do restartu."""
+    fake_time = FakeTime()
+    failures = [requests.ConnectionError("down")] * 4
+    client, _, _ = make_client(failures * 2 + [FakeResponse(200, parcel_body())], fake_time=fake_time,
+                               circuit_breaker_failures=0)
+    geo = UldkGeocoder(UldkClient(client, "https://uldk.test/"), MemoryGeocodeCache(), region_fallback=False,
+                       failure_threshold=2, cooldown=600, clock=fake_time.clock)
+    assert geo.geocode([P1]) is None
+    assert geo.geocode([P1]) is None
+    assert geo.disabled
+
+    fake_time.now += 601
+
+    assert not geo.disabled
+    assert geo.geocode([P1]) is not None
 
 
 # --- Układ współrzędnych (dane w formatach zwracanych przez ULDK, bez atrap) ----------

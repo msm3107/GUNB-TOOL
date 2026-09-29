@@ -66,8 +66,21 @@ setup_env() {
         esac
     done
     [ -n "$chat_id" ] || ask chat_id "Twój ID w Telegramie – administrator bota (liczba; podaje ją @userinfobot)" '^-?[0-9]{5,}$'
-    (umask 077 && printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$token" "$chat_id" > .env)
+    # Alerty o awariach (GUNB/ULDK/baza) domyślnie idą do admina – można je potem przenieść na osobną grupę.
+    (umask 077 && printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nTELEGRAM_ADMIN_CHAT_ID=%s\n' \
+        "$token" "$chat_id" "$chat_id" > .env)
     chown "$APP_USER:$APP_USER" .env
+}
+
+add_admin_alerts() {  # starsze instalacje: dopisz czat alertów (ten sam co admina), jeśli go brak
+    local chat_id
+    if grep -q '^TELEGRAM_ADMIN_CHAT_ID=' .env; then
+        return
+    fi
+    chat_id=$(sed -n 's/^TELEGRAM_CHAT_ID=//p' .env | head -n 1)
+    if [ -n "$chat_id" ]; then
+        printf 'TELEGRAM_ADMIN_CHAT_ID=%s\n' "$chat_id" >> .env
+    fi
 }
 
 main() {
@@ -108,10 +121,13 @@ main() {
     as_app .venv/bin/pip install --quiet --no-cache-dir --upgrade pip
     as_app .venv/bin/pip install --quiet --no-cache-dir -r requirements.txt
 
+    local first_install=0
     if [ ! -s .env ]; then
         say "Dane bota Telegram (zostają tylko na tym serwerze, w $APP_DIR/.env)"
         setup_env
+        first_install=1
     fi
+    add_admin_alerts
 
     say "Test połączeń (ULDK, baza SQLite)"
     as_app .venv/bin/python sanity_check.py || echo "Uwaga: test nie przeszedł – sprawdź, czy serwer ma dostęp do internetu."
@@ -132,6 +148,13 @@ main() {
         journalctl -u "$SERVICE" -n 30 --no-pager
         echo "Bot nie wystartował – szczegóły powyżej." >&2
         exit 1
+    fi
+    if [ "$first_install" = 1 ]; then
+        if as_app .venv/bin/python main.py --test-alert >/dev/null; then
+            echo "  ✔ na Twój Telegram poszła wiadomość testowa kanału alertów"
+        else
+            echo "  Uwaga: alert testowy nie doszedł – sprawdź TELEGRAM_ADMIN_CHAT_ID w $APP_DIR/.env"
+        fi
     fi
 
     cat <<EOF

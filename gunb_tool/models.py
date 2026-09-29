@@ -306,6 +306,9 @@ class Investment:
     is_noise: bool = False
     punkty: int | None = None
     priorytet: str | None = None
+    # Kontakt wpisany w pole inwestora/projektanta (telefon w E.164: +48…) – pod kafelek „Zadzwoń”.
+    telefon: str | None = None
+    email: str | None = None
     # --- Pola księgowe: ustawia wyłącznie warstwa storage. ---
     nr: int | None = None
     czy_wyslano: bool = False

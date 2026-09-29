@@ -462,6 +462,23 @@ podmiotów innych niż osoby fizyczne.
   współrzędnych i dostanie je przy kolejnym uruchomieniu);
 - tokeny bota i webhooka są maskowane w logach.
 
+**Praca bez nadzoru (serwer 24/7):**
+
+| Mechanizm | Jak działa |
+|---|---|
+| **Ponowienia** | Każde zapytanie do GUNB i ULDK: 3 ponowienia z backoffem 2 → 4 → 8 s (`http.max_retries`). |
+| **Bezpiecznik** | 3 nieudane zapytania z rzędu do jednego serwera → przez 10 min kolejne są od razu odrzucane, potem jedno próbne (`http.circuit_breaker_*`). Awaria ULDK nie blokuje bota na godziny, a geokodowanie wraca samo. |
+| **Ponowienie pobierania** | Nieudane poranne pobieranie w trybie `--bot` jest ponawiane co godzinę aż do skutku. |
+| **Alerty admina** | Błędy z logów trafiają na osobny czat `TELEGRAM_ADMIN_CHAT_ID` z czytelnym nagłówkiem, np. „🚨 BŁĄD: ULDK zwraca HTTP 500”, „GUNB zablokował dostęp (HTTP 403)”, „Baza SQLite zablokowana”, a po awarii „✅ … znów odpowiada”. Ta sama awaria najwyżej raz na 3 h. Klienci niczego nie widzą. Test: `python main.py --test-alert`. |
+| **Kopia bazy** | Raz w tygodniu przed pobieraniem: `data/backups/gunb_leads-RRRR-MM-DD.sqlite`, spójna kopia przez API SQLite (także w trybie WAL), 8 ostatnich. |
+| **VACUUM** | Po dużym imporcie (≥ 500 nowych/zmienionych leadów, `storage.vacuum_threshold`). |
+
+Z pól inwestora i projektanta wyciągany jest też telefon (`+48…`) i e-mail do kolumn `telefon` i
+`email`, na przyszły kafelek „Zadzwoń”. W rejestrze to rzadkość: pomiar na 2 442 042 wierszach
+(4 województwa i ogólnopolskie zgłoszenia) dał 5 wierszy z telefonem, wszystkie wpisane w pole numeru
+uprawnień projektanta, i zero e-maili. Dopasowanie jest ostrożne: 9 cyfr bez „tel.” lub typowego
+zapisu telefonu (np. REGON) jest pomijane.
+
 ---
 
 ## Testy
