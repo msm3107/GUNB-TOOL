@@ -493,7 +493,21 @@ pytest
 ```
 
 Testy działają bez sieci (atrapy klienta HTTP, SQLite w pamięci, atrapa arkusza) na syntetycznych
-danych w formacie GUNB. CI uruchamia je na Pythonie 3.10–3.12.
+danych w formacie GUNB. CI uruchamia je na Pythonie 3.10–3.14.
+
+**Testy QA całego potoku** (`tests/qa/`, fixtures w `tests/qa/conftest.py`): HTTP mockowane na poziomie
+transportu (`responses`), więc działa prawdziwa sesja `requests` z ponowieniami, bezpiecznikiem
+i `Retry-After`. Przerwy to `Mock` z `pytest-mock`, dzięki czemu widać każdą przerwę i jej długość.
+
+| Warstwa | Co sprawdza |
+|---|---|
+| Pobieranie (`test_ingestion_layer.py`) | strona HTML zamiast ZIP (4 próby, łagodny koniec), uszkodzony CRC / strumień deflate (błąd formatu, uszkodzona paczka usuwana z cache), kolumna `kubatura` → `kubatura_m3` i nieznana nazwa (alarm dla admina), plik w Windows-1250, brudne pole projektanta → nazwa + telefon + e-mail + adres |
+| Geokodowanie (`test_geocoding_layer.py`) | 500/502/503 → 3 ponowienia z backoffem 2 → 4 → 8 s i wyjątek, bezpiecznik, geometria w EPSG:2180 i poza Polską odrzucana, pusty poligon → brak punktu albo środek obrębu |
+| Baza (`test_storage_layer.py`) | UPSERT „wniosek” → „decyzja”: ten sam rekord, flaga do wysłania, historia; WAL: bot czyta w trakcie zapisu, odczyt nie blokuje zapisu (kontrola bez WAL), wątki scrapera i bota |
+| Doręczanie (`test_delivery_layer.py`) | 429 FloodWait: pauza o `retry_after`, kolejność i tempo 1/s, limit 10 min; 403 „bot was blocked”: klient oflagowany, pozostali dostają raport, ponowne odblokowanie |
+
+Każdy mechanizm sprawdzono też testem mutacyjnym. Celowo zepsute ponowienia, limit `Retry-After`,
+rozpoznawanie blokady, walidacja EPSG, bezpiecznik, flaga wysyłki i tryb WAL są wyłapywane przez testy.
 
 Test dymny na **żywych** usługach – odpytuje ULDK o działkę testową (domyślnie Pałac Kultury i Nauki),
 sprawdza układ współrzędnych i format linku Google Maps, zapisuje rekord w SQLite `:memory:`:

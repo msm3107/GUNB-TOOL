@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest>=8.0,<9
+pytest-mock>=3.12,<4
+responses>=0.25,<1

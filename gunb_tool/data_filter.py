@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from .config import FilterConfig, SegmentConfig
+from .contacts import split_contact
 from .models import BUILDING_CATEGORIES, NOISE_CATEGORY, GunbCase
 from .text import clean, fold_polish, normalize_text
 
@@ -144,23 +145,30 @@ class LeadFilter:
         return None
 
     def extract_investor(self, case: GunbCase) -> str | None:
-        """Nazwa inwestora, jeśli jawna (GUNB ukrywa dane osób fizycznych)."""
+        """Nazwa inwestora, jeśli jawna (GUNB ukrywa dane osób fizycznych); bez wpisanego telefonu i e-maila."""
         name = clean(case.inwestor_raw)
         if not name:
             return None
-        name = name.strip('"').strip()
+        name = split_contact(name.strip('"').strip(), address=False).name
         if not name or _PLACEHOLDER_RE.match(normalize_text(name)):
             return None
         return name
 
     def extract_designer(self, case: GunbCase) -> Designer | None:
-        """Projektant: imię i nazwisko (porządkowane) albo nazwa pracowni, plus nr uprawnień."""
+        """Projektant: imię i nazwisko (porządkowane) albo nazwa pracowni, plus nr uprawnień.
+
+        Telefon, e-mail i adres wpisane w pola projektanta są odcinane (trafiają do osobnych kolumn),
+        a telefon wpisany zamiast numeru uprawnień nie jest pokazywany jako numer uprawnień.
+        """
         parts = [_PREFIX_RE.sub("", p).strip() for p in (clean(case.projektant_imie), clean(case.projektant_nazwisko)) if p]
+        parts = [split_contact(p).name or "" for p in parts if p]
         parts = [p for p in parts if p]
         if not parts or any(_PLACEHOLDER_RE.match(normalize_text(p)) for p in parts):
             return None
 
         license_no = clean(case.projektant_uprawnienia)
+        if license_no:
+            license_no = split_contact(license_no, address=False).name
         if license_no and _PLACEHOLDER_RE.match(normalize_text(license_no)):
             license_no = None
 

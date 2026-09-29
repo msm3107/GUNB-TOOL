@@ -12,12 +12,14 @@ Pliki CSV mają kilkadziesiąt–kilkaset MB, więc są czytane strumieniowo; wi
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import logging
 import math
 import re
 import zipfile
+import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -43,6 +45,7 @@ _PARCEL_NUMBER_RE = re.compile(r"\d+(?:/\d+)*")
 
 # Logiczne pole -> możliwe nazwy kolumn (pierwsza istniejąca wygrywa). Alternatywy chronią
 # przed drobnymi zmianami formatu po stronie GUNB (np. poprawką literówki „jednosta_numer_ew”).
+_VOLUME_COLUMNS = ("kubatura", "kubatura_m3", "kubatura_obiektu")
 _COLUMNS: dict[Source, dict[str, tuple[str, ...]]] = {
     Source.POZWOLENIA: {
         "id": ("numer_gunb",),
@@ -65,7 +68,7 @@ _COLUMNS: dict[Source, dict[str, tuple[str, ...]]] = {
         "kategoria": ("kategoria",),
         "rodzaj_robot": ("nazwa_zamierzenia_bud",),
         "nazwa_zamierzenia": ("nazwa_zam_budowlanego",),
-        "kubatura": ("kubatura",),
+        "kubatura": _VOLUME_COLUMNS,
         "projektant_nazwisko": ("projektant_nazwisko", "nazwisko_projektanta"),
         "projektant_imie": ("projektant_imie", "imie_projektanta"),
         "projektant_uprawnienia": ("projektant_numer_uprawnien",),
@@ -91,7 +94,7 @@ _COLUMNS: dict[Source, dict[str, tuple[str, ...]]] = {
         "kategoria": ("kategoria",),
         "nazwa_zamierzenia": ("nazwa_zam_budowlanego",),
         "rodzaj_robot": ("rodzaj_zam_budowlanego",),
-        "kubatura": ("kubatura",),
+        "kubatura": _VOLUME_COLUMNS,
         "jednostka": ("jednostki_numer", "jednosta_numer_ew", "jednostka_numer_ew"),
         "obreb": ("obreb_numer",),
         "dzialka": ("numer_dzialki",),
@@ -102,7 +105,10 @@ _COLUMNS: dict[Source, dict[str, tuple[str, ...]]] = {
     },
 }
 _REQUIRED_FIELDS = ("id",)
-_IMPORTANT_FIELDS = ("data_wplywu", "terc", "jednostka", "nazwa_zamierzenia")
+# Bez nich leady nadal powstają, ale gorsze (bez lokalizacji, kubatury do scoringu i filtrów…) –
+# brak którejś to zmiana formatu po stronie GUNB, więc idzie jako ERROR na kanał admina.
+_IMPORTANT_FIELDS = ("data_wplywu", "data_decyzji", "terc", "jednostka", "nazwa_zamierzenia", "kubatura")
+_ENCODING_SAMPLE_BYTES = 1 << 16
 
 
 class GunbFormatError(RuntimeError):
@@ -197,13 +203,27 @@ class GunbScraper:
                 for code in query.voivodeships:
                     voivodeship = get_voivodeship(code)
                     archive = self.download(source, voivodeship)
-                    cases = parse_archive(archive.path, source, query, default_voivodeship=voivodeship.code)
+                    cases = _parse_or_discard(archive.path, source, query, default_voivodeship=voivodeship.code)
                     yield from paginate(cases, source, f"{source.value}/{voivodeship.name}", page_size)
             else:
                 archive = self.download(source)
-                cases = parse_archive(archive.path, source, query)
+                cases = _parse_or_discard(archive.path, source, query)
                 names = ",".join(get_voivodeship(c).name for c in query.voivodeships)
                 yield from paginate(cases, source, f"{source.value}/{names}", page_size)
+
+
+def _parse_or_discard(path: Path, source: Source, query: FetchQuery, **kwargs: str) -> list[GunbCase]:
+    """Parsuje paczkę z cache; gdy jest uszkodzona, usuwa ją razem z metadanymi pobrania.
+
+    Inaczej pobieranie warunkowe (304 „bez zmian”) zwracałoby w kółko ten sam zepsuty plik,
+    a kolejne próby (np. ponowienie co godzinę w bocie) nigdy by się nie udały.
+    """
+    try:
+        return parse_archive(path, source, query, **kwargs)
+    except GunbFormatError:
+        for stale in (path, path.with_name(path.name + ".meta.json")):
+            stale.unlink(missing_ok=True)
+        raise
 
 
 def paginate(cases: Sequence[GunbCase], source: Source, label: str, page_size: int) -> Iterator[Page]:
@@ -270,7 +290,7 @@ def parse_archive(
                     if parcel not in parcel_sets[case_id]:
                         parcel_sets[case_id].add(parcel)
                         case.parcels.append(parcel)
-    except zipfile.BadZipFile as exc:
+    except (zipfile.BadZipFile, zlib.error, EOFError) as exc:  # zły CRC, zepsuty strumień deflate, ucięty plik
         raise GunbFormatError(f"{Path(path).name}: uszkodzone archiwum ZIP ({exc})") from exc
 
     stats.cases = len(cases)
@@ -417,17 +437,33 @@ def _parse_float(value: str | None) -> float | None:
 
 @contextmanager
 def _open_csv(path: Path) -> Iterator[tuple[list[str], Iterator[list[str]]]]:
-    """Otwiera CSV z archiwum: wykrywa separator, usuwa BOM, deduplikuje nazwy kolumn."""
+    """Otwiera CSV z archiwum: wykrywa kodowanie i separator, usuwa BOM, deduplikuje nazwy kolumn."""
     with zipfile.ZipFile(path) as archive:
         member = _csv_member(archive, path)
+        encoding = _detect_encoding(archive, member, path)
         with archive.open(member) as raw:
-            text = io.TextIOWrapper(raw, encoding="utf-8-sig", errors="replace", newline="")
+            text = io.TextIOWrapper(raw, encoding=encoding, errors="replace", newline="")
             header_line = text.readline()
             if not header_line.strip():
                 raise GunbFormatError(f"{path.name}: pusty plik CSV")
             delimiter = _detect_delimiter(header_line, path)
             header = _dedupe([h.strip().lower() for h in next(csv.reader([header_line], delimiter=delimiter))])
             yield header, csv.reader(text, delimiter=delimiter)
+
+
+def _detect_encoding(archive: zipfile.ZipFile, member: str, path: Path) -> str:
+    """UTF-8 (z BOM lub bez), a gdy początek pliku nim nie jest – Windows-1250 (częsty w urzędach).
+
+    Bez tego polskie litery zamieniłyby się w „�”, a słowa wykluczające (np. „przyłącz”) przestałyby działać.
+    """
+    with archive.open(member) as raw:
+        sample = raw.read(_ENCODING_SAMPLE_BYTES)
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(sample, final=False)  # ucięty ostatni znak nie przeszkadza
+    except UnicodeDecodeError:
+        log.warning("%s: plik nie jest w UTF-8 – czytam go jako Windows-1250 (cp1250)", path.name)
+        return "cp1250"
+    return "utf-8-sig"
 
 
 def _csv_member(archive: zipfile.ZipFile, path: Path) -> str:
@@ -466,7 +502,10 @@ def _resolve_columns(header: list[str], columns: dict[str, tuple[str, ...]], pat
                 f"{path.name}: brak wymaganej kolumny {' / '.join(columns[name])} – "
                 "GUNB mógł zmienić format pliku"
             )
-    missing = [name for name in _IMPORTANT_FIELDS if index.get(name) is None]
+    missing = [name for name in _IMPORTANT_FIELDS if name in columns and index[name] is None]
     if missing:
-        log.warning("%s: brak kolumn %s – część pól leadów będzie pusta", path.name, ", ".join(missing))
+        log.error(
+            "%s: brak kolumn %s – GUNB zmienił format pliku? Leady powstają, ale te pola będą puste",
+            path.name, ", ".join(" / ".join(columns[name]) for name in missing),
+        )
     return index
