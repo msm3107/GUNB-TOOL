@@ -328,6 +328,79 @@ def test_version_3_database_gets_contact_columns(tmp_path, clock):
         assert (repo.get("NEW/1").telefon, repo.get("NEW/1").email) == ("+48600123456", "biuro@test.pl")
 
 
+def legacy_database(path, version: int):
+    """Baza w schemacie ``version`` – taka, jaką zostawił kod sprzed aktualizacji (połączenie otwarte)."""
+    import sqlite3
+    from gunb_tool import storage
+
+    conn = sqlite3.connect(path)
+    for number, step in enumerate(storage._MIGRATIONS[:version], start=1):
+        if callable(step):
+            step(conn, number - 1)
+        else:
+            conn.executescript(step)
+    conn.execute(f"PRAGMA user_version = {version}")
+    conn.commit()
+    return conn
+
+
+def test_version_7_job_times_move_to_utc_and_telegram_offset_stays(tmp_path, clock):
+    from gunb_tool.bot_store import BotStore
+
+    path = tmp_path / "v7.sqlite"
+    legacy = legacy_database(path, 7)
+    legacy.executemany("INSERT INTO bot_jobs (nazwa, ostatnio) VALUES (?, ?)", [
+        ("telegram_offset", "123456"), ("raport_rano", "2026-09-29T07:00:05"), ("zepsuty", "nie-data")])
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repo:
+        store = BotStore(repo)
+        # stary zapis to czas lokalny serwera, na którym działał bot – ten sam, na którym idzie migracja
+        assert store.job_time("raport_rano") == datetime(2026, 9, 29, 7, 0, 5).astimezone(timezone.utc)
+        assert store.job_time("zepsuty") is None
+        assert store.job_last_run("telegram_offset") == "123456"
+    with LeadRepository(path, now=clock) as again:  # ponowny start po migracji
+        assert BotStore(again).job_time("raport_rano") is not None
+
+
+def test_failed_migration_step_is_rolled_back_whole(tmp_path, monkeypatch):
+    import sqlite3
+    from gunb_tool import storage
+
+    def broken(conn, start):
+        conn.execute("ALTER TABLE bot_users ADD COLUMN proba TEXT")
+        raise RuntimeError("awaria w połowie migracji")
+
+    monkeypatch.setattr(storage, "_MIGRATIONS", storage._MIGRATIONS + (broken,))
+    path = tmp_path / "db.sqlite"
+    with pytest.raises(RuntimeError, match="awaria"):
+        LeadRepository(path)
+
+    check = sqlite3.connect(path)
+    assert check.execute("PRAGMA user_version").fetchone()[0] == len(storage._MIGRATIONS) - 1
+    assert "proba" not in [row[1] for row in check.execute("PRAGMA table_info(bot_users)")]
+    check.close()
+
+
+def test_import_lease_is_exclusive_until_released_or_expired(repo, clock):
+    ttl = timedelta(minutes=30)
+    assert repo.acquire_lease("import", "bot", ttl)
+    assert not repo.acquire_lease("import", "cron", ttl)
+    assert repo.lease_holder("import") == "bot"
+
+    clock.advance(minutes=20)
+    assert repo.renew_lease("import", "bot", ttl)  # import trwa – odnawia blokadę po każdej stronie
+    clock.advance(minutes=20)
+    assert not repo.acquire_lease("import", "cron", ttl)
+    clock.advance(minutes=11)  # proces „bot” padł – blokada wygasła sama
+    assert repo.acquire_lease("import", "cron", ttl)
+    assert not repo.renew_lease("import", "bot", ttl)  # stary właściciel wie, że ją stracił
+
+    repo.release_lease("import", "cron")
+    assert repo.lease_holder("import") is None
+
+
 def test_version_6_lead_states_become_independent_flags(tmp_path, clock):
     import sqlite3
     from gunb_tool import storage

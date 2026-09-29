@@ -1,3 +1,6 @@
+import threading
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -6,7 +9,7 @@ import main
 from gunb_tool.config import FilterConfig
 from gunb_tool.data_filter import LeadFilter
 from gunb_tool.models import Investment
-from gunb_tool.pipeline import LeadPipeline
+from gunb_tool.pipeline import IMPORT_LEASE, ImportSkipped, LeadPipeline
 from gunb_tool.storage import LeadRepository
 from tests.test_pipeline import FakeScraper, gunb_case
 
@@ -161,6 +164,44 @@ def test_fetch_makes_weekly_database_backup_first(workdir, monkeypatch):
 
     backups = list((workdir / "data" / "backups").glob("test-*.sqlite"))
     assert len(backups) == 1
+
+
+def test_cli_fetch_does_not_run_alongside_another_import(workdir, monkeypatch, caplog):
+    seed(workdir)
+    monkeypatch.setattr(main, "create_pipeline", fake_pipeline_factory([gunb_case("B/1")]))
+    monkeypatch.setattr(main, "CLI_IMPORT_WAIT", timedelta(0))
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        assert repo.acquire_lease(IMPORT_LEASE, "bot-na-serwerze", timedelta(minutes=30))
+
+    assert run(workdir, "--fetch", "--no-geocode") == 1
+
+    assert "trwa inny import" in caplog.text
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        assert repo.get("B/1") is None
+
+
+def test_bot_import_stops_between_pages_and_frees_the_lock(workdir):
+    config = main.load_config(workdir / "config.yaml")
+    config = replace(config, gunb=replace(config.gunb, page_size=1))
+    stop = threading.Event()
+
+    class StopDuringImport(FakeScraper):
+        def fetch_pages(self, query, page_size=200):
+            for page in super().fetch_pages(query, page_size):
+                yield page
+                stop.set()  # zamykanie programu w trakcie importu
+
+    with LeadRepository(config.storage.db_path) as repo:
+        pipeline = LeadPipeline(repo, scraper=StopDuringImport([gunb_case(f"A/{n}") for n in range(3)]),
+                                lead_filter=LeadFilter(FilterConfig()))
+        fetcher = main.bot_fetcher(pipeline, config, should_stop=stop.is_set)
+
+        with pytest.raises(ImportSkipped) as excinfo:
+            fetcher()
+
+        assert excinfo.value.retry_in == timedelta(0)  # dokończy zaraz po ponownym starcie
+        assert repo.get("A/1") is not None and repo.get("A/2") is None
+        assert repo.lease_holder(IMPORT_LEASE) is None
 
 
 def test_test_alert_requires_admin_chat(workdir, caplog):

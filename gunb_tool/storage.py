@@ -23,7 +23,6 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 
-SCHEMA_VERSION = 7
 BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
@@ -168,13 +167,61 @@ def _independent_lead_flags(conn: sqlite3.Connection, from_version: int) -> None
     Odtwarza tylko to, co da się odczytać ze starego pola; nadpisanych wcześniej stanów nie zgadujemy.
     Kolumna ``stan`` zostaje (kod sprzed v7 nadal ją czyta) i jest dalej uzupełniana wartością pochodną.
     """
-    conn.executescript("""
+    _run_script(conn, """
         ALTER TABLE user_leads ADD COLUMN zapisany INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE user_leads ADD COLUMN przejrzany INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE user_leads ADD COLUMN ukryty INTEGER NOT NULL DEFAULT 0;
         UPDATE user_leads SET zapisany = (stan = 'zapisany'), przejrzany = (stan = 'przejrzany'),
                               ukryty = (stan = 'ukryty');
     """)
+
+
+_JOBS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS zadania (
+    nazwa    TEXT PRIMARY KEY,
+    ostatnio TEXT,
+    stan     TEXT,
+    start    TEXT,
+    koniec   TEXT,
+    opis     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS wysylki (
+    zadanie        TEXT NOT NULL,
+    chat_id        INTEGER NOT NULL,
+    stan           TEXT NOT NULL DEFAULT 'oczekuje',
+    proby          INTEGER NOT NULL DEFAULT 0,
+    nastepna_proba TEXT NOT NULL,
+    ostatni_blad   TEXT,
+    utworzono      TEXT NOT NULL,
+    zmieniono      TEXT NOT NULL,
+    PRIMARY KEY (zadanie, chat_id)
+);
+CREATE INDEX IF NOT EXISTS ix_wysylki_stan ON wysylki (stan, nastepna_proba);
+
+CREATE TABLE IF NOT EXISTS blokady (
+    nazwa      TEXT PRIMARY KEY,
+    wlasciciel TEXT NOT NULL,
+    wygasa     TEXT NOT NULL
+);
+"""
+
+
+def _jobs_in_utc(conn: sqlite3.Connection, from_version: int) -> None:
+    """v8: stan zadań w UTC (``zadania``), kolejka wysyłek z ponowieniami (``wysylki``), blokady importu.
+
+    Terminy z ``bot_jobs`` (czas lokalny serwera, bez strefy) trafiają do ``zadania`` w UTC, więc po
+    aktualizacji bot nie powtarza dzisiejszych zadań. ``bot_jobs`` zostaje: offset Telegrama i starszy kod.
+    """
+    _run_script(conn, _JOBS_SCHEMA)
+    for nazwa, ostatnio in conn.execute("SELECT nazwa, ostatnio FROM bot_jobs WHERE nazwa != 'telegram_offset'"):
+        try:
+            moment = datetime.fromisoformat(ostatnio)
+        except (TypeError, ValueError):
+            continue
+        if moment.tzinfo is None:
+            moment = moment.astimezone()  # stary zapis: czas lokalny serwera, na którym działał bot
+        conn.execute("INSERT OR REPLACE INTO zadania (nazwa, ostatnio) VALUES (?, ?)", (nazwa, _iso(moment)))
 
 
 Migration = str | Callable[[sqlite3.Connection, int], None]
@@ -187,12 +234,26 @@ _MIGRATIONS: tuple[Migration, ...] = (
     _TRADE_COLUMN,                                        # v5: branża użytkownika („Kiedy dzwonić”)
     _SUBSCRIPTION_COLUMNS,                                # v6: abonament (paywall) – is_active, subscription_ends
     _independent_lead_flags,                              # v7: zapisany / przejrzany / ukryty niezależnie
+    _jobs_in_utc,                                         # v8: zadania w UTC, kolejka wysyłek, blokady
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 
 Krok może być skryptem SQL albo funkcją ``(połączenie, wersja_startowa)`` – gdy konwersja danych
-zależy od tego, z jakiej wersji baza jest podnoszona.
+zależy od tego, z jakiej wersji baza jest podnoszona. Każdy krok wykonuje się w osobnej transakcji
+razem z podbiciem wersji: przerwana migracja nie zostawia bazy w połowie.
 """
+SCHEMA_VERSION = len(_MIGRATIONS)
+
+
+def _run_script(conn: sqlite3.Connection, script: str) -> None:
+    """Wykonuje skrypt SQL instrukcja po instrukcji w bieżącej transakcji (``executescript`` by ją zatwierdził)."""
+    statement = ""
+    for piece in script.split(";"):
+        statement += piece + ";"
+        if sqlite3.complete_statement(statement):
+            if statement.strip(" \t\r\n;"):
+                conn.execute(statement)
+            statement = ""
 
 GEO_FIELDS: tuple[str, ...] = (
     "lat", "lon", "precyzja_geo", "google_maps_url", "geoportal_url", "powiat", "gmina", "teryt_dzialki",
@@ -493,14 +554,65 @@ class LeadRepository:
     # --- Wewnętrzne -------------------------------------------------------------------
 
     def _migrate(self) -> None:
+        """Podnosi schemat krok po kroku; każdy krok w transakcji ``IMMEDIATE`` razem z numerem wersji.
+
+        Dwa procesy startujące naraz (bot i ``--fetch`` z harmonogramu) nie wykonają kroku dwa razy:
+        drugi czeka na blokadę zapisu i po niej widzi już nową wersję.
+        """
         start = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        for number, step in enumerate(_MIGRATIONS, start=1):
-            if start < number:
-                if callable(step):
-                    step(self._conn, start)
-                else:
-                    self._conn.executescript(step)
-                self._conn.execute(f"PRAGMA user_version = {number}")
+        if start >= len(_MIGRATIONS):
+            return  # schemat aktualny – bez blokady zapisu (inny proces może właśnie importować)
+        while True:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+                if version < len(_MIGRATIONS):
+                    step = _MIGRATIONS[version]
+                    if callable(step):
+                        step(self._conn, start)
+                    else:
+                        _run_script(self._conn, step)
+                    self._conn.execute(f"PRAGMA user_version = {version + 1}")
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            if version + 1 >= len(_MIGRATIONS):
+                return
+
+    # --- Blokady (np. jeden import naraz) ---------------------------------------------
+
+    def acquire_lease(self, name: str, owner: str, ttl: timedelta) -> bool:
+        """Zajmuje blokadę ``name`` na ``ttl``; ``False``, gdy trzyma ją ktoś inny i jeszcze nie wygasła.
+
+        Blokada w bazie działa między procesami (bot, ``--fetch`` z harmonogramu systemu, import historii),
+        a po awarii procesu wygasa sama. Właściciel może ją odnowić tym samym wywołaniem.
+        """
+        now = self.now()
+        cursor = self._conn.execute(
+            "INSERT INTO blokady (nazwa, wlasciciel, wygasa) VALUES (?, ?, ?)"
+            " ON CONFLICT (nazwa) DO UPDATE SET wlasciciel = excluded.wlasciciel, wygasa = excluded.wygasa"
+            " WHERE blokady.wygasa <= ? OR blokady.wlasciciel = excluded.wlasciciel",
+            (name, owner, _iso(now + ttl), _iso(now)),
+        )
+        return cursor.rowcount == 1
+
+    def renew_lease(self, name: str, owner: str, ttl: timedelta) -> bool:
+        """Przedłuża własną blokadę; ``False``, gdy już jej nie mamy (wygasła i przejął ją ktoś inny)."""
+        cursor = self._conn.execute(
+            "UPDATE blokady SET wygasa = ? WHERE nazwa = ? AND wlasciciel = ?", (_iso(self.now() + ttl), name, owner)
+        )
+        return cursor.rowcount == 1
+
+    def release_lease(self, name: str, owner: str) -> None:
+        self._conn.execute("DELETE FROM blokady WHERE nazwa = ? AND wlasciciel = ?", (name, owner))
+
+    def lease_holder(self, name: str) -> str | None:
+        """Kto trzyma ważną blokadę ``name`` (``None`` – wolna)."""
+        row = self._conn.execute(
+            "SELECT wlasciciel FROM blokady WHERE nazwa = ? AND wygasa > ?", (name, _iso(self.now()))
+        ).fetchone()
+        return row[0] if row else None
 
     def _insert(self, values: dict[str, Any], now: str, *, appeared: str) -> None:
         next_nr = self._conn.execute("SELECT coalesce(max(nr), 0) + 1 FROM investments").fetchone()[0]

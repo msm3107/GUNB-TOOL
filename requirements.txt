@@ -2,6 +2,8 @@
 requests>=2.31,<3
 PyYAML>=6.0,<7
 python-dotenv>=1.0,<2
+# Strefa Europe/Warsaw dla harmonogramu (Windows nie ma systemowej bazy stref; na Linuksie to zapas)
+tzdata>=2024.1
 
 # Eksport do Google Sheets (opcjonalny – wymagany tylko dla --sync-sheets)
 gspread>=6.0,<7

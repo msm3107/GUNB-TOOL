@@ -1,29 +1,38 @@
 """Interaktywny bot Telegram dla ekip budowlanych – każdy użytkownik ma własne filtry, tryb i listy.
 
-Bot działa jako jeden stale uruchomiony proces (``python main.py --bot``):
+Bot działa jako jeden stale uruchomiony proces (``python main.py --bot``) z dwoma wątkami:
 
-* odbiera wiadomości i kliknięcia przycisków (long polling ``getUpdates``),
-* o ustalonych godzinach sam pobiera dane GUNB (``bot.fetch_times``); nieudane pobieranie
-  (np. awaria serwera GUNB) ponawia co godzinę aż do skutku,
-* alerty 👀 watchlisty i tryb „⚡ od razu” obsługuje co ``instant_every_minutes`` minut,
-* raporty „🌅 rano” i „🌙 wieczorem” wysyła raz dziennie o ustawionych godzinach,
-* codziennie rano przypomina „⏰ Kiedy dzwonić” – o budowach, które doszły do etapu branży klienta.
+* wątek główny odbiera wiadomości i kliknięcia przycisków (long polling ``getUpdates``),
+* wątek zadań (:class:`JobsWorker`, własne połączenie z bazą i klienci HTTP) o ustalonych godzinach
+  czasu polskiego pobiera dane GUNB (``bot.fetch_times``; nieudane pobieranie ponawia co godzinę),
+  wysyła raporty „🌅 rano” / „🌙 wieczorem” i przypomnienia „⏰ Kiedy dzwonić”, a co
+  ``instant_every_minutes`` minut – alerty 👀 watchlisty i tryb „⚡ od razu”.
+
+Raporty i przypomnienia idą przez kolejkę ``wysylki``: zadanie najpierw zapisuje listę odbiorców, potem
+każda osoba jest obsługiwana osobno – błąd jednej nie zatrzymuje innych, nieudana próba jest ponawiana
+(1, 5, 15, 30 min; najwyżej 5 prób), a restart programu nie gubi ani nie dubluje obsłużonych odbiorców.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
+import uuid
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as clock_time, timedelta, timezone
 from typing import Any, Callable, Sequence
 
 from . import bot_ui as ui
-from .bot_store import BotStore, BotUser, UserFilters, investor_key, watch_match
+from .bot_store import BotStore, BotUser, Send, UserFilters, investor_key, watch_match
 from .bot_ui import BOT_COMMANDS, MENU_BUTTONS
+from .clock import at_local_time, local
 from .config import BotConfig
 from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
+from .gunb_scraper import GunbFormatError
+from .http_client import HttpError
 from .models import Investment
+from .pipeline import ImportSkipped
 from .scoring import HOT
 from .stages import LONGEST_WINDOW_DAYS, get_trade, is_due
 from .storage import LeadRepository
@@ -31,14 +40,33 @@ from .telegram_api import TelegramApiError
 
 log = logging.getLogger(__name__)
 
-__all__ = ["LeadBot", "MENU_BUTTONS", "BOT_COMMANDS"]
+__all__ = ["LeadBot", "JobsWorker", "MENU_BUTTONS", "BOT_COMMANDS"]
 
 _PRIORITY_RANK = {"hot": 0, "normal": 1, "low": 2}
 
 FETCH_RETRY_JOB = "pobieranie_ponow"
-"""Zadanie w ``bot_jobs`` z terminem ponowienia nieudanego pobierania (brak wpisu = nic do ponowienia)."""
+"""Termin ponowienia nieudanego pobierania (tabela ``zadania``; brak terminu = nic do ponowienia)."""
 FETCH_RETRY_AFTER = timedelta(hours=1)
 STAGE_REMINDER_JOB = "przypomnienia_etap"
+IMPORT_JOB = "import"
+"""Stan ostatniego importu GUNB (trwa / ok / blad / pominieto) – podgląd admina ``/status``."""
+LAST_IMPORT_JOB = "import_udany"
+"""Kiedy ostatni import GUNB zakończył się w całości."""
+HEARTBEAT_JOB = "watek_zadan"
+"""Ostatni cykl wątku zadań – po nim widać, że zadania w tle żyją."""
+REPORT_JOBS: dict[str, str] = {"raport_rano": "rano", "raport_wieczor": "wieczor"}
+"""Zadanie raportu → tryb użytkowników, którzy go dostają."""
+
+SEND_BACKOFF: tuple[timedelta, ...] = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=15),
+                                       timedelta(minutes=30))
+"""Przerwy przed kolejnymi próbami wysyłki (po 1., 2., 3. i 4. nieudanej)."""
+MAX_SEND_ATTEMPTS = len(SEND_BACKOFF) + 1
+STUCK_SEND_AFTER = timedelta(minutes=5)
+"""Próba „w toku” dłużej niż tyle = proces padł w trakcie; wysyłka wraca do kolejki (może się powtórzyć)."""
+QUIET_FROM, QUIET_UNTIL = clock_time(22, 0), clock_time(6, 0)
+"""Cisza nocna (czas polski): spóźnione raporty i ponowienia nie wychodzą w nocy."""
+LATE_GRACE = timedelta(minutes=15)
+"""Tyle po terminie wysyłka jest jeszcze „na czas” – także gdy termin wypada w ciszy nocnej."""
 
 MENU_ACTIONS: dict[str, str] = {
     "📊 Co nowego?": "_show_news",
@@ -65,6 +93,7 @@ COMMAND_ACTIONS: dict[str, str] = {
 ADMIN_COMMANDS: dict[str, str] = {
     "/aktywuj": "_cmd_activate",  # /aktywuj <chat_id> <liczba_dni>
     "/trial": "_cmd_trial",  # /trial <chat_id> – 3 dni za darmo
+    "/status": "_cmd_status",  # import GUNB, wątek zadań, wysyłki z ostatniej doby
 }
 """Komendy zastrzeżone dla ``bot.admins`` (``ADMIN_CHAT_ID``); u innych działają jak nieznany tekst."""
 
@@ -80,9 +109,10 @@ class LeadBot:
         formatter: formater kart leadów.
         digest_threshold: tryb „od razu”: powyżej tylu leadów zamiast serii wiadomości idzie raport.
         max_age_days: starsze zmiany nie są doręczane.
-        fetcher: funkcja pobierająca dane GUNB (wywoływana o ``fetch_times``); zwrócone ``False``
-            oznacza nieudane pobieranie – bot ponowi je za godzinę.
-        clock: czas lokalny (harmonogram i daty w raportach).
+        fetcher: funkcja pobierająca dane GUNB (wywoływana o ``fetch_times``). Zwraca opis wyniku
+            (``str``) albo ``True``/``None`` przy sukcesie; ``False`` lub wyjątek = nieudane pobieranie
+            (bot ponowi je za godzinę), :class:`ImportSkipped` = import się nie odbył (np. trwa inny).
+        clock: bieżący czas UTC (domyślnie zegar bazy); godziny harmonogramu liczone są w czasie polskim.
     """
 
     def __init__(
@@ -95,8 +125,8 @@ class LeadBot:
         formatter: MessageFormatter,
         digest_threshold: int = 10,
         max_age_days: int = 14,
-        fetcher: Callable[[], bool | None] | None = None,
-        clock: Callable[[], datetime] = datetime.now,
+        fetcher: Callable[[], bool | str | None] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.repo = repo
         self.api = api
@@ -107,8 +137,10 @@ class LeadBot:
         self.digest_threshold = digest_threshold
         self.max_age_days = max_age_days
         self.fetcher = fetcher
-        self._clock = clock
+        self._now = clock or repo.now
         self._offset: int | None = None
+        self.should_stop: Callable[[], bool] = lambda: False
+        """Prośba o zakończenie (ustawia :class:`JobsWorker`) – długie pętle wysyłek kończą się po bieżącej osobie."""
 
     # === Pętla główna ==========================================================================
 
@@ -118,7 +150,10 @@ class LeadBot:
 
     def run_forever(self, *, should_stop: Callable[[], bool] = lambda: False,
                     sleep: Callable[[float], None] = time.sleep) -> None:
-        """Pętla bota: odbieranie aktualizacji na przemian z zadaniami harmonogramu."""
+        """Odbieranie wiadomości i kliknięć; zadania w tle wykonuje osobny wątek (:class:`JobsWorker`).
+
+        Kończy się po bieżącym long pollingu, gdy ``should_stop()`` zwróci ``True``.
+        """
         self.setup()
         log.info("Bot uruchomiony – czekam na wiadomości (Ctrl+C kończy)")
         while not should_stop():
@@ -127,10 +162,6 @@ class LeadBot:
             except TelegramApiError as exc:
                 log.warning("Telegram: %s", exc)
                 sleep(30 if exc.code == 409 else 5)  # 409 = drugi proces bota odbiera te same aktualizacje
-            try:
-                self.run_due_jobs()
-            except Exception:  # zadanie nie może zatrzymać bota
-                log.exception("Błąd zadania harmonogramu bota")
 
     def poll_once(self, timeout: int) -> int:
         """Pobiera i obsługuje oczekujące aktualizacje; zwraca ich liczbę."""
@@ -148,40 +179,138 @@ class LeadBot:
         return len(updates)
 
     def run_due_jobs(self) -> list[str]:
-        """Uruchamia zaległe zadania: pobieranie GUNB, raporty rano/wieczorem, doręczanie „od razu”."""
-        now = self._clock()
+        """Jeden cykl wątku zadań: import GUNB, start raportów i przypomnień, kolejka wysyłek, „od razu”.
+
+        Godziny z konfiguracji to czas polski (także po zmianie czasu), a znaczniki w bazie są w UTC.
+        Zadanie, którego termin minął podczas przerwy w pracy bota, rusza po jego starcie – tego samego
+        dnia i nie w ciszy nocnej (wtedy treść trafi do następnego raportu).
+        """
+        now = self._now()
+        self.store.set_job_time(HEARTBEAT_JOB, now)
         ran: list[str] = []
         for hhmm in self.settings.fetch_times:
             name = f"pobieranie_{hhmm}"
             if self.fetcher is not None and self._due(name, now, hhmm):
-                self.store.mark_job(name, _local_iso(now))
+                self.store.set_job_time(name, now)
                 log.info("Harmonogram: pobieranie danych GUNB (%s)", hhmm)
-                self._fetch(now)
+                self._fetch()
                 ran.append(name)
-        retry_at = self.store.job_last_run(FETCH_RETRY_JOB)
-        if self.fetcher is not None and retry_at and datetime.fromisoformat(retry_at) <= now:
+        retry_at = self.store.job_time(FETCH_RETRY_JOB)
+        if self.fetcher is not None and retry_at is not None and retry_at <= now:
             log.info("Harmonogram: ponowienie nieudanego pobierania danych GUNB")
-            self._fetch(now)
+            self._fetch()
             ran.append(FETCH_RETRY_JOB)
-        for name, hhmm, mode in (("raport_rano", self.settings.morning_time, "rano"),
-                                 ("raport_wieczor", self.settings.evening_time, "wieczor")):
+        now = self._now()  # import mógł trwać długo
+        jobs = [(name, hhmm) for name, hhmm in (("raport_rano", self.settings.morning_time),
+                                                  ("raport_wieczor", self.settings.evening_time),
+                                                  (STAGE_REMINDER_JOB, self.settings.morning_time))]
+        for name, hhmm in jobs:
             if self._due(name, now, hhmm):
-                self.store.mark_job(name, _local_iso(now))
-                self.deliver_reports(mode)
+                self.store.set_job_time(name, now)
+                if self._quiet(now) and now - at_local_time(now, hhmm) > LATE_GRACE:
+                    log.info("Harmonogram: %s pominięty – bot wrócił w ciszy nocnej", name)
+                else:
+                    self._start_sends(name, now)
                 ran.append(name)
-        if self._due(STAGE_REMINDER_JOB, now, self.settings.morning_time):
-            self.store.mark_job(STAGE_REMINDER_JOB, _local_iso(now))
-            self.deliver_stage_reminders()
-            ran.append(STAGE_REMINDER_JOB)
-        last = self.store.job_last_run("natychmiast")
+        self.process_sends()
+        last = self.store.job_time("natychmiast")
         interval = timedelta(minutes=self.settings.instant_every_minutes)
-        if ran or last is None or datetime.fromisoformat(last) + interval <= now:
-            self.store.mark_job("natychmiast", _local_iso(now))
+        if ran or last is None or last + interval <= now:
+            self.store.set_job_time("natychmiast", now)
             if self.settings.access != "open":
                 self.expire_subscriptions()  # co kilka minut – klient dowiaduje się o końcu abonamentu od razu
             self.deliver_instant()
             ran.append("natychmiast")
         return ran
+
+    # === Kolejka wysyłek (raporty i przypomnienia) ===============================================
+
+    def _start_sends(self, job: str, now: datetime, *, manual: bool = False) -> None:
+        """Start zadania: zapisuje po jednej wysyłce na odbiorcę.
+
+        Zadanie z harmonogramu ma klucz dnia (``raport_rano:2026-09-29``) – drugi start tego samego dnia
+        niczego nie dubluje. Runda ręczna (``manual``) dostaje klucz niepowtarzalny – każda jest osobna.
+        """
+        if job == STAGE_REMINDER_JOB:
+            recipients = [u.chat_id for u in self._subscribers() if u.branza is not None]
+        else:
+            recipients = [u.chat_id for u in self._subscribers(tryb=REPORT_JOBS[job])]
+        key = f"{_utc_iso(now)}#{uuid.uuid4().hex[:8]}" if manual else local(now).date().isoformat()
+        self.store.enqueue_sends(f"{job}:{key}", recipients)
+        log.info("Harmonogram: %s – odbiorców %d", job, len(recipients))
+
+    def process_sends(self) -> int:
+        """Obsługuje zaległe wysyłki z kolejki – każdą osobę osobno; zwraca liczbę wysłanych wiadomości."""
+        self.store.requeue_stuck_sends(self._now() - STUCK_SEND_AFTER)
+        sent = 0
+        for item in self.store.due_sends():
+            if self.should_stop():
+                break
+            sent += self._process_send(item)
+        return sent
+
+    def _process_send(self, item: Send) -> int:
+        job = item.zadanie.partition(":")[0]
+        user = self.store.get_user(item.chat_id)
+        obstacle = self._send_obstacle(item, job, user)
+        if obstacle is not None:
+            self.store.finish_send(item.zadanie, item.chat_id, "pominieto", blad=obstacle)
+            return 0
+        assert user is not None
+        if not self.store.claim_send(item.zadanie, item.chat_id):
+            return 0  # tę wysyłkę obsłużył w międzyczasie inny proces
+        try:
+            delivered = self.send_stage_reminder(user) if job == STAGE_REMINDER_JOB else self.send_report(user)
+        except TelegramApiError as exc:
+            if exc.blocked:
+                self._delivery_failed(user, exc)
+                self.store.finish_send(item.zadanie, item.chat_id, "zablokowany", blad=str(exc))
+            else:
+                self._send_failed(item, exc)
+            return 0
+        except Exception as exc:  # błąd przy jednej osobie (np. nietypowe dane) nie zatrzymuje pozostałych
+            log.exception("Wysyłka %s do %s: nieoczekiwany błąd", item.zadanie, item.chat_id)
+            self._send_failed(item, exc)
+            return 0
+        self.store.finish_send(item.zadanie, item.chat_id, "wyslano" if delivered else "pusto")
+        return int(delivered)
+
+    def _send_obstacle(self, item: Send, job: str, user: BotUser | None) -> str | None:
+        """Powód, by wysyłki już nie robić (``None`` – można wysyłać)."""
+        if user is None or user.status != "aktywny":
+            return f"odbiorca {user.status if user else 'nieznany'}"
+        if not self._has_access(user):
+            return "brak dostępu"
+        if job in REPORT_JOBS and user.tryb != REPORT_JOBS[job]:
+            return "zmieniony tryb raportów"
+        now = self._now()
+        created = datetime.fromisoformat(item.utworzono)
+        if local(created).date() != local(now).date():
+            return "po czasie (inny dzień)"
+        if self._quiet(now) and now - created > LATE_GRACE:
+            return "cisza nocna"
+        return None
+
+    def _send_failed(self, item: Send, exc: Exception) -> None:
+        """Nieudana próba: ponowienie po przerwie albo – po ostatniej próbie – błąd widoczny dla admina.
+
+        Timeout nie mówi, czy Telegram przyjął wiadomość; ponowienie może ją więc powtórzyć (co najwyżej
+        tyle razy, ile jest prób). Wolimy to niż ryzyko, że klient nie dostanie raportu wcale.
+        """
+        attempt = item.proby + 1
+        if attempt >= MAX_SEND_ATTEMPTS:
+            log.error("Wysyłka %s do %s nieudana po %d próbach: %s", item.zadanie, item.chat_id, attempt, exc)
+            self.store.finish_send(item.zadanie, item.chat_id, "blad", blad=str(exc))
+            return
+        retry_at = self._now() + SEND_BACKOFF[attempt - 1]
+        log.warning("Wysyłka %s do %s nieudana (próba %d/%d): %s – ponowię o %s", item.zadanie, item.chat_id,
+                    attempt, MAX_SEND_ATTEMPTS, exc, f"{local(retry_at):%H:%M}")
+        self.store.finish_send(item.zadanie, item.chat_id, "oczekuje", blad=str(exc), retry_at=retry_at)
+
+    def _quiet(self, now: datetime) -> bool:
+        """Czy w Polsce trwa cisza nocna (22:00–6:00)."""
+        moment = local(now).time()
+        return moment >= QUIET_FROM or moment < QUIET_UNTIL
 
     # === Aktualizacje =========================================================================
 
@@ -303,6 +432,16 @@ class LeadBot:
             return
         self._grant_by_id(admin_chat, int(args[0]), days=ui.TRIAL_DAYS, trial=True)
 
+    def _cmd_status(self, admin_chat: int, args: list[str]) -> None:
+        """``/status`` – tylko admin: stan importu GUNB, wątku zadań i wysyłek z ostatniej doby."""
+        now = self._now()
+        day_ago = now - timedelta(hours=24)
+        self._send(admin_chat, ui.status_text(
+            now=now, import_status=self.store.job_status(IMPORT_JOB), last_import=self.store.job_time(LAST_IMPORT_JOB),
+            retry_at=self.store.job_time(FETCH_RETRY_JOB), heartbeat=self.store.job_time(HEARTBEAT_JOB),
+            sends=self.store.send_counts(day_ago), failed=self.store.failed_sends(day_ago),
+        ))
+
     def _grant_by_id(self, admin_chat: int, chat_id: int, *, days: int, trial: bool) -> None:
         user = self.store.get_user(chat_id)
         if user is None:
@@ -372,12 +511,10 @@ class LeadBot:
         return self.store.subscribers(_utc_iso(self.repo.now()), admins=self.settings.admins, tryb=tryb)
 
     def _local_date(self, utc_iso: str | None, *, with_time: bool = False) -> str:
-        """Data z bazy (UTC) w czasie lokalnym bota – do komunikatów (np. „29.10.2026”)."""
+        """Data z bazy (UTC) w czasie polskim – do komunikatów (np. „29.10.2026”)."""
         if not utc_iso:
             return "—"
-        offset = self._clock() - self.repo.now().replace(tzinfo=None)
-        moment = datetime.fromisoformat(utc_iso).replace(tzinfo=None) + timedelta(minutes=round(offset.total_seconds() / 60))
-        return moment.strftime("%d.%m.%Y %H:%M" if with_time else "%d.%m.%Y")
+        return local(datetime.fromisoformat(utc_iso)).strftime("%d.%m.%Y %H:%M" if with_time else "%d.%m.%Y")
 
     # === Ekrany z menu =========================================================================
 
@@ -665,9 +802,17 @@ class LeadBot:
     # === Doręczanie ==============================================================================
 
     def deliver_instant(self) -> int:
-        """Alerty watchlisty (wszyscy) i leady trybu „⚡ od razu”; zwraca liczbę wysłanych wiadomości."""
+        """Alerty watchlisty (wszyscy) i leady trybu „⚡ od razu”; zwraca liczbę wysłanych wiadomości.
+
+        W ciszy nocnej czekają do rana. Nieudana wysyłka nie jest zapisywana jako doręczona, więc wraca
+        w kolejnym cyklu.
+        """
+        if self._quiet(self._now()):
+            return 0
         sent = 0
         for user in self._subscribers():
+            if self.should_stop():
+                break
             try:
                 sent += self._deliver_instant_to(user)
             except TelegramApiError as exc:
@@ -675,14 +820,10 @@ class LeadBot:
         return sent
 
     def deliver_reports(self, mode: str) -> int:
-        """Raporty zbiorcze dla użytkowników w trybie ``mode`` (``rano``/``wieczor``)."""
-        sent = 0
-        for user in self._subscribers(tryb=mode):
-            try:
-                sent += int(self.send_report(user))
-            except TelegramApiError as exc:
-                self._delivery_failed(user, exc)
-        return sent
+        """Raporty zbiorcze teraz dla trybu ``mode`` (``rano``/``wieczor``) – przez kolejkę wysyłek."""
+        job = next(name for name, tryb in REPORT_JOBS.items() if tryb == mode)
+        self._start_sends(job, self._now(), manual=True)
+        return self.process_sends()
 
     def send_report(self, user: BotUser, *, on_demand: bool = False,
                     leads: Sequence[Investment] | None = None) -> bool:
@@ -716,7 +857,7 @@ class LeadBot:
 
         def build(count: int) -> tuple[str, dict | None]:
             return ui.report(
-                f"{self._clock():%d.%m}", total_new=len(candidates), leads=leads[:count], matching=len(leads),
+                f"{local(self._now()):%d.%m}", total_new=len(candidates), leads=leads[:count], matching=len(leads),
                 hot=sum(1 for inv in leads if inv.priorytet == HOT), watched=watched, distance=distance,
             )
 
@@ -733,7 +874,7 @@ class LeadBot:
 
     def _history_matches(self, user: BotUser) -> list[Investment]:
         """Wszystkie inwestycje z ostatnich ``recent_days`` dni pasujące do filtrów (także już wysłane)."""
-        date_from = (self._clock().date() - timedelta(days=self.settings.recent_days)).isoformat()
+        date_from = (local(self._now()).date() - timedelta(days=self.settings.recent_days)).isoformat()
         matches = [inv for inv in self.store.recent_leads(user.chat_id, date_from) if self._wanted(user, inv)]
         return _ranked(matches, user.filtry.distance_km if user.filtry.radius_active else None)
 
@@ -757,16 +898,9 @@ class LeadBot:
         return None
 
     def deliver_stage_reminders(self) -> int:
-        """Poranne przypomnienia „⏰ Kiedy dzwonić” dla osób z wybraną branżą; zwraca liczbę wiadomości."""
-        sent = 0
-        for user in self._subscribers():
-            if user.branza is None:
-                continue
-            try:
-                sent += int(self.send_stage_reminder(user))
-            except TelegramApiError as exc:
-                self._delivery_failed(user, exc)
-        return sent
+        """Przypomnienia „⏰ Kiedy dzwonić” teraz (osoby z wybraną branżą) – przez kolejkę wysyłek."""
+        self._start_sends(STAGE_REMINDER_JOB, self._now(), manual=True)
+        return self.process_sends()
 
     def send_stage_reminder(self, user: BotUser, *, on_demand: bool = False) -> bool:
         """Budowy (zgodne z filtrami), które dziś są na etapie branży użytkownika – każda raz na branżę.
@@ -777,7 +911,7 @@ class LeadBot:
         trade = get_trade(user.branza)
         if trade is None or trade.months is None:
             return False
-        today = self._clock().date()
+        today = local(self._now()).date()
         rewizja = f"etap:{trade.key}"
         since = (today - timedelta(days=LONGEST_WINDOW_DAYS)).isoformat()
         due = [inv for inv in self.store.stage_candidates(user.chat_id, rewizja, since)
@@ -901,27 +1035,71 @@ class LeadBot:
         except TelegramApiError as exc:
             log.warning("Nie udało się wysłać do %s: %s", chat_id, exc)
 
-    def _fetch(self, now: datetime) -> None:
-        """Pobiera dane GUNB; po nieudanej próbie planuje ponowienie za godzinę."""
+    def _fetch(self) -> None:
+        """Pobiera dane GUNB (stan widoczny dla admina w ``/status``); po niepowodzeniu planuje ponowienie."""
         if self.fetcher is None:
             return
+        self.store.job_started(IMPORT_JOB)
+        retry_in: timedelta | None = FETCH_RETRY_AFTER
         try:
-            succeeded = self.fetcher() is not False
-        except Exception:  # np. zablokowana baza – bot działa dalej, pobieranie wróci za godzinę
+            result = self.fetcher()
+        except ImportSkipped as exc:
+            log.info("Pobieranie danych GUNB pominięte: %s", exc)
+            self.store.job_finished(IMPORT_JOB, "pominieto", str(exc))
+            retry_in = exc.retry_in
+        except (HttpError, GunbFormatError) as exc:  # awaria po stronie GUNB – znana, bez śladu stosu
+            log.error("Pobieranie danych GUNB nie powiodło się (ponowię za godzinę): %s", exc)
+            self.store.job_finished(IMPORT_JOB, "blad", str(exc))
+        except Exception as exc:  # np. zablokowana baza – bot działa dalej, pobieranie wróci za godzinę
             log.exception("Pobieranie danych GUNB przerwane nieoczekiwanym błędem – ponowię za godzinę")
-            succeeded = False
-        if succeeded:
-            self.store.clear_job(FETCH_RETRY_JOB)
+            self.store.job_finished(IMPORT_JOB, "blad", f"{type(exc).__name__}: {exc}")
         else:
-            self.store.mark_job(FETCH_RETRY_JOB, _local_iso(now + FETCH_RETRY_AFTER))
+            if result is False:
+                self.store.job_finished(IMPORT_JOB, "blad", "nieudane pobieranie")
+            else:
+                self.store.job_finished(IMPORT_JOB, "ok", result if isinstance(result, str) else None)
+                self.store.set_job_time(LAST_IMPORT_JOB, self._now())
+                retry_in = None
+        self.store.set_job_time(FETCH_RETRY_JOB, self._now() + retry_in if retry_in is not None else None)
 
     def _due(self, name: str, now: datetime, hhmm: str) -> bool:
-        hour, minute = (int(part) for part in hhmm.split(":"))
-        scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        """Czy zadanie o ``hhmm`` (czas polski) jest dziś już po terminie i jeszcze go nie zrobiono."""
+        scheduled = at_local_time(now, hhmm)
         if now < scheduled:
             return False
-        last = self.store.job_last_run(name)
-        return last is None or last < _local_iso(scheduled)
+        last = self.store.job_time(name)
+        return last is None or last < scheduled
+
+
+class JobsWorker(threading.Thread):
+    """Wątek zadań w tle: import GUNB, raporty, przypomnienia, kolejka wysyłek, alerty „od razu”.
+
+    Bot zadań powstaje w tym wątku (``make_bot`` zwraca go razem z funkcją sprzątającą) – z własnym
+    połączeniem SQLite i własnymi klientami HTTP, bo połączeń SQLite nie dzieli się między wątkami.
+    Zadania są sprawdzane co ``every`` sekund; ``stop`` kończy pętlę po bieżącym kroku (wysyłki – po
+    bieżącej osobie, import – po bieżącej stronie).
+    """
+
+    def __init__(self, make_bot: Callable[[], tuple[LeadBot, Callable[[], None]]], stop: threading.Event,
+                 *, every: float = 20.0) -> None:
+        super().__init__(name="zadania-bota", daemon=True)
+        self._make_bot = make_bot
+        self._stop_event = stop
+        self._every = every
+
+    def run(self) -> None:
+        bot, close = self._make_bot()
+        bot.should_stop = self._stop_event.is_set
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    bot.run_due_jobs()
+                except Exception:  # błąd jednego cyklu nie zatrzymuje wątku
+                    log.exception("Błąd zadania harmonogramu bota")
+                self._stop_event.wait(self._every)
+        finally:
+            close()
+            log.info("Wątek zadań zakończony")
 
 
 _CALLBACKS: dict[str, Callable[..., str | None]] = {
@@ -987,7 +1165,3 @@ def _parse_volume(text: str) -> float | None:
 
 def _utc_iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
-
-
-def _local_iso(moment: datetime) -> str:
-    return moment.replace(microsecond=0).isoformat()

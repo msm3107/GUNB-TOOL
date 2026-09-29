@@ -4,102 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from gunb_tool.bot import MENU_BUTTONS, LeadBot
+from gunb_tool.bot import MENU_BUTTONS
 from gunb_tool.bot_store import BotStore, UserFilters
-from gunb_tool.config import BotConfig
-from gunb_tool.exporter import MessageFormatter
-from gunb_tool.models import Investment
-from gunb_tool.storage import LeadRepository
-from gunb_tool.telegram_api import TelegramApiError
-
-ADMIN, MIETEK, OBCY = 1001, 2002, 3003
-
-
-class Clock:
-    """Wspólny zegar: UTC dla bazy, czas lokalny (naiwny) dla harmonogramu bota."""
-
-    def __init__(self) -> None:
-        self.utc = datetime(2026, 9, 29, 5, 0, tzinfo=timezone.utc)
-
-    def now_utc(self) -> datetime:
-        return self.utc
-
-    def now_local(self) -> datetime:
-        return (self.utc + timedelta(hours=2)).replace(tzinfo=None)
-
-    def advance(self, **delta) -> None:
-        self.utc += timedelta(**delta)
-
-
-class FakeApi:
-    """Rejestruje wywołania API Telegrama; ``blocked`` = czaty, które zablokowały bota."""
-
-    def __init__(self) -> None:
-        self.sent, self.edits, self.answers, self.commands = [], [], [], []
-        self.blocked: set[int] = set()
-        self._message_id = 500
-
-    def send_message(self, chat_id, text, reply_markup=None):
-        if chat_id in self.blocked:
-            raise TelegramApiError("sendMessage", 403, "Forbidden: bot was blocked by the user")
-        self._message_id += 1
-        self.sent.append({"chat_id": chat_id, "text": text, "markup": reply_markup, "message_id": self._message_id})
-        return {"message_id": self._message_id}
-
-    def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
-        self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text, "markup": reply_markup})
-
-    def edit_message_reply_markup(self, chat_id, message_id, reply_markup):
-        self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": None, "markup": reply_markup})
-
-    def answer_callback_query(self, callback_query_id, text=None):
-        self.answers.append(text)
-
-    def set_my_commands(self, commands):
-        self.commands = commands
-
-    # pomocnicze dla testów
-    def last_to(self, chat_id):
-        return [m for m in self.sent if m["chat_id"] == chat_id][-1]
-
-    def to(self, chat_id):
-        return [m for m in self.sent if m["chat_id"] == chat_id]
-
-
-def buttons(markup):
-    """Płaska lista (tekst, callback_data | url) z klawiatury inline."""
-    return [(b["text"], b.get("callback_data") or b.get("url")) for row in (markup or {}).get("inline_keyboard", [])
-            for b in row]
-
-
-def callback_for(markup, text_fragment):
-    return next(data for text, data in buttons(markup) if text_fragment in text)
-
-
-@pytest.fixture
-def clock():
-    return Clock()
-
-
-@pytest.fixture
-def repo(clock):
-    repository = LeadRepository(":memory:", now=clock.now_utc)
-    yield repository
-    repository.close()
-
-
-@pytest.fixture
-def api():
-    return FakeApi()
-
-
-def make_bot(repo, api, clock, **settings):
-    params = dict(admins=(ADMIN,), access="approval", fetch_times=(), morning_time="07:00", evening_time="19:00",
-                  instant_every_minutes=10, welcome_backlog_days=7, max_leads_in_report=20,
-                  admin_contact="@admin_gunb")
-    params.update(settings)
-    return LeadBot(repo, api, settings=BotConfig(**params), powiat_codes=("1465", "3021"),
-                   formatter=MessageFormatter(), clock=clock.now_local)
+from tests.bot_helpers import ADMIN, MIETEK, OBCY, activate, buttons, callback_for, click, lead, make_bot, message
 
 
 @pytest.fixture
@@ -107,43 +14,11 @@ def bot(repo, api, clock):
     return make_bot(repo, api, clock)
 
 
-def message(chat_id, text, first_name="Mietek"):
-    return {"update_id": 1, "message": {"message_id": 1, "text": text,
-                                        "chat": {"id": chat_id, "type": "private"},
-                                        "from": {"id": chat_id, "first_name": first_name, "username": None}}}
-
-
-def click(chat_id, data, message_id=777):
-    return {"update_id": 2, "callback_query": {"id": "cb", "data": data, "from": {"id": chat_id},
-                                               "message": {"message_id": message_id, "chat": {"id": chat_id}}}}
-
-
-def lead(id_sprawy, **overrides) -> Investment:
-    base = dict(
-        id_sprawy=id_sprawy, zrodlo="pozwolenia", status="decyzja", kategoria="mieszkaniowa-jednorodzinna",
-        nazwa_zamierzenia="Budowa budynku mieszkalnego jednorodzinnego", kubatura=878.0, priorytet="normal",
-        punkty=3, adres_opisowy="Wróblewo", miejscowosc="Wróblewo", gmina="Kostrzyn", powiat="powiat poznański",
-        powiat_teryt="3021", gmina_teryt="3021085", data_aktualizacji="2026-09-28",
-        google_maps_url="https://www.google.com/maps?q=52.379110,17.211380",
-    )
-    base.update(overrides)
-    return Investment(**base)
-
-
 BIG_WARSAW = dict(kategoria="mieszkaniowa-wielorodzinna", kubatura=26265.0, priorytet="hot", punkty=10,
                   nazwa_zamierzenia="Budowa zespołu dwóch budynków wielorodzinnych",
                   adres_opisowy="Warszawa", miejscowosc="Warszawa", gmina="Warszawa (miasto)",
                   powiat="powiat Warszawa", powiat_teryt="1465", gmina_teryt="1465038",
                   inwestor="Napollo 3 Sp. z o.o.")
-
-
-def activate(bot, api, chat_id=MIETEK):
-    bot.handle_update(message(chat_id, "/start"))
-    if chat_id != ADMIN:
-        bot.handle_update(click(ADMIN, f"adm:ok:{chat_id}"))
-    api.sent.clear()
-    api.edits.clear()
-    api.answers.clear()
 
 
 # --- Rejestracja i menu ------------------------------------------------------------------------
@@ -429,7 +304,7 @@ def test_lead_card_has_action_buttons_and_save_updates_them(bot, api, repo):
     bot.handle_update(message(MIETEK, "⭐ Zapisane"))
     saved = api.last_to(MIETEK)
     assert "Budowa zespołu dwóch budynków wielorodzinnych" in saved["text"]
-    assert (f"1", f"o:{nr}") in buttons(saved["markup"])
+    assert ("1", f"o:{nr}") in buttons(saved["markup"])
 
 
 def test_hide_collapses_card_and_undo_restores_it(bot, api, repo):

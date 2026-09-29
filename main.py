@@ -16,15 +16,18 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import signal
 import socket
 import sys
+import threading
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from gunb_tool.alerts import install_admin_alerts, telegram_sender
-from gunb_tool.bot import LeadBot
+from gunb_tool.bot import JobsWorker, LeadBot
+from gunb_tool.clock import local, utc_now
 from gunb_tool.config import AppConfig, ConfigError, LoggingConfig, load_config, override_scope
 from gunb_tool.exporter import (
     DiscordNotifier,
@@ -40,10 +43,12 @@ from gunb_tool.maintenance import vacuum_after_import, weekly_backup
 from gunb_tool.models import Source
 from gunb_tool.pipeline import (
     FetchReport,
+    ImportSkipped,
     LeadPipeline,
     build_formatter,
     build_query,
     create_pipeline,
+    import_lease,
     notification_http_client,
 )
 from gunb_tool.storage import LeadRepository
@@ -53,6 +58,12 @@ log = logging.getLogger("gunb_tool.main")
 
 CHANNELS = ("telegram", "discord")
 EXIT_OK, EXIT_PARTIAL_FAILURE, EXIT_USAGE = 0, 1, 2
+CLI_IMPORT_WAIT = timedelta(minutes=45)
+"""Ręczny ``--fetch`` (także import historii z instalatora) czeka tyle, aż skończy się import bota."""
+INTERACTIVE_MAX_RETRY_AFTER = 10.0
+"""Odpowiedź na kliknięcie nie czeka dłużej na limit Telegrama – lepiej zgłosić błąd niż wisieć minutami."""
+WORKER_JOIN_TIMEOUT = 45
+"""Tyle (s) czekamy przy zamykaniu na wątek zadań; systemd domyślnie daje 90 s na zatrzymanie usługi."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -186,7 +197,8 @@ def setup_logging(config: LoggingConfig, *, verbose: bool = False) -> None:
 # --- Akcje ------------------------------------------------------------------------
 
 def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespace) -> int:
-    query = build_query(config.gunb, today=date.today(), since=args.since, until=args.until, days=args.days)
+    query = build_query(config.gunb, today=local(utc_now()).date(), since=args.since, until=args.until,
+                        days=args.days)
     log.info(
         "Pobieranie: źródła %s, województwa %s, powiaty %s, %s od %s%s",
         ",".join(s.value for s in query.sources), ",".join(query.voivodeships),
@@ -194,9 +206,13 @@ def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespa
         f" do {query.date_to}" if query.date_to else "",
     )
     try:
-        report = fetch_with_maintenance(pipeline, config, query, limit=args.limit, historical=args.historical)
+        report = fetch_with_maintenance(pipeline, config, query, limit=args.limit, historical=args.historical,
+                                        wait_for_other_import=CLI_IMPORT_WAIT)
     except (HttpError, GunbFormatError) as exc:
         log.error("Pobieranie danych GUNB nie powiodło się: %s", exc)
+        return EXIT_PARTIAL_FAILURE
+    except ImportSkipped as exc:
+        log.error("Pobieranie danych GUNB nie wystartowało: %s – spróbuj później", exc)
         return EXIT_PARTIAL_FAILURE
     _print_fetch_report(report)
     return EXIT_OK
@@ -204,16 +220,44 @@ def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespa
 
 def fetch_with_maintenance(
     pipeline: LeadPipeline, config: AppConfig, query: FetchQuery, *, limit: int | None = None,
-    historical: bool = False,
+    historical: bool = False, should_stop: Callable[[], bool] = lambda: False,
+    wait_for_other_import: timedelta = timedelta(0),
 ) -> FetchReport:
-    """Pobieranie z higieną bazy: cotygodniowa kopia przed importem, ``VACUUM`` po dużym imporcie."""
+    """Pobieranie z higieną bazy: cotygodniowa kopia przed importem, ``VACUUM`` po dużym imporcie.
+
+    Naraz działa jeden import (blokada w bazie – bot, harmonogram systemu i import historii); import
+    przerywa się między stronami, gdy ``should_stop()`` zwróci ``True`` albo blokada zostanie utracona.
+
+    Raises:
+        ImportSkipped: trwa inny import (po ``wait_for_other_import`` oczekiwania).
+    """
     storage = config.storage
-    weekly_backup(pipeline.repo, storage.backup_dir or storage.db_path.parent / "backups", today=date.today(),
-                  every_days=storage.backup_every_days, keep=storage.backup_keep)
-    report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=limit, historical=historical)
-    vacuum_after_import(pipeline.repo, changed=report.new + report.status_changed + report.updated,
-                        threshold=storage.vacuum_threshold)
+    with import_lease(pipeline.repo, wait=wait_for_other_import) as renew_lease:
+        weekly_backup(pipeline.repo, storage.backup_dir or storage.db_path.parent / "backups",
+                      today=local(utc_now()).date(), every_days=storage.backup_every_days, keep=storage.backup_keep)
+        report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=limit, historical=historical,
+                                should_continue=lambda: renew_lease() and not should_stop())
+        vacuum_after_import(pipeline.repo, changed=report.new + report.status_changed + report.updated,
+                            threshold=storage.vacuum_threshold)
     return report
+
+
+def bot_fetcher(pipeline: LeadPipeline, config: AppConfig, *,
+                should_stop: Callable[[], bool]) -> Callable[[], str]:
+    """Pobieranie danych GUNB o godzinach ``bot.fetch_times`` (w wątku zadań bota).
+
+    Zwraca opis wyniku; błędy GUNB lecą wyjątkiem (bot zapisuje je w stanie importu i ponawia za godzinę).
+    Import przerwany zamykaniem programu kończy się :class:`ImportSkipped` z ponowieniem od razu po starcie.
+    """
+    def fetcher() -> str:
+        query = build_query(config.gunb, today=local(utc_now()).date())
+        report = fetch_with_maintenance(pipeline, config, query, should_stop=should_stop)
+        if report.interrupted:
+            raise ImportSkipped("import przerwany – dokończę po ponownym starcie", retry_in=timedelta(0))
+        log.info("Bot: pobrano dane GUNB – nowe %d, zmiana statusu %d", report.new, report.status_changed)
+        return report.summary()
+
+    return fetcher
 
 
 def _run_test_alert(config: AppConfig) -> int:
@@ -282,46 +326,86 @@ def _run_sync_sheets(pipeline: LeadPipeline, config: AppConfig) -> int:
 
 
 def _run_bot(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
-    """Interaktywny bot: stała pętla (``--bot``) albo jeden cykl (``--bot-once``)."""
+    """Interaktywny bot: stała pętla (``--bot``) albo jeden cykl (``--bot-once``).
+
+    ``--bot`` działa w dwóch wątkach: główny odbiera wiadomości i kliknięcia (krótkie limity czekania
+    na Telegram), a :class:`JobsWorker` – z własnym połączeniem z bazą i własnymi klientami HTTP – pobiera
+    dane GUNB i wysyła raporty. SIGTERM (``systemctl stop``) i Ctrl+C kończą oba po bieżącym kroku.
+    """
     if not config.telegram.bot_token:
         log.error("Bot: brak TELEGRAM_BOT_TOKEN (sekcja telegram / plik .env)")
         return EXIT_PARTIAL_FAILURE
-    # Bez bezpiecznika: pętla bota sama odczekuje po błędach Telegrama i musi wrócić od razu, gdy sieć wróci.
-    http = ResilientHttpClient(replace(config.http, min_delay=0.0, max_delay=0.0, max_retries=3,
-                                       timeout=config.bot.poll_timeout + 20, circuit_breaker_failures=0))
-    api = TelegramApi(http, config.telegram.bot_token, min_interval_per_chat=config.telegram.delay_seconds)
-    fetch_pipeline = create_pipeline(config, repo)
+    stop = threading.Event()
+    ui_bot = _make_bot(config, repo, interactive=True)
+    if once:
+        jobs_bot = _make_bot(config, repo, interactive=False)
+        jobs_bot.fetcher = bot_fetcher(create_pipeline(config, repo), config, should_stop=stop.is_set)
+        ui_bot.setup()
+        received = ui_bot.poll_once(timeout=0)
+        ran = jobs_bot.run_due_jobs()
+        print(f"Bot: odebrano {received} aktualizacji, zadania: {', '.join(ran) or 'brak'}")
+        return EXIT_OK
 
-    def fetcher() -> bool:
-        query = build_query(config.gunb, today=date.today())
-        try:
-            report = fetch_with_maintenance(fetch_pipeline, config, query)
-        except (HttpError, GunbFormatError) as exc:
-            log.error("Bot: pobieranie danych GUNB nie powiodło się (ponowię za godzinę): %s", exc)
-            return False
-        log.info("Bot: pobrano dane GUNB – nowe %d, zmiana statusu %d", report.new, report.status_changed)
-        return True
+    def make_jobs_bot() -> tuple[LeadBot, Callable[[], None]]:  # wywoływane w wątku zadań
+        jobs_repo = LeadRepository(config.storage.db_path, negative_cache_days=config.geocoding.negative_cache_days)
+        jobs_bot = _make_bot(config, jobs_repo, interactive=False)
+        jobs_bot.fetcher = bot_fetcher(create_pipeline(config, jobs_repo), config, should_stop=stop.is_set)
+        return jobs_bot, jobs_repo.close
 
-    bot = LeadBot(
+    worker = JobsWorker(make_jobs_bot, stop)
+    _stop_on_sigterm(stop)
+    worker.start()
+    worker_died = False
+    try:
+        ui_bot.run_forever(should_stop=lambda: stop.is_set() or not worker.is_alive())
+        worker_died = not stop.is_set()
+    except KeyboardInterrupt:
+        log.info("Bot zatrzymywany (Ctrl+C)")
+    finally:
+        stop.set()
+        worker.join(timeout=WORKER_JOIN_TIMEOUT)
+    if worker.is_alive():
+        log.warning("Wątek zadań nie skończył się w %d s – zamykam mimo to (import dokończy się po starcie)",
+                    WORKER_JOIN_TIMEOUT)
+    if worker_died:
+        log.critical("Wątek zadań zatrzymał się nieoczekiwanie – kończę, żeby systemd uruchomił bota ponownie")
+        return EXIT_PARTIAL_FAILURE
+    log.info("Bot zatrzymany")
+    return EXIT_OK
+
+
+def _make_bot(config: AppConfig, repo: LeadRepository, *, interactive: bool) -> LeadBot:
+    """Bot z własnym klientem Telegrama.
+
+    Interaktywny (odpowiedzi na wiadomości i kliknięcia) nie czeka długo: krótki limit czasu, mało
+    ponowień, a gdy Telegram każe czekać dłużej niż ``INTERACTIVE_MAX_RETRY_AFTER`` – od razu błąd.
+    Bez bezpiecznika: pętla sama odczekuje po błędach Telegrama i musi wrócić od razu, gdy sieć wróci.
+    """
+    if interactive:
+        http_config = replace(config.http, min_delay=0.0, max_delay=0.0, max_retries=2, backoff_max=4.0,
+                              timeout=15.0, circuit_breaker_failures=0,
+                              max_retry_after=INTERACTIVE_MAX_RETRY_AFTER)
+    else:
+        http_config = replace(config.http, min_delay=0.0, max_delay=0.0, max_retries=3, timeout=30.0,
+                              circuit_breaker_failures=0)
+    api = TelegramApi(ResilientHttpClient(http_config), config.telegram.bot_token,
+                      min_interval_per_chat=config.telegram.delay_seconds)
+    return LeadBot(
         repo, api,
         settings=config.bot,
         powiat_codes=config.gunb.powiats,
         formatter=build_formatter(config),
         digest_threshold=config.notifications.digest_threshold,
         max_age_days=config.notifications.max_age_days,
-        fetcher=fetcher,
     )
-    if once:
-        bot.setup()
-        received = bot.poll_once(timeout=0)
-        ran = bot.run_due_jobs()
-        print(f"Bot: odebrano {received} aktualizacji, zadania: {', '.join(ran) or 'brak'}")
-        return EXIT_OK
+
+
+def _stop_on_sigterm(stop: threading.Event) -> None:
+    """``systemctl stop`` wysyła SIGTERM – kończymy spokojnie (po bieżącym long pollingu i kroku zadań)."""
     try:
-        bot.run_forever()
-    except KeyboardInterrupt:
-        log.info("Bot zatrzymany")
-    return EXIT_OK
+        signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    except (ValueError, OSError):  # nie w wątku głównym / system bez SIGTERM
+        pass
 
 
 def _segment_chats(config: AppConfig) -> dict[str, str]:

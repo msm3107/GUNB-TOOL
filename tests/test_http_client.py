@@ -49,6 +49,23 @@ def test_honors_retry_after_header_in_seconds():
     assert clock.sleeps == [7.0]
 
 
+def test_interactive_client_gives_up_instead_of_waiting_long_on_rate_limit():
+    """Odpowiedź na kliknięcie nie może czekać minuty na limit Telegrama – lepiej od razu zgłosić błąd."""
+    client, session, clock = make_client([FakeResponse(429, headers={"Retry-After": "60"}), FakeResponse(200)],
+                                         max_retry_after=10.0)
+    with pytest.raises(HttpError) as excinfo:
+        client.get("https://example.test/")
+    assert excinfo.value.status_code == 429
+    assert clock.sleeps == [] and len(session.calls) == 1
+
+
+def test_interactive_client_still_waits_for_a_short_rate_limit():
+    client, _, clock = make_client([FakeResponse(429, headers={"Retry-After": "3"}), FakeResponse(200)],
+                                   max_retry_after=10.0)
+    assert client.get("https://example.test/").status_code == 200
+    assert clock.sleeps == [3.0]
+
+
 @pytest.mark.parametrize(
     "payload",
     [

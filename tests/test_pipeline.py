@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -8,7 +8,7 @@ from gunb_tool.exporter import NotificationError, SheetsSyncResult
 from gunb_tool.geocoding_uldk import GeocodeResult, GeoPrecision
 from gunb_tool.gunb_scraper import FetchQuery, Page
 from gunb_tool.models import GunbCase, Investment, Parcel, Source, Status
-from gunb_tool.pipeline import LeadPipeline, build_query
+from gunb_tool.pipeline import IMPORT_LEASE, ImportSkipped, LeadPipeline, build_query, import_lease
 from gunb_tool.storage import LeadRepository
 
 
@@ -163,6 +163,29 @@ def test_contacts_in_project_description_are_not_used(repo):
     case = gunb_case("A/1", "Budowa domu. Starostwo Powiatowe, tel. 89 527 00 00, sekretariat@starostwo.test")
     make_pipeline(repo, [case]).fetch(QUERY, page_size=10)
     assert (repo.get("A/1").telefon, repo.get("A/1").email) == (None, None)
+
+
+def test_fetch_stops_between_pages_when_asked(repo):
+    pipeline = make_pipeline(repo, [gunb_case(f"PL/{n}") for n in range(5)])
+    checks = []
+
+    report = pipeline.fetch(QUERY, page_size=2, should_continue=lambda: checks.append(1) or len(checks) < 2)
+
+    assert report.interrupted and (report.pages, report.cases) == (2, 4)
+    assert repo.get("PL/3") is not None and repo.get("PL/4") is None  # zapisane strony zostają
+
+
+def test_only_one_import_runs_at_a_time(repo):
+    waits = []
+    with import_lease(repo, owner="bot"):
+        with pytest.raises(ImportSkipped, match="trwa inny import"):
+            with import_lease(repo, owner="cron", wait=timedelta(minutes=1), sleep=waits.append):
+                pass
+    assert waits == [15.0] * 4  # czekał minutę, sprawdzając co 15 s
+
+    with import_lease(repo, owner="cron"):  # pierwszy skończył – blokada wolna
+        assert repo.lease_holder(IMPORT_LEASE) == "cron"
+    assert repo.lease_holder(IMPORT_LEASE) is None
 
 
 def test_limit_stops_processing(repo):

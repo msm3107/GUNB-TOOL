@@ -6,9 +6,11 @@ i zmieniać bez dotykania logiki bota.
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Sequence
 
-from .bot_store import BotUser, LeadFlags, UserFilters, WatchItem
+from .bot_store import BotUser, JobStatus, LeadFlags, Send, UserFilters, WatchItem
+from .clock import local
 from .config import BotConfig
 from .exporter import CATEGORY_ICONS, escape_html
 from .models import Investment
@@ -192,6 +194,69 @@ def users_list(users: Sequence[BotUser], subscription: Callable[[BotUser], str])
     lines = [f"{icons.get(u.status, '•')} {escape_html(u.display_name)} ({u.chat_id}) · {subscription(u)}"
              f" · {MODE_LABELS.get(u.tryb, u.tryb)}" for u in users]
     return "👥 <b>Użytkownicy</b>\n" + "\n".join(lines)
+
+
+JOB_LABELS = {"raport_rano": "Raport poranny", "raport_wieczor": "Raport wieczorny",
+              "przypomnienia_etap": "Przypomnienia „Kiedy dzwonić”"}
+SEND_STATE_LABELS = {"wyslano": "wysłano", "pusto": "bez nowości", "oczekuje": "czeka na ponowienie",
+                     "wysylanie": "w trakcie", "pominieto": "pominięto", "zablokowany": "zablokowali bota",
+                     "blad": "❌ nieudane"}
+HEARTBEAT_LATE = timedelta(minutes=5)
+
+
+def status_text(*, now: datetime, import_status: JobStatus | None, last_import: datetime | None,
+                retry_at: datetime | None, heartbeat: datetime | None, sends: dict[str, dict[str, int]],
+                failed: Sequence[Send]) -> str:
+    """``/status`` dla admina: import GUNB, wątek zadań i wysyłki z ostatniej doby (czas polski)."""
+    lines = ["🩺 <b>Stan bota</b>", "", "📥 Import danych GUNB: " + _import_label(import_status)]
+    if retry_at is not None:
+        lines.append(f"   ponowienie o {local(retry_at):%H:%M}")
+    lines.append(f"   ostatni pełny import: {_when(last_import)}")
+    if heartbeat is None:
+        lines.append("⚙️ Wątek zadań: ⚠️ jeszcze nie ruszył")
+    else:
+        minutes = int((now - heartbeat).total_seconds() // 60)
+        mark = "✅" if now - heartbeat < HEARTBEAT_LATE else "⚠️"
+        lines.append(f"⚙️ Wątek zadań: {mark} ostatni cykl {_when(heartbeat)} ({minutes} min temu)")
+    lines += ["", "📤 <b>Wysyłki z ostatniej doby</b>"]
+    for zadanie, counts in sends.items():
+        parts = ", ".join(f"{SEND_STATE_LABELS.get(state, state)} {n}" for state, n in counts.items())
+        lines.append(f"• {escape_html(_job_label(zadanie))}: {parts}")
+    if not sends:
+        lines.append("brak")
+    for item in failed[:10]:
+        lines.append(f"❌ {item.chat_id} · {escape_html(_job_label(item.zadanie))}: "
+                     f"{escape_html(item.ostatni_blad or '?')}")
+    return "\n".join(lines)
+
+
+def _import_label(status: JobStatus | None) -> str:
+    if status is None or status.stan is None:
+        return "jeszcze się nie odbył"
+    detail = f" – {escape_html(status.opis)}" if status.opis else ""
+    if status.stan == "trwa":
+        return f"⏳ trwa od {_when(status.start)}"
+    if status.stan == "ok":
+        return f"✅ {_when(status.koniec)}{detail}"
+    if status.stan == "pominieto":
+        return f"⏭️ pominięty {_when(status.koniec)}{detail}"
+    return f"❌ błąd {_when(status.koniec)}{detail}"
+
+
+def _job_label(zadanie: str) -> str:
+    """``raport_rano:2026-09-29`` → „Raport poranny 29.09”; runda ręczna ma dopisek."""
+    job, _, key = zadanie.partition(":")
+    try:
+        day = date.fromisoformat(key[:10]).strftime("%d.%m")
+    except ValueError:
+        day = key
+    return f"{JOB_LABELS.get(job, job)} {day}" + (" (ręcznie)" if "#" in key else "")
+
+
+def _when(moment: datetime | str | None) -> str:
+    if not moment:
+        return "—"
+    return local(datetime.fromisoformat(moment) if isinstance(moment, str) else moment).strftime("%d.%m %H:%M")
 
 
 # --- Filtry ------------------------------------------------------------------------------------

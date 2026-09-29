@@ -10,7 +10,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence, TypeGuard
 
 from .models import Investment
@@ -185,6 +185,37 @@ class BotUser:
     def has_subscription(self, now_iso: str) -> bool:
         """Czy abonament jest aktywny i nie wygasł (daty w UTC, format ISO)."""
         return self.is_active and bool(self.subscription_ends) and (self.subscription_ends or "") > now_iso
+
+
+@dataclass(frozen=True)
+class Send:
+    """Wysyłka zadania (np. ``raport_rano:2026-09-29``) do jednej osoby – wiersz kolejki ``wysylki``.
+
+    Stany: ``oczekuje`` (także przed ponowieniem), ``wysylanie`` (próba w toku), ``wyslano``, ``pusto``
+    (nic nowego – bez wiadomości), ``pominieto`` (np. brak dostępu, cisza nocna), ``zablokowany``, ``blad``
+    (wyczerpane próby).
+    """
+
+    zadanie: str
+    chat_id: int
+    stan: str
+    proby: int
+    nastepna_proba: str
+    ostatni_blad: str | None
+    utworzono: str
+    zmieniono: str
+
+
+@dataclass(frozen=True)
+class JobStatus:
+    """Stan zadania w tle (np. importu) dla admina; czasy w UTC."""
+
+    nazwa: str
+    ostatnio: str | None
+    stan: str | None
+    start: str | None
+    koniec: str | None
+    opis: str | None
 
 
 @dataclass(frozen=True)
@@ -474,6 +505,116 @@ class BotStore:
 
     def clear_job(self, nazwa: str) -> None:
         self._conn.execute("DELETE FROM bot_jobs WHERE nazwa = ?", (nazwa,))
+
+    # Harmonogram i stan zadań (UTC) ------------------------------------------------------------
+
+    def job_time(self, nazwa: str) -> datetime | None:
+        """Ostatnie uruchomienie zadania (albo termin, np. ponowienia importu); ``None`` – brak."""
+        row = self._conn.execute("SELECT ostatnio FROM zadania WHERE nazwa = ?", (nazwa,)).fetchone()
+        return datetime.fromisoformat(row["ostatnio"]) if row and row["ostatnio"] else None
+
+    def set_job_time(self, nazwa: str, moment: datetime | None) -> None:
+        self._conn.execute(
+            "INSERT INTO zadania (nazwa, ostatnio) VALUES (?, ?)"
+            " ON CONFLICT (nazwa) DO UPDATE SET ostatnio = excluded.ostatnio",
+            (nazwa, _iso(moment) if moment else None),
+        )
+
+    def job_started(self, nazwa: str) -> None:
+        """Początek zadania (np. importu) – widoczny dla admina, zanim się skończy."""
+        self._conn.execute(
+            "INSERT INTO zadania (nazwa, stan, start) VALUES (?, 'trwa', ?) ON CONFLICT (nazwa) DO UPDATE"
+            " SET stan = 'trwa', start = excluded.start, koniec = NULL, opis = NULL",
+            (nazwa, _iso(self.repo.now())),
+        )
+
+    def job_finished(self, nazwa: str, stan: str, opis: str | None = None) -> None:
+        """Koniec zadania: ``ok`` / ``blad`` / ``pominieto`` z krótkim opisem (wynik albo treść błędu)."""
+        self._conn.execute(
+            "INSERT INTO zadania (nazwa, stan, koniec, opis) VALUES (?, ?, ?, ?) ON CONFLICT (nazwa) DO UPDATE"
+            " SET stan = excluded.stan, koniec = excluded.koniec, opis = excluded.opis",
+            (nazwa, stan, _iso(self.repo.now()), (opis or "")[:300] or None),
+        )
+
+    def job_status(self, nazwa: str) -> JobStatus | None:
+        row = self._conn.execute("SELECT * FROM zadania WHERE nazwa = ?", (nazwa,)).fetchone()
+        return JobStatus(**dict(row)) if row else None
+
+    # Kolejka wysyłek (raporty, przypomnienia) – każda osoba osobno, z ponowieniami ---------------
+
+    def enqueue_sends(self, zadanie: str, chat_ids: Iterable[int]) -> None:
+        """Zadanie wystartowało: po jednej wysyłce na osobę; powtórne dodanie tego samego nic nie zmienia."""
+        now = _iso(self.repo.now())
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO wysylki (zadanie, chat_id, nastepna_proba, utworzono, zmieniono)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [(zadanie, chat_id, now, now, now) for chat_id in chat_ids],
+        )
+
+    def due_sends(self) -> list[Send]:
+        """Wysyłki czekające na próbę, których termin już minął – w kolejności dodania."""
+        rows = self._conn.execute(
+            "SELECT * FROM wysylki WHERE stan = 'oczekuje' AND nastepna_proba <= ? ORDER BY nastepna_proba, rowid",
+            (_iso(self.repo.now()),),
+        ).fetchall()
+        return [Send(**dict(row)) for row in rows]
+
+    def claim_send(self, zadanie: str, chat_id: int) -> bool:
+        """Początek próby (``wysylanie``, licznik prób +1); ``False`` – wysyłkę wziął już ktoś inny."""
+        cursor = self._conn.execute(
+            "UPDATE wysylki SET stan = 'wysylanie', proby = proby + 1, zmieniono = ?"
+            " WHERE zadanie = ? AND chat_id = ? AND stan = 'oczekuje'",
+            (_iso(self.repo.now()), zadanie, chat_id),
+        )
+        return cursor.rowcount == 1
+
+    def finish_send(self, zadanie: str, chat_id: int, stan: str, *, blad: str | None = None,
+                    retry_at: datetime | None = None) -> None:
+        """Wynik próby; z ``retry_at`` wysyłka wraca do kolejki (``oczekuje``) na ten termin."""
+        now = _iso(self.repo.now())
+        self._conn.execute(
+            "UPDATE wysylki SET stan = ?, nastepna_proba = coalesce(?, nastepna_proba),"
+            " ostatni_blad = coalesce(?, ostatni_blad), zmieniono = ? WHERE zadanie = ? AND chat_id = ?",
+            ("oczekuje" if retry_at else stan, _iso(retry_at) if retry_at else None, (blad or "")[:300] or None,
+             now, zadanie, chat_id),
+        )
+
+    def requeue_stuck_sends(self, older_than: datetime) -> int:
+        """Próby przerwane w trakcie (proces padł) wracają do kolejki – wiadomość mogła już dojść."""
+        cursor = self._conn.execute(
+            "UPDATE wysylki SET stan = 'oczekuje', ostatni_blad = 'próba przerwana (restart w trakcie wysyłki)',"
+            " zmieniono = ? WHERE stan = 'wysylanie' AND zmieniono <= ?",
+            (_iso(self.repo.now()), _iso(older_than)),
+        )
+        return cursor.rowcount
+
+    def send_row(self, zadanie: str, chat_id: int) -> Send | None:
+        row = self._conn.execute(
+            "SELECT * FROM wysylki WHERE zadanie = ? AND chat_id = ?", (zadanie, chat_id)
+        ).fetchone()
+        return Send(**dict(row)) if row else None
+
+    def send_counts(self, since: datetime) -> dict[str, dict[str, int]]:
+        """Zadania wysyłek od ``since``: ``{zadanie: {stan: liczba osób}}`` – do podglądu admina."""
+        counts: dict[str, dict[str, int]] = {}
+        for row in self._conn.execute(
+            "SELECT zadanie, stan, COUNT(*) AS n FROM wysylki WHERE utworzono >= ? GROUP BY zadanie, stan"
+            " ORDER BY min(rowid)", (_iso(since),)
+        ):
+            counts.setdefault(row["zadanie"], {})[row["stan"]] = row["n"]
+        return counts
+
+    def failed_sends(self, since: datetime) -> list[Send]:
+        rows = self._conn.execute(
+            "SELECT * FROM wysylki WHERE stan = 'blad' AND utworzono >= ? ORDER BY rowid", (_iso(since),)
+        ).fetchall()
+        return [Send(**dict(row)) for row in rows]
+
+    def prune_sends(self, before: datetime) -> None:
+        """Usuwa zakończone wysyłki starsze niż ``before`` (tabela nie rośnie bez końca)."""
+        self._conn.execute(
+            "DELETE FROM wysylki WHERE utworzono < ? AND stan NOT IN ('oczekuje', 'wysylanie')", (_iso(before),)
+        )
 
     def place_options(self, powiat_codes: Sequence[str], limit: int = 30) -> list[tuple[str, str]]:
         """Powiaty do wyboru w filtrach: ``(kod, nazwa)`` – nazwa z danych ULDK, gdy już jest w bazie.

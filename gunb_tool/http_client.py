@@ -203,6 +203,7 @@ class ResilientHttpClient:
         for attempt in range(self.config.max_retries + 1):
             self._throttle()
             merged["User-Agent"] = self._agents.next()
+            retry_after: float | None = None
             try:
                 response = self._session.request(method, url, headers=dict(merged), **kwargs)
             except RETRYABLE_EXCEPTIONS as exc:
@@ -221,6 +222,11 @@ class ResilientHttpClient:
             finally:
                 self._last_request_at = self._clock()
 
+            limit = self.config.max_retry_after
+            if limit is not None and retry_after is not None and retry_after > limit:
+                log.warning("%s %s: %s – serwer każe czekać %.0f s, rezygnuję", method, safe_url, last_error,
+                            retry_after)
+                break
             if attempt < self.config.max_retries:
                 log.warning(
                     "%s %s: %s – ponowienie %d/%d za %.1f s",
