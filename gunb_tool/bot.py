@@ -897,7 +897,7 @@ class LeadBot:
     def _cb_open(self, user: BotUser, arg: str, message_id: int) -> str | None:
         inv = self._lead(arg)
         if inv is None:
-            return "Nie znaleziono leada"
+            return "Nie znaleziono inwestycji"
         self._send_card(user, inv)
         return None
 
@@ -947,13 +947,13 @@ class LeadBot:
         inv = self._lead(arg)
         key = investor_key(inv.inwestor) if inv else None
         if inv is None or key is None:
-            return "Ten lead nie ma jawnego inwestora"
+            return "Ta inwestycja nie ma jawnego inwestora"
         return self._toggle_watch(user, inv, "inwestor", key, inv.inwestor or key, message_id)
 
     def _cb_watch_gmina(self, user: BotUser, arg: str, message_id: int) -> str:
         inv = self._lead(arg)
         if inv is None or not inv.gmina_teryt:
-            return "Brak gminy dla tego leada"
+            return "Brak gminy dla tej inwestycji"
         label = inv.gmina or inv.miejscowosc or inv.gmina_teryt
         return self._toggle_watch(user, inv, "gmina", inv.gmina_teryt, label, message_id)
 
@@ -1162,17 +1162,19 @@ class LeadBot:
             self.store.mark_report(user.chat_id, now_iso)
             return False
         if not leads:  # na żądanie, a nic nowego nie pasuje – przegląd historii (pełny, stronami)
-            head = ui.nothing_new_head(total_new=len(candidates), watched=watched)
+            head = ui.nothing_new_head(total_new=len(candidates), watched=watched, note=self._import_note())
             text, markup = self._history_screen(user, 0, head=head)
             self._send(user.chat_id, text, markup)
             self.store.record_delivery(user.chat_id, skipped, "pominiety")
             self.store.mark_report(user.chat_id, now_iso)
             return True
+        freshness = self._freshness()
 
         def build(count: int) -> tuple[str, dict | None]:
             return ui.report(
                 f"{local(self._now()):%d.%m}", total_new=len(candidates), leads=leads[:count], matching=len(leads),
                 hot=sum(1 for inv in leads if inv.priorytet == HOT), watched=watched, distance=distance,
+                freshness=freshness,
             )
 
         shown = min(len(leads), self.settings.max_leads_in_report)
@@ -1202,8 +1204,20 @@ class LeadBot:
             matches[start:start + ui.HISTORY_PAGE_SIZE], page=page, pages=pages, total=len(matches),
             days=self.settings.recent_days, head=head,
             distance=user.filtry.distance_km if user.filtry.baza else None,
-            filters=ui.filters_summary(user, self._place_names()),
+            filters=ui.filters_summary(user, self._place_names()), freshness=self._freshness(),
         )
+
+    def _freshness(self) -> str:
+        """„🕒 Rejestr GUNB sprawdzony: …” – ostatni import zakończony w całości."""
+        checked = self.store.job_time(LAST_IMPORT_JOB)
+        return ui.freshness_line(self._local_date(_utc_iso(checked), with_time=True) if checked else None)
+
+    def _import_note(self) -> str | None:
+        """Import w toku albo nieudany – żeby „nic nowego” nie znaczyło „nic się nie wydarzyło”."""
+        status = self.store.job_status(IMPORT_JOB)
+        retry_at = self.store.job_time(FETCH_RETRY_JOB)
+        return ui.import_note(status.stan if status else None,
+                              retry_at=f"{local(retry_at):%H:%M}" if retry_at else None)
 
     def _cb_history(self, user: BotUser, arg: str, message_id: int) -> str | None:
         """„◀️ Wstecz / Dalej ▶️” w przeglądzie historii – edytuje tę samą wiadomość."""
@@ -1296,7 +1310,7 @@ class LeadBot:
         text = message.text
         km = user.filtry.distance_km(inv)
         if km is not None:
-            text += f"\n🚗 {escape_html(ui.distance_label(km))} od Twojej bazy"
+            text += f"\n📏 {escape_html(ui.distance_label(km))} w linii prostej od Twojej bazy"
         return text, self._keyboard(user, inv)
 
     def _keyboard(self, user: BotUser, inv: Investment) -> dict:

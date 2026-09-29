@@ -155,10 +155,10 @@ main() {
         else
             echo "  Uwaga: alert testowy nie doszedł – sprawdź TELEGRAM_ADMIN_CHAT_ID w $APP_DIR/.env"
         fi
-        say "Historia 18 miesięcy dla przypomnień ⏰ Kiedy dzwonić – dociąga się w tle (ok. 30 min)"
+        say "Historia (ok. 27 miesięcy – najdłuższe okno etapów budowy) dociąga się w tle (do godziny)"
         systemd-run --quiet --unit=gunb-historia --uid="$APP_USER" --gid="$APP_USER" \
             --working-directory="$APP_DIR" --setenv=TZ=Europe/Warsaw \
-            "$APP_DIR/.venv/bin/python" main.py --fetch --since "$(date -d '18 months ago' +%F)" --historical \
+            "$APP_DIR/.venv/bin/python" main.py --fetch --historical \
             || echo "  Uwaga: nie udało się uruchomić importu historii – można to zrobić ręcznie (README)."
         echo "  postęp: journalctl -u gunb-historia -f"
     fi

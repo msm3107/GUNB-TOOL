@@ -64,7 +64,7 @@ CHANGED = StatusChange("ST-OP-NY/WNIOSEK/12/2026", "wniosek", "decyzja", "2026-0
 def test_telegram_message_is_html_with_details():
     message = MessageFormatter().telegram(lead(), NEW)
 
-    assert message.text.startswith("🏗️ <b>NOWY LEAD</b> · pozwolenie na budowę")
+    assert message.text.startswith("🏗️ <b>NOWA INWESTYCJA</b> · pozwolenie na budowę")
     assert "<b>Budowa budynku mieszkalnego jednorodzinnego (parterowy) z garażem</b>" in message.text
     assert "ul. Testowa 5, Nysa" in message.text  # w HTML kropki i nawiasy nie wymagają escapowania
     assert "Jan Testowy (upr. OPL/0001/PWOA/20)" in message.text
@@ -123,7 +123,7 @@ def test_segment_label_is_shown():
 
 def test_discord_message_uses_discord_markdown_with_links_in_text():
     message = MessageFormatter().discord(lead(nazwa_zamierzenia="Hala *magazynowa* _A_"), NEW)
-    assert message.text.startswith("🏗️ **NOWY LEAD**")
+    assert message.text.startswith("🏗️ **NOWA INWESTYCJA**")
     assert "**Hala \\*magazynowa\\* \\_A\\_**" in message.text
     assert f"[Google Maps]({MAPS})" in message.text
     assert message.buttons == ()
@@ -155,9 +155,9 @@ def test_telegram_digest_covers_each_lead_once_within_message_limit():
     assert all(len(m.text) <= 4096 for m in messages)
     covered = [lead_id for m in messages for lead_id in m.lead_ids]
     assert sorted(covered) == sorted(l.id_sprawy for l in leads)
-    assert messages[0].text.startswith("📊 <b>Raport GUNB</b> · 60 leadów (1/")
+    assert messages[0].text.startswith("📊 <b>Raport GUNB</b> · 60 inwestycji (1/")
     assert "🏠 mieszkaniowa-jednorodzinna: 20" in messages[0].text
-    assert messages[1].text.startswith("📊 <b>Raport GUNB</b> · 60 leadów (2/")
+    assert messages[1].text.startswith("📊 <b>Raport GUNB</b> · 60 inwestycji (2/")
 
 
 def test_digest_entries_escape_html_and_link_each_lead():
@@ -178,7 +178,7 @@ def test_discord_digest_respects_2000_character_limit():
     assert sum(len(m.lead_ids) for m in messages) == 40
 
 
-@pytest.mark.parametrize("count,word", [(1, "lead"), (3, "leady"), (11, "leadów"), (14, "leadów"), (22, "leady"), (25, "leadów")])
+@pytest.mark.parametrize("count,word", [(1, "inwestycja"), (3, "inwestycje"), (11, "inwestycji"), (14, "inwestycji"), (22, "inwestycje"), (25, "inwestycji")])
 def test_polish_plural_of_leads(count, word):
     assert plural_leads(count) == f"{count} {word}"
 
@@ -348,14 +348,14 @@ HOT_LEAD = dict(kategoria="mieszkaniowa-wielorodzinna", kategoria_obiektu="XIII"
 
 def test_hot_lead_has_hot_header_and_priority_reasons():
     text = MessageFormatter().telegram(lead(**HOT_LEAD), NEW).text
-    assert text.startswith("🔥 <b>HOT LEAD</b> · pozwolenie na budowę")
-    assert "🎚️ Priorytet: 🔥 HOT · 10 pkt (kubatura ≥ 20 000 m³, wielorodzinny, kilka budynków" in text
+    assert text.startswith("🔥 <b>HOT</b> · pozwolenie na budowę")
+    assert "🎚️ Skala (szacunek): 🔥 HOT · 10 pkt (kubatura ≥ 20 000 m³, wielorodzinny, kilka budynków" in text
 
 
 def test_normal_lead_shows_priority_line_without_hot_header():
     text = MessageFormatter().telegram(lead(priorytet="normal", punkty=3), NEW).text
-    assert text.startswith("🏗️ <b>NOWY LEAD</b>")
-    assert "🎚️ Priorytet: 🟡 NORMAL" in text
+    assert text.startswith("🏗️ <b>NOWA INWESTYCJA</b>")
+    assert "🎚️ Skala (szacunek): 🟡 NORMAL" in text
 
 
 def test_custom_header_replaces_default_one():

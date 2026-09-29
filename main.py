@@ -51,6 +51,7 @@ from gunb_tool.pipeline import (
     import_lease,
     notification_http_client,
 )
+from gunb_tool.stages import LONGEST_WINDOW_DAYS
 from gunb_tool.storage import LeadRepository
 from gunb_tool.telegram_api import TelegramApi
 
@@ -105,8 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--no-geocode", action="store_true", help="pomiń geokodowanie ULDK")
     fetch.add_argument("--limit", type=int, metavar="N", help="przetwórz najwyżej N spraw")
     fetch.add_argument("--historical", action="store_true",
-                       help="import historyczny (np. z --since): stare sprawy nie trafią do raportów nowości, "
-                            "posłużą przypomnieniom „Kiedy dzwonić”")
+                       help="import historyczny: stare sprawy nie trafią do raportów nowości, posłużą przypomnieniom "
+                            "o etapie budowy; bez --since obejmuje najdłuższe okno etapów (ok. 27 miesięcy)")
 
     notify = parser.add_argument_group("opcje powiadomień")
     notify.add_argument("--dry-run", action="store_true", help="wypisz wiadomości zamiast je wysyłać")
@@ -196,8 +197,20 @@ def setup_logging(config: LoggingConfig, *, verbose: bool = False) -> None:
 
 # --- Akcje ------------------------------------------------------------------------
 
+def history_start(args: argparse.Namespace, *, today: date) -> date | None:
+    """Początek okna importu: ``--since`` albo – przy ``--historical`` – najdłuższe okno etapów budowy.
+
+    Przypomnienia o etapie sięgają do ok. 27 miesięcy po decyzji (duże budynki), więc historia musi
+    sięgać tak samo daleko; zakres terytorialny zostaje z konfiguracji (bez importu całej Polski).
+    """
+    if args.since is not None or not args.historical:
+        return args.since
+    return today - timedelta(days=LONGEST_WINDOW_DAYS)
+
+
 def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespace) -> int:
-    query = build_query(config.gunb, today=local(utc_now()).date(), since=args.since, until=args.until,
+    today = local(utc_now()).date()
+    query = build_query(config.gunb, today=today, since=history_start(args, today=today), until=args.until,
                         days=args.days)
     log.info(
         "Pobieranie: źródła %s, województwa %s, powiaty %s, %s od %s%s",

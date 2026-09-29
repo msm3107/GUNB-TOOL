@@ -269,7 +269,7 @@ def test_report_summarises_and_numbers_matching_leads(bot, api, repo):
     report = api.last_to(MIETEK)
     assert "📊 <b>Raport 29.09</b>" in report["text"]
     assert "Znaleziono 3 nowe inwestycje. 1 spełnia Twoje filtry." in report["text"]
-    assert "1 to 🔥 HOT LEAD." in report["text"]
+    assert "1 to 🔥 HOT (duża skala)." in report["text"]
     assert "Budowa zespołu dwóch budynków wielorodzinnych" in report["text"]
     nr = repo.get("WAW/1").nr
     assert buttons(report["markup"]) == [("1", f"o:{nr}")]
@@ -287,7 +287,7 @@ def test_lead_card_has_action_buttons_and_save_updates_them(bot, api, repo):
     bot.handle_update(click(MIETEK, f"o:{nr}"))
 
     card = api.last_to(MIETEK)
-    assert card["text"].startswith("🔥 <b>HOT LEAD</b>")
+    assert card["text"].startswith("🔥 <b>HOT</b>")
     labels = [t for t, _ in buttons(card["markup"])]
     assert labels[:2] == ["📍 Mapa", "🏛️ Geoportal"] or labels[0] == "📍 Mapa"
     assert {"⭐ Zapisz", "✅ Przejrzane", "🗑️ Ukryj", "👀 Obserwuj inwestora", "📌 Obserwuj gminę"} <= set(labels)
@@ -582,7 +582,7 @@ def test_report_lists_only_leads_within_radius_nearest_first_with_distance(bot, 
     text = api.last_to(MIETEK)["text"]
     assert "Dom C daleko" not in text
     assert text.index("Dom A tuż obok") < text.index("Dom B blisko")
-    assert "🚗 &lt;1 km" in text and "🚗 6 km" in text
+    assert "📏 &lt;1 km" in text and "📏 6 km" in text
 
 
 def test_hot_leads_stay_on_top_within_radius(bot, api, repo):
@@ -629,7 +629,7 @@ def test_lead_card_shows_distance_from_base(bot, api, repo):
     seed_olsztyn(repo)
     bot.handle_update(pin(MIETEK, *BASE))
     bot.handle_update(click(MIETEK, f"o:{repo.get('BLISKO/1').nr}"))
-    assert "🚗 6 km od Twojej bazy" in api.last_to(MIETEK)["text"]
+    assert "📏 6 km w linii prostej od Twojej bazy" in api.last_to(MIETEK)["text"]
 
 
 def test_filters_screen_shows_radius(bot, api, repo):
@@ -690,7 +690,7 @@ def seed_stages(repo):
 
 
 def reminders_to(api, chat_id):
-    return [m for m in api.to(chat_id) if "Kiedy dzwonić" in m["text"]]
+    return [m for m in api.to(chat_id) if "Warto sprawdzić" in m["text"]]
 
 
 def test_trade_is_chosen_from_filters_and_first_reminder_comes_at_once(bot, api, repo):
@@ -742,7 +742,7 @@ def test_reminders_respect_filters_and_hidden_leads(bot, api, repo):
     bot.handle_update(click(MIETEK, "fb:dach"))
 
     reminder = reminders_to(api, MIETEK)[-1]["text"]
-    assert "Dom blisko bazy" in reminder and "🚗 6 km" in reminder
+    assert "Dom blisko bazy" in reminder and "📏 6 km" in reminder
     assert "Dom daleko" not in reminder and "Dom ukryty" not in reminder
 
 

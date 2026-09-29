@@ -206,9 +206,9 @@ class MessageFormatter:
             icon, title = "🔄", "ZMIANA STATUSU"
             detail = f"{_status_word(change.stary_status)} → {_status_word(change.nowy_status)}"
         elif inv.priorytet == HOT:
-            icon, title, detail = "🔥", "HOT LEAD", source
+            icon, title, detail = "🔥", "HOT", source
         else:
-            icon, title, detail = "🏗️", "NOWY LEAD", source
+            icon, title, detail = "🏗️", "NOWA INWESTYCJA", source
 
         lines = [
             f"{icon} {style.bold(title)} · {style.text(detail)}",
@@ -233,7 +233,8 @@ class MessageFormatter:
             score = score_investment(inv)
             points = inv.punkty if inv.punkty is not None else score.points
             reasons = f" ({', '.join(score.reasons[:4])})" if score.reasons else ""
-            lines.append(_Line("🎚️", "Priorytet", f"{PRIORITY_BADGES[inv.priorytet]} · {points} pkt{reasons}"))
+            # skala inwestycji z prostych reguł (kubatura, rodzaj, liczba budynków) – nie szansa na zlecenie
+            lines.append(_Line("🎚️", "Skala (szacunek)", f"{PRIORITY_BADGES[inv.priorytet]} · {points} pkt{reasons}"))
         if inv.segment:
             lines.append(_Line("🎯", "Segment", self.segment_labels.get(inv.segment, inv.segment)))
 
@@ -343,13 +344,13 @@ class MessageFormatter:
 
 
 def plural_leads(count: int) -> str:
-    """„1 lead”, „3 leady”, „11 leadów”, „22 leady” – polska odmiana liczebnika."""
+    """„1 inwestycja”, „3 inwestycje”, „11 inwestycji”, „22 inwestycje” – polska odmiana liczebnika."""
     if count == 1:
-        word = "lead"
+        word = "inwestycja"
     elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
-        word = "leady"
+        word = "inwestycje"
     else:
-        word = "leadów"
+        word = "inwestycji"
     return f"{count} {word}"
 
 

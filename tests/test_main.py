@@ -85,7 +85,7 @@ def test_fetch_uses_cli_scope_and_prints_summary(workdir, monkeypatch, capsys):
 def test_dry_run_notification_works_without_credentials(workdir, capsys):
     seed(workdir)
     assert run(workdir, "--notify-telegram", "--dry-run") == 0
-    assert "NOWY LEAD" in capsys.readouterr().out
+    assert "NOWA INWESTYCJA" in capsys.readouterr().out
 
 
 def test_real_notification_without_credentials_fails(workdir, caplog):
