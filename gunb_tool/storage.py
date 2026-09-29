@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
@@ -157,12 +157,18 @@ _TRADE_COLUMN = """
 ALTER TABLE bot_users ADD COLUMN branza TEXT;
 """
 
+_SUBSCRIPTION_COLUMNS = """
+ALTER TABLE bot_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE bot_users ADD COLUMN subscription_ends TEXT;
+"""
+
 _MIGRATIONS: tuple[str, ...] = (
     _SCHEMA,                                              # v1: schemat bazowy
     "ALTER TABLE investments ADD COLUMN segment TEXT;",   # v2: segment klientów
     _BOT_SCHEMA,                                          # v3: scoring, numer leada, bot Telegram
     _CONTACT_COLUMNS,                                     # v4: telefon/e-mail z surowych pól GUNB
     _TRADE_COLUMN,                                        # v5: branża użytkownika („Kiedy dzwonić”)
+    _SUBSCRIPTION_COLUMNS,                                # v6: abonament (paywall) – is_active, subscription_ends
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``."""
 

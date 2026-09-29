@@ -189,3 +189,26 @@ def test_hardening_settings_are_read_from_file(tmp_path):
 
 def test_repository_config_retries_each_request_three_times():
     assert load_config(REPO_ROOT / "config.yaml", env={}).http.max_retries == 3
+
+
+# --- Paywall: administrator i kontakt -----------------------------------------------------------------
+
+PAYWALL_YAML = ("gunb:\n  voivodeships: ['16']\ntelegram:\n  chat_id: ${TELEGRAM_CHAT_ID}\n"
+                "bot:\n  admins: ['${ADMIN_CHAT_ID}']\n  admin_contact: ${ADMIN_CONTACT}\n")
+
+
+def test_admin_chat_id_sets_the_bot_admin(tmp_path):
+    cfg = load_config(write_config(tmp_path, PAYWALL_YAML), env={"ADMIN_CHAT_ID": "777", "TELEGRAM_CHAT_ID": "555"})
+    assert cfg.bot.admins == (777,)
+
+
+def test_without_admin_chat_id_the_owner_chat_is_admin(tmp_path):
+    cfg = load_config(write_config(tmp_path, PAYWALL_YAML), env={"TELEGRAM_CHAT_ID": "555"})
+    assert cfg.bot.admins == (555,)
+
+
+@pytest.mark.parametrize("value, expected", [("jan_kowalski", "@jan_kowalski"), ("@jan_kowalski", "@jan_kowalski"),
+                                             ("", "")])
+def test_admin_contact_is_normalised_to_telegram_nick(tmp_path, value, expected):
+    cfg = load_config(write_config(tmp_path, PAYWALL_YAML), env={"ADMIN_CONTACT": value})
+    assert cfg.bot.admin_contact == expected

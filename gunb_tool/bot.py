@@ -62,6 +62,11 @@ COMMAND_ACTIONS: dict[str, str] = {
     "/pomoc": "_show_help",
     "/uzytkownicy": "_show_users",
 }
+ADMIN_COMMANDS: dict[str, str] = {
+    "/aktywuj": "_cmd_activate",  # /aktywuj <chat_id> <liczba_dni>
+    "/trial": "_cmd_trial",  # /trial <chat_id> – 3 dni za darmo
+}
+"""Komendy zastrzeżone dla ``bot.admins`` (``ADMIN_CHAT_ID``); u innych działają jak nieznany tekst."""
 
 
 class LeadBot:
@@ -172,6 +177,8 @@ class LeadBot:
         interval = timedelta(minutes=self.settings.instant_every_minutes)
         if ran or last is None or datetime.fromisoformat(last) + interval <= now:
             self.store.mark_job("natychmiast", _local_iso(now))
+            if self.settings.access != "open":
+                self.expire_subscriptions()  # co kilka minut – klient dowiaduje się o końcu abonamentu od razu
             self.deliver_instant()
             ran.append("natychmiast")
         return ran
@@ -191,6 +198,9 @@ class LeadBot:
             return  # bot obsługuje rozmowy prywatne
         text = (message.get("text") or "").strip()
         command = text.split()[0].split("@")[0].lower() if text.startswith("/") else None
+        if command in ADMIN_COMMANDS and chat_id in self.settings.admins:  # działa też bez /start admina
+            getattr(self, ADMIN_COMMANDS[command])(chat_id, text.split()[1:])
+            return
         user = self.store.get_user(chat_id)
         if command == "/start" or user is None:
             self._start(chat_id, message.get("from") or {})
@@ -198,8 +208,11 @@ class LeadBot:
         if user.status == "zablokowany":  # odblokował bota i znów pisze
             self.store.set_status(chat_id, "aktywny")
             user = self.store.get_user(chat_id)
-        if user.status != "aktywny":
-            self._send(chat_id, ui.pending_text() if user.status == "oczekuje" else ui.rejected_text())
+        if user.status == "odrzucony":
+            self._send(chat_id, ui.rejected_text())
+            return
+        if not self._has_access(user):  # bramkarz: bez opłaconego abonamentu żadne menu ani filtr nie działa
+            self._send(chat_id, self._gate_text(user))
             return
         if message.get("location"):
             self._set_base(user, message["location"])
@@ -226,8 +239,8 @@ class LeadBot:
                 answer = self._admin_decision(chat_id, message_id, data)
             else:
                 user = self.store.get_user(chat_id)
-                if user is None or user.status != "aktywny":
-                    answer = "⛔ Brak dostępu – napisz /start"
+                if user is None or user.status == "odrzucony" or not self._has_access(user):
+                    answer = "⛔ Brak aktywnego abonamentu – skontaktuj się z administratorem"
                 else:
                     prefix, _, arg = data.partition(":")
                     handler = _CALLBACKS.get(prefix)
@@ -238,41 +251,133 @@ class LeadBot:
     # === Rejestracja i admin ===================================================================
 
     def _start(self, chat_id: int, sender: dict[str, Any]) -> None:
+        """Rejestracja: nowa osoba zapisuje się jako nieaktywna (bez abonamentu), admin dostaje jej kartę."""
         existed = self.store.get_user(chat_id) is not None
-        is_admin = chat_id in self.settings.admins
-        status = "aktywny" if is_admin or self.settings.access == "open" else "oczekuje"
-        user = self.store.register(chat_id, sender.get("first_name"), sender.get("username"), status=status,
+        user = self.store.register(chat_id, sender.get("first_name"), sender.get("username"), status="aktywny",
                                    backlog_days=self.settings.welcome_backlog_days)
-        if user.status == "zablokowany" or (is_admin and user.status != "aktywny"):
+        if user.status in ("zablokowany", "oczekuje"):
             self.store.set_status(chat_id, "aktywny")
             user = self.store.get_user(chat_id)
-        if user.status == "aktywny":
+        if user.status == "odrzucony":
+            self._send(chat_id, ui.rejected_text())
+        elif self._has_access(user):
             self._send(chat_id, ui.welcome_text(user.imie), ui.menu_keyboard())
-        elif user.status == "oczekuje":
-            self._send(chat_id, ui.pending_text())
+        else:
+            self._send(chat_id, self._gate_text(user))
             if not existed:
-                text, markup = ui.admin_approval(user)
+                text, markup = ui.new_user_card(user)
                 for admin in self.settings.admins:
                     self._send_safely(admin, text, markup)
-        else:
-            self._send(chat_id, ui.rejected_text())
 
     def _admin_decision(self, chat_id: int, message_id: int, data: str) -> str:
+        """Przyciski z karty nowej osoby: 🎁 trial, ✅ 30 dni, ⛔ odrzuć."""
         if chat_id not in self.settings.admins:
             return "⛔ Tylko administrator może to zrobić"
         _, decision, target = data.split(":", 2)
-        user = self.store.get_user(int(target))
+        user = self.store.get_user(int(target)) if target.lstrip("-").isdigit() else None
         if user is None:
             return "Nie ma takiej osoby"
-        if decision == "ok":
-            self.store.set_status(user.chat_id, "aktywny")
-            self._send_safely(user.chat_id, "✅ Masz dostęp!\n\n" + ui.welcome_text(user.imie), ui.menu_keyboard())
-            self.api.edit_message_text(chat_id, message_id, f"✅ Wpuszczono: {user.display_name}")
-            return "✅ Wpuszczono"
+        if decision in ("ok", "trial"):
+            report = self._grant(user, days=ui.DEFAULT_PAID_DAYS, trial=decision == "trial")
+            self.api.edit_message_text(chat_id, message_id, report)
+            return "🎁 Trial włączony" if decision == "trial" else "✅ Abonament aktywny"
         self.store.set_status(user.chat_id, "odrzucony")
+        self.store.set_subscription(user.chat_id, user.subscription_ends, active=False)
         self._send_safely(user.chat_id, ui.rejected_text())
-        self.api.edit_message_text(chat_id, message_id, f"⛔ Odrzucono: {user.display_name}")
+        self.api.edit_message_text(chat_id, message_id, f"⛔ Odrzucono: {escape_html(user.display_name)}")
         return "⛔ Odrzucono"
+
+    # === Abonament (paywall) ======================================================================
+
+    def _cmd_activate(self, admin_chat: int, args: list[str]) -> None:
+        """``/aktywuj <chat_id> <liczba_dni>`` – tylko admin."""
+        if len(args) != 2 or not _is_chat_id(args[0]) or not args[1].isdigit() or not 1 <= int(args[1]) <= 3650:
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        self._grant_by_id(admin_chat, int(args[0]), days=int(args[1]), trial=False)
+
+    def _cmd_trial(self, admin_chat: int, args: list[str]) -> None:
+        """``/trial <chat_id>`` – tylko admin: równo 3 dni od teraz."""
+        if len(args) != 1 or not _is_chat_id(args[0]):
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        self._grant_by_id(admin_chat, int(args[0]), days=ui.TRIAL_DAYS, trial=True)
+
+    def _grant_by_id(self, admin_chat: int, chat_id: int, *, days: int, trial: bool) -> None:
+        user = self.store.get_user(chat_id)
+        if user is None:
+            self._send(admin_chat, ui.admin_unknown_user_text(chat_id))
+            return
+        self._send(admin_chat, self._grant(user, days=days, trial=trial))
+
+    def _grant(self, user: BotUser, *, days: int, trial: bool) -> str:
+        """Włącza abonament i powiadamia klienta; zwraca potwierdzenie dla admina.
+
+        Trial: równo 3 dni od teraz (nie skraca trwającego, dłuższego abonamentu). Płatny: N dni
+        od teraz, a gdy abonament jeszcze trwa – przedłużenie od jego końca (klient nie traci dni).
+        """
+        now = self.repo.now()
+        current = datetime.fromisoformat(user.subscription_ends) \
+            if user.subscription_ends and user.has_subscription(_utc_iso(now)) else None
+        if trial:
+            ends = now + timedelta(days=ui.TRIAL_DAYS)
+            if current is not None and current >= ends:
+                return ui.trial_skipped_text(user, self._local_date(user.subscription_ends))
+        else:
+            ends = (current or now) + timedelta(days=days)
+        ends_iso = _utc_iso(ends)
+        self.store.set_subscription(user.chat_id, ends_iso, active=True)
+        if user.status != "aktywny":  # np. wcześniej odrzucony albo „zablokowany” – admin daje nową szansę
+            self.store.set_status(user.chat_id, "aktywny")
+        ends_on = self._local_date(ends_iso)
+        text = ui.trial_text(ends_on, user.imie) if trial else ui.activated_text(days, ends_on, user.imie)
+        try:
+            self._send(user.chat_id, text, ui.menu_keyboard())
+            delivered = True
+        except TelegramApiError as exc:
+            log.warning("Nie udało się powiadomić %s o abonamencie: %s", user.chat_id, exc)
+            delivered = False
+        return ui.admin_granted_text(user, self._local_date(ends_iso, with_time=True), trial=trial, days=days,
+                                     delivered=delivered)
+
+    def expire_subscriptions(self) -> int:
+        """Wyłącza abonamenty po terminie: klient dostaje jedno powiadomienie, admin – listę do przedłużenia."""
+        expired = self.store.expired_subscriptions(_utc_iso(self.repo.now()))
+        entries = []
+        for user in expired:
+            self.store.set_subscription(user.chat_id, user.subscription_ends, active=False)
+            ends_on = self._local_date(user.subscription_ends)
+            self._send_safely(user.chat_id, ui.gate_text(self._contact_html(), expired_on=ends_on))
+            entries.append((user, ends_on))
+        if entries:
+            for admin in self.settings.admins:
+                self._send_safely(admin, ui.admin_expired_text(entries))
+        return len(entries)
+
+    def _has_access(self, user: BotUser) -> bool:
+        return (user.chat_id in self.settings.admins or self.settings.access == "open"
+                or user.has_subscription(_utc_iso(self.repo.now())))
+
+    def _gate_text(self, user: BotUser) -> str:
+        expired_on = self._local_date(user.subscription_ends) if user.subscription_ends else None
+        return ui.gate_text(self._contact_html(), expired_on=expired_on)
+
+    def _contact_html(self) -> str:
+        return ui.admin_contact_html(self.settings.admin_contact, self.settings.admins)
+
+    def _subscribers(self, tryb: str | None = None) -> list[BotUser]:
+        """Odbiorcy pętli wysyłkowych: z bazy tylko osoby z aktywnym abonamentem (i admini)."""
+        if self.settings.access == "open":
+            return self.store.users(tryb=tryb)
+        return self.store.subscribers(_utc_iso(self.repo.now()), admins=self.settings.admins, tryb=tryb)
+
+    def _local_date(self, utc_iso: str | None, *, with_time: bool = False) -> str:
+        """Data z bazy (UTC) w czasie lokalnym bota – do komunikatów (np. „29.10.2026”)."""
+        if not utc_iso:
+            return "—"
+        offset = self._clock() - self.repo.now().replace(tzinfo=None)
+        moment = datetime.fromisoformat(utc_iso).replace(tzinfo=None) + timedelta(minutes=round(offset.total_seconds() / 60))
+        return moment.strftime("%d.%m.%Y %H:%M" if with_time else "%d.%m.%Y")
 
     # === Ekrany z menu =========================================================================
 
@@ -327,14 +432,25 @@ class LeadBot:
         self._send(user.chat_id, *ui.nearby_screen(filters))
 
     def _show_help(self, user: BotUser) -> None:
-        self._send(user.chat_id, ui.help_text(self.settings), ui.menu_keyboard())
+        self._send(user.chat_id, ui.help_text(self.settings, admin=user.chat_id in self.settings.admins),
+                   ui.menu_keyboard())
 
     def _show_users(self, user: BotUser) -> None:
         if user.chat_id not in self.settings.admins:
             self._send(user.chat_id, ui.unknown_text(), ui.menu_keyboard())
             return
         everyone = [u for status in ("aktywny", "oczekuje", "zablokowany", "odrzucony") for u in self.store.users(status)]
-        self._send(user.chat_id, ui.users_list(everyone))
+        self._send(user.chat_id, ui.users_list(everyone, self._subscription_label))
+
+    def _subscription_label(self, user: BotUser) -> str:
+        """Stan abonamentu na liście admina: „admin”, „do 29.10.2026”, „wygasł 02.10.2026”, „nieaktywny”."""
+        if user.chat_id in self.settings.admins:
+            return "👑 admin"
+        if user.has_subscription(_utc_iso(self.repo.now())):
+            return f"💳 do {self._local_date(user.subscription_ends)}"
+        if user.subscription_ends:
+            return f"⌛ wygasł {self._local_date(user.subscription_ends)}"
+        return "nieaktywny"
 
     # === Kliknięcia: lead ======================================================================
 
@@ -541,7 +657,7 @@ class LeadBot:
     def deliver_instant(self) -> int:
         """Alerty watchlisty (wszyscy) i leady trybu „⚡ od razu”; zwraca liczbę wysłanych wiadomości."""
         sent = 0
-        for user in self.store.users():
+        for user in self._subscribers():
             try:
                 sent += self._deliver_instant_to(user)
             except TelegramApiError as exc:
@@ -551,7 +667,7 @@ class LeadBot:
     def deliver_reports(self, mode: str) -> int:
         """Raporty zbiorcze dla użytkowników w trybie ``mode`` (``rano``/``wieczor``)."""
         sent = 0
-        for user in self.store.users(tryb=mode):
+        for user in self._subscribers(tryb=mode):
             try:
                 sent += int(self.send_report(user))
             except TelegramApiError as exc:
@@ -608,7 +724,7 @@ class LeadBot:
     def deliver_stage_reminders(self) -> int:
         """Poranne przypomnienia „⏰ Kiedy dzwonić” dla osób z wybraną branżą; zwraca liczbę wiadomości."""
         sent = 0
-        for user in self.store.users():
+        for user in self._subscribers():
             if user.branza is None:
                 continue
             try:
@@ -807,6 +923,11 @@ def _ranked(leads: Sequence[Investment], nearest: Callable[[Investment], float |
             return _PRIORITY_RANK.get(inv.priorytet or "", 3), km if km is not None else float("inf")
         return sorted(newest_first, key=by_distance)
     return sorted(newest_first, key=lambda i: (_PRIORITY_RANK.get(i.priorytet or "", 3), -(i.punkty or 0)))
+
+
+def _is_chat_id(text: str) -> bool:
+    """ID czatu Telegram: liczba całkowita (grupy mają minus)."""
+    return text.lstrip("-").isdigit() and len(text) <= 20
 
 
 def _parse_volume(text: str) -> float | None:

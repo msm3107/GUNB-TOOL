@@ -270,9 +270,27 @@ Obsługa wyłącznie przyciskami („proste jak drut”):
 | **⏰ Kiedy wysyłać** | ⚡ Od razu · 🌅 Raport rano · 🌙 Raport wieczorem. W trybie „od razu” przy wielu leadach naraz przychodzi raport zamiast spamu. |
 | **📊 Raport** | „📊 Raport 29.09 – Znaleziono 36 nowych inwestycji. 7 spełnia Twoje filtry. 2 to 🔥 HOT LEADY. 1 dotyczy obserwowanego inwestora lub gminy.” + lista z numerami – klik w numer otwiera lead z przyciskami. |
 
-**Dostęp:** nowa osoba pisze do bota `/start`, a administrator (`bot.admins`, domyślnie Twój czat)
-dostaje wiadomość z przyciskami **✅ Wpuść / ⛔ Odrzuć**. `bot.access: open` wpuszcza każdego.
-Admin widzi listę osób komendą `/uzytkownicy`.
+**Dostęp i abonamenty (paywall bez bramki płatności, sterowany ręcznie):**
+
+- Nowa osoba po `/start` trafia do bazy jako nieaktywna (`is_active = 0`) i dostaje komunikat:
+  „⛔ Twój dostęp jest nieaktywny. Skontaktuj się z administratorem @nick, aby opłacić abonament.”
+  Nick ustawiasz w `ADMIN_CONTACT`; bez niego pokazuje się klikalny link do admina.
+- Każde menu, filtr i przycisk sprawdza, czy abonament jest aktywny (`is_active`) i nie wygasł
+  (`subscription_ends` później niż teraz). Pętle wysyłki (raporty, „od razu”, watchlista, „Kiedy dzwonić”)
+  pobierają z bazy wyłącznie takie osoby.
+- Administrator (`ADMIN_CHAT_ID`, domyślnie `TELEGRAM_CHAT_ID`) ma dostęp zawsze i steruje abonamentami:
+
+  | Komenda | Działanie |
+  |---|---|
+  | `/aktywuj <chat_id> <liczba_dni>` | abonament na N dni; trwający jest przedłużany od swojego końca; klient dostaje „✅ Twój abonament został aktywowany na N dni!” |
+  | `/trial <chat_id>` | równo 3 dni od teraz (nie skraca dłuższego abonamentu); klient dostaje „🎁 Aktywowano darmowy okres próbny na 3 dni!…” |
+  | `/uzytkownicy` | lista osób ze stanem abonamentu (do kiedy / wygasł / nieaktywny) |
+
+  Karta nowej osoby, którą dostaje admin, ma jej ID, gotowe komendy i przyciski
+  **🎁 Trial 3 dni / ✅ 30 dni / ⛔ Odrzuć**.
+- Po terminie abonament wyłącza się sam: klient dostaje jedno powiadomienie z kontaktem do admina,
+  a admin listę z gotową komendą przedłużenia.
+- `bot.access: open` wyłącza paywall (np. darmowy pilotaż).
 
 **Uruchomienie:** bot musi działać **stale** (odbiera kliknięcia na bieżąco) – sam pobiera dane GUNB
 o `bot.fetch_times`, rozsyła alerty co `instant_every_minutes` i raporty o `morning_time` / `evening_time`:

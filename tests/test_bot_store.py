@@ -84,6 +84,40 @@ def test_empty_filters_match_everything_and_round_trip_json():
     assert UserFilters.from_json("{zepsuty json") == UserFilters()
 
 
+# --- Abonamenty (paywall) ------------------------------------------------------------------------------
+
+def iso(moment) -> str:
+    return moment.isoformat(timespec="seconds")
+
+
+def test_subscribers_are_only_users_with_paid_access_plus_admins(store, clock):
+    now = clock()
+    for chat in (1, 2, 3, 4, 5):
+        store.register(chat, f"Ekipa {chat}", None, status="aktywny", backlog_days=7)
+    store.set_subscription(1, iso(now + timedelta(days=10)), active=True)  # opłacony
+    store.set_subscription(2, iso(now - timedelta(days=1)), active=True)  # wygasł
+    store.set_subscription(3, iso(now + timedelta(days=10)), active=False)  # wyłączony przez admina
+    # 4 – nigdy nie płacił, 5 – administrator
+
+    assert [u.chat_id for u in store.subscribers(iso(now), admins=(5,))] == [1, 5]
+    assert [u.chat_id for u in store.subscribers(iso(now), admins=(5,), tryb="wieczor")] == []
+    assert [u.chat_id for u in store.expired_subscriptions(iso(now))] == [2]
+
+
+def test_new_user_starts_without_subscription(store):
+    user = store.register(7, "Nowy", None, status="aktywny", backlog_days=7)
+    assert (user.is_active, user.subscription_ends) == (False, None)
+    assert not user.has_subscription("2026-09-29T06:00:00+00:00")
+
+
+def test_subscription_is_valid_until_its_end(store, clock):
+    store.register(7, "Nowy", None, status="aktywny", backlog_days=7)
+    store.set_subscription(7, "2026-10-02T06:00:00+00:00", active=True)
+    user = store.get_user(7)
+    assert user.has_subscription("2026-10-02T05:59:59+00:00")
+    assert not user.has_subscription("2026-10-02T06:00:00+00:00")
+
+
 # --- „Blisko mnie”: promień od bazy firmy ------------------------------------------------------------
 
 BAZA_OLSZTYN = (53.7784, 20.4801)

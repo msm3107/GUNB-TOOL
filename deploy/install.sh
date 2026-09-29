@@ -66,9 +66,9 @@ setup_env() {
         esac
     done
     [ -n "$chat_id" ] || ask chat_id "Twój ID w Telegramie – administrator bota (liczba; podaje ją @userinfobot)" '^-?[0-9]{5,}$'
-    # Alerty o awariach (GUNB/ULDK/baza) domyślnie idą do admina – można je potem przenieść na osobną grupę.
-    (umask 077 && printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nTELEGRAM_ADMIN_CHAT_ID=%s\n' \
-        "$token" "$chat_id" "$chat_id" > .env)
+    # Ten sam czat: administrator abonamentów i alerty o awariach (GUNB/ULDK/baza) – można je potem rozdzielić.
+    (umask 077 && printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nADMIN_CHAT_ID=%s\nTELEGRAM_ADMIN_CHAT_ID=%s\n' \
+        "$token" "$chat_id" "$chat_id" "$chat_id" > .env)
     chown "$APP_USER:$APP_USER" .env
 }
 

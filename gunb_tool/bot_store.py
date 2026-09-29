@@ -155,11 +155,17 @@ class BotUser:
     nowe_od: str = ""
     ostatni_raport: str | None = None
     branza: str | None = None
+    is_active: bool = False
+    subscription_ends: str | None = None
 
     @property
     def display_name(self) -> str:
         """Nazwa do wyświetlenia (imię, @login albo numer czatu)."""
         return self.imie or (f"@{self.username}" if self.username else str(self.chat_id))
+
+    def has_subscription(self, now_iso: str) -> bool:
+        """Czy abonament jest aktywny i nie wygasł (daty w UTC, format ISO)."""
+        return self.is_active and bool(self.subscription_ends) and (self.subscription_ends or "") > now_iso
 
 
 @dataclass(frozen=True)
@@ -233,6 +239,28 @@ class BotStore:
             sql += " AND tryb = ?"
             params.append(tryb)
         return [_user(row) for row in self._conn.execute(sql + " ORDER BY chat_id", params).fetchall()]
+
+    def subscribers(self, now_iso: str, *, admins: Sequence[int], tryb: str | None = None) -> list[BotUser]:
+        """Odbiorcy leadów: tylko osoby z aktywnym, niewygasłym abonamentem (plus administratorzy)."""
+        marks = ",".join("?" for _ in admins) or "NULL"
+        sql = (f"SELECT * FROM bot_users WHERE status = 'aktywny'"
+               f" AND ((is_active = 1 AND subscription_ends > ?) OR chat_id IN ({marks}))")
+        params: list[object] = [now_iso, *admins]
+        if tryb is not None:
+            sql += " AND tryb = ?"
+            params.append(tryb)
+        return [_user(row) for row in self._conn.execute(sql + " ORDER BY chat_id", params).fetchall()]
+
+    def expired_subscriptions(self, now_iso: str) -> list[BotUser]:
+        """Abonamenty oznaczone jako aktywne, których termin już minął (do wyłączenia i powiadomienia)."""
+        rows = self._conn.execute(
+            "SELECT * FROM bot_users WHERE is_active = 1 AND subscription_ends <= ? ORDER BY chat_id", (now_iso,)
+        ).fetchall()
+        return [_user(row) for row in rows]
+
+    def set_subscription(self, chat_id: int, ends_iso: str | None, *, active: bool) -> None:
+        """Ustawia abonament: ``active`` i termin wygaśnięcia (UTC, ISO)."""
+        self._update(chat_id, is_active=int(active), subscription_ends=ends_iso)
 
     def set_status(self, chat_id: int, status: str) -> None:
         self._update(chat_id, status=status)
@@ -436,6 +464,8 @@ def _user(row) -> BotUser:
         nowe_od=row["nowe_od"],
         ostatni_raport=row["ostatni_raport"],
         branza=row["branza"],
+        is_active=bool(row["is_active"]),
+        subscription_ends=row["subscription_ends"],
     )
 
 

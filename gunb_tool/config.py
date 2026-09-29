@@ -214,8 +214,11 @@ class BotConfig:
     """Interaktywny bot Telegram (``main.py --bot``).
 
     Attributes:
-        admins: ID czatów administratorów (akceptują nowe osoby, widzą listę użytkowników).
-        access: ``approval`` – nowa osoba czeka na akceptację admina, ``open`` – dostęp dla każdego.
+        admins: ID czatów administratorów (``ADMIN_CHAT_ID``): aktywują abonamenty (``/aktywuj``, ``/trial``),
+            widzą listę użytkowników, sami mają dostęp bez abonamentu. Puste = ``telegram.chat_id``.
+        access: ``approval`` – paywall: dostęp tylko z aktywnym abonamentem nadanym ręcznie przez admina;
+            ``open`` – dostęp dla każdego (np. darmowy pilotaż).
+        admin_contact: nick admina pokazywany osobom bez abonamentu (np. ``@jan_kowalski``).
         fetch_times: godziny (``HH:MM``), o których bot sam pobiera dane GUNB; puste = z harmonogramu systemu.
         morning_time / evening_time: godziny raportów „rano” i „wieczorem”.
         instant_every_minutes: jak często sprawdzać nowe leady dla trybu „od razu” i alertów watchlisty.
@@ -235,6 +238,7 @@ class BotConfig:
     max_leads_in_report: int = 20
     recent_days: int = 30
     poll_timeout: int = 25
+    admin_contact: str = ""
 
 
 @dataclass(frozen=True)
@@ -301,6 +305,10 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         log.warning("Nieznana sekcja konfiguracji %r – zostanie pominięta", unknown)
     raw = _interpolate(raw, env)
 
+    telegram = _telegram(_section(raw, "telegram"))
+    bot = _bot(_section(raw, "bot"))
+    if not bot.admins and _CHAT_ID_RE.match(telegram.chat_id):
+        bot = replace(bot, admins=(int(telegram.chat_id),))  # bez ADMIN_CHAT_ID adminem jest właściciel bota
     return AppConfig(
         http=_http(_section(raw, "http")),
         gunb=_gunb(_section(raw, "gunb"), base_dir),
@@ -308,12 +316,12 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         geocoding=_geocoding(_section(raw, "geocoding")),
         storage=_storage(_section(raw, "storage"), base_dir),
         notifications=_notifications(_section(raw, "notifications")),
-        telegram=_telegram(_section(raw, "telegram")),
+        telegram=telegram,
         discord=_discord(_section(raw, "discord")),
         sheets=_sheets(_section(raw, "sheets"), base_dir),
         logging=_logging(_section(raw, "logging"), base_dir),
         segments=_segments(_section(raw, "segments")),
-        bot=_bot(_section(raw, "bot")),
+        bot=bot,
     )
 
 
@@ -537,7 +545,10 @@ def _bot(data: dict[str, Any]) -> BotConfig:
         admins.append(int(text))
     access = str(data.get("access", defaults.access)).strip().lower()
     if access not in {"approval", "open"}:
-        raise ConfigError("bot.access: dozwolone wartości to approval (akceptacja admina) lub open")
+        raise ConfigError("bot.access: dozwolone wartości to approval (abonament nadawany przez admina) lub open")
+    contact = str(data.get("admin_contact") or "").strip()
+    if contact and not contact.startswith("@") and re.fullmatch(r"\w{5,32}", contact):
+        contact = "@" + contact  # sam nick bez „@”
     times = {key: _clock_time(data.get(key, getattr(defaults, key)), f"bot.{key}")
              for key in ("morning_time", "evening_time")}
     return BotConfig(
@@ -550,6 +561,7 @@ def _bot(data: dict[str, Any]) -> BotConfig:
         max_leads_in_report=int(_number(data, "bot", "max_leads_in_report", defaults.max_leads_in_report, minimum=1)),
         recent_days=int(_number(data, "bot", "recent_days", defaults.recent_days, minimum=1)),
         poll_timeout=int(_number(data, "bot", "poll_timeout", defaults.poll_timeout, minimum=1)),
+        admin_contact=contact,
         **times,
     )
 

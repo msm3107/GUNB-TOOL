@@ -95,7 +95,8 @@ def api():
 
 def make_bot(repo, api, clock, **settings):
     params = dict(admins=(ADMIN,), access="approval", fetch_times=(), morning_time="07:00", evening_time="19:00",
-                  instant_every_minutes=10, welcome_backlog_days=7, max_leads_in_report=20)
+                  instant_every_minutes=10, welcome_backlog_days=7, max_leads_in_report=20,
+                  admin_contact="@admin_gunb")
     params.update(settings)
     return LeadBot(repo, api, settings=BotConfig(**params), powiat_codes=("1465", "3021"),
                    formatter=MessageFormatter(), clock=clock.now_local)
@@ -155,19 +156,165 @@ def test_admin_is_active_at_once_and_gets_big_menu_buttons(bot, api):
     assert welcome["markup"]["resize_keyboard"] is True
 
 
-def test_stranger_waits_for_admin_approval(bot, api):
+GATE = "⛔ Twój dostęp jest nieaktywny. Skontaktuj się z administratorem @admin_gunb, aby opłacić abonament."
+TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 3 dni! Zobacz, jak szybciej docierać do klientów. "
+              "Po tym czasie bot zostanie wstrzymany.")
+
+
+def test_new_user_is_saved_inactive_and_told_to_contact_admin(bot, api):
     bot.handle_update(message(MIETEK, "/start"))
-    assert "akceptac" in api.last_to(MIETEK)["text"]
-    approval = api.last_to(ADMIN)
-    assert "Mietek" in approval["text"]
-    assert buttons(approval["markup"]) == [("✅ Wpuść", f"adm:ok:{MIETEK}"), ("⛔ Odrzuć", f"adm:no:{MIETEK}")]
+
+    user = BotStore(bot.repo).get_user(MIETEK)
+    assert (user.is_active, user.subscription_ends) == (False, None)
+    assert api.last_to(MIETEK)["text"] == GATE
+    card = api.last_to(ADMIN)  # admin od razu wie, kogo aktywować
+    assert "Mietek" in card["text"] and f"/trial {MIETEK}" in card["text"] and f"/aktywuj {MIETEK} 30" in card["text"]
+    assert buttons(card["markup"]) == [("🎁 Trial 3 dni", f"adm:trial:{MIETEK}"), ("✅ 30 dni", f"adm:ok:{MIETEK}"),
+                                       ("⛔ Odrzuć", f"adm:no:{MIETEK}")]
+
+
+@pytest.mark.parametrize("text", ["🔎 Filtry", "📊 Co nowego?", "📍 Blisko mnie", "⏰ Kiedy wysyłać", "/filtry", "/branza"])
+def test_inactive_user_cannot_use_menu_or_commands(bot, api, text):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(MIETEK, text))
+    assert api.last_to(MIETEK)["text"] == GATE
+
+
+def test_inactive_user_cannot_use_buttons(bot, api):
+    bot.handle_update(message(MIETEK, "/start"))
+    api.edits.clear()
+    bot.handle_update(click(MIETEK, "f:place"))
+    bot.handle_update(click(MIETEK, "fb:dach"))
+    assert api.edits == []
+    assert BotStore(bot.repo).get_user(MIETEK).branza is None
+    assert "abonament" in api.answers[-1]
+
+
+def test_admin_activates_subscription_with_command(bot, api):
+    bot.handle_update(message(MIETEK, "/start"))
+
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 30"))
+
+    user = BotStore(bot.repo).get_user(MIETEK)
+    assert user.is_active is True
+    assert user.subscription_ends == "2026-10-29T05:00:00+00:00"  # teraz + 30 dni
+    welcome = api.last_to(MIETEK)
+    assert welcome["text"].startswith("✅ Twój abonament został aktywowany na 30 dni!")
+    assert welcome["markup"]["keyboard"]  # od razu dostaje menu
+    assert "29.10.2026" in api.last_to(ADMIN)["text"]
+    bot.handle_update(message(MIETEK, "🔎 Filtry"))
+    assert "Twoje filtry" in api.last_to(MIETEK)["text"]
+
+
+def test_activation_extends_a_running_subscription(bot, api):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 30"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 30"))  # opłacił kolejny miesiąc przed końcem
+    assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-11-28T05:00:00+00:00"
+
+
+def test_admin_grants_three_day_trial(bot, api):
+    bot.handle_update(message(MIETEK, "/start"))
+
+    bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+
+    user = BotStore(bot.repo).get_user(MIETEK)
+    assert user.is_active is True
+    assert user.subscription_ends == "2026-10-02T05:00:00+00:00"  # równo 3 dni od teraz
+    assert api.last_to(MIETEK)["text"].startswith(TRIAL_TEXT)
+    assert "Trial" in api.last_to(ADMIN)["text"]
+
+
+def test_trial_button_in_new_user_card_works_like_command(bot, api):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(click(ADMIN, f"adm:trial:{MIETEK}"))
+    assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-10-02T05:00:00+00:00"
+    assert api.last_to(MIETEK)["text"].startswith(TRIAL_TEXT)
+
+
+def test_trial_does_not_shorten_a_paid_subscription(bot, api):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 30"))
+    bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-10-29T05:00:00+00:00"
+    assert "ma już" in api.last_to(ADMIN)["text"]
+
+
+@pytest.mark.parametrize("command", ["/aktywuj", f"/aktywuj {MIETEK}", f"/aktywuj {MIETEK} zero", "/aktywuj x 30",
+                                     f"/aktywuj {MIETEK} 0", "/trial", "/trial abc"])
+def test_admin_command_with_bad_arguments_shows_usage(bot, api, command):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, command))
+    assert "Użycie" in api.last_to(ADMIN)["text"]
+    assert BotStore(bot.repo).get_user(MIETEK).is_active is False
+
+
+def test_admin_command_for_unknown_chat_is_explained(bot, api):
+    bot.handle_update(message(ADMIN, "/aktywuj 5555 30"))
+    assert "/start" in api.last_to(ADMIN)["text"]
+
+
+def test_only_admin_can_activate(bot, api):
+    activate(bot, api)
+    bot.handle_update(message(OBCY, "/start"))
+    bot.handle_update(message(MIETEK, f"/aktywuj {OBCY} 365"))
+    bot.handle_update(message(MIETEK, f"/trial {OBCY}"))
+    bot.handle_update(click(MIETEK, f"adm:ok:{OBCY}"))
+    assert BotStore(bot.repo).get_user(OBCY).is_active is False
+    assert "Nie rozumiem" in api.last_to(MIETEK)["text"]
+
+
+def test_expired_subscription_blocks_the_bot_again(bot, api, clock):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    clock.advance(days=3, minutes=1)
 
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
-    assert "akceptac" in api.last_to(MIETEK)["text"]
 
-    bot.handle_update(click(ADMIN, f"adm:ok:{MIETEK}"))
-    assert BotStore(bot.repo).get_user(MIETEK).status == "aktywny"
-    assert api.last_to(MIETEK)["markup"]["keyboard"]
+    assert api.last_to(MIETEK)["text"].startswith("⛔ Twój abonament wygasł")
+    assert "@admin_gunb" in api.last_to(MIETEK)["text"]
+
+
+def test_lead_rounds_reach_only_paying_users(bot, api, repo):
+    activate(bot, api, MIETEK)  # przycisk „✅ 30 dni”
+    bot.handle_update(message(OBCY, "/start"))  # bez abonamentu
+    repo.upsert(lead("A/1"))
+    api.sent.clear()
+
+    bot.deliver_reports("rano")
+    bot.deliver_instant()
+
+    assert api.to(MIETEK) and api.to(OBCY) == []
+
+
+def test_expiry_is_announced_once_to_user_and_admin(bot, api, clock):
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    clock.advance(days=3, minutes=11)
+    api.sent.clear()
+
+    bot.run_due_jobs()
+    clock.advance(minutes=11)
+    bot.run_due_jobs()
+
+    assert [m["text"][:30] for m in api.to(MIETEK)] == ["⛔ Twój abonament wygasł 02.10."]
+    assert BotStore(bot.repo).get_user(MIETEK).is_active is False
+    assert f"/aktywuj {MIETEK} 30" in api.to(ADMIN)[-1]["text"]
+
+
+def test_admin_always_has_access_without_subscription(bot, api):
+    bot.handle_update(message(ADMIN, "/start"))
+    bot.handle_update(message(ADMIN, "🔎 Filtry"))
+    assert "Twoje filtry" in api.last_to(ADMIN)["text"]
+
+
+def test_users_list_shows_subscriptions(bot, api):
+    activate(bot, api, MIETEK)
+    bot.handle_update(message(OBCY, "/start"))
+    bot.handle_update(message(ADMIN, "/start"))
+    bot.handle_update(message(ADMIN, "/uzytkownicy"))
+    text = api.last_to(ADMIN)["text"]
+    assert "do 29.10.2026" in text and "nieaktywny" in text
 
 
 def test_rejected_user_is_informed(bot, api):
@@ -177,17 +324,11 @@ def test_rejected_user_is_informed(bot, api):
     assert "⛔" in api.last_to(OBCY)["text"]
 
 
-def test_non_admin_cannot_approve(bot, api):
-    activate(bot, api)
-    bot.handle_update(message(OBCY, "/start"))
-    bot.handle_update(click(MIETEK, f"adm:ok:{OBCY}"))
-    assert BotStore(bot.repo).get_user(OBCY).status == "oczekuje"
-
-
-def test_open_access_activates_everyone(repo, api, clock):
+def test_open_access_lets_everyone_in_without_subscription(repo, api, clock):
     bot = make_bot(repo, api, clock, access="open")
     bot.handle_update(message(OBCY, "/start"))
-    assert BotStore(repo).get_user(OBCY).status == "aktywny"
+    bot.handle_update(message(OBCY, "🔎 Filtry"))
+    assert "Twoje filtry" in api.last_to(OBCY)["text"]
 
 
 def test_unknown_text_shows_help_with_menu(bot, api):
@@ -651,11 +792,11 @@ def test_clearing_filters_keeps_the_base(bot, api, repo):
     assert filters.baza == BASE and filters.is_empty()
 
 
-def test_pin_from_user_waiting_for_approval_is_ignored(bot, api, repo):
+def test_pin_from_user_without_subscription_is_ignored(bot, api, repo):
     bot.handle_update(message(MIETEK, "/start"))
     bot.handle_update(pin(MIETEK, *BASE))
     assert BotStore(repo).get_user(MIETEK).filtry.baza is None
-    assert "akceptac" in api.last_to(MIETEK)["text"]
+    assert api.last_to(MIETEK)["text"] == GATE
 
 
 def test_blisko_command_works_like_the_button(bot, api):

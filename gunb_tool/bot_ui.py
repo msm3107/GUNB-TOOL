@@ -91,7 +91,13 @@ def welcome_text(name: str | None) -> str:
     )
 
 
-def help_text(settings: BotConfig) -> str:
+def help_text(settings: BotConfig, *, admin: bool = False) -> str:
+    admin_part = ("\n\n👑 <b>Admin</b>: /aktywuj &lt;chat_id&gt; &lt;dni&gt; · /trial &lt;chat_id&gt; · /uzytkownicy"
+                  if admin else "")
+    return _help_body(settings) + admin_part
+
+
+def _help_body(settings: BotConfig) -> str:
     return (
         "❓ <b>Jak to działa</b>\n\n"
         "Codziennie sprawdzam rejestr pozwoleń na budowę (GUNB) i wysyłam Ci to, co pasuje do filtrów.\n\n"
@@ -107,26 +113,84 @@ def help_text(settings: BotConfig) -> str:
     )
 
 
-def pending_text() -> str:
-    return "⏳ Dziękuję! Twoje zgłoszenie czeka na akceptację administratora. Dam znać, gdy dostęp zostanie włączony."
-
-
 def rejected_text() -> str:
     return "⛔ Administrator nie przyznał dostępu do bota."
 
 
-def admin_approval(user: BotUser) -> tuple[str, Markup]:
+# --- Abonament (paywall) i panel admina --------------------------------------------------------------
+
+TRIAL_DAYS = 3
+DEFAULT_PAID_DAYS = 30
+TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 3 dni! Zobacz, jak szybciej docierać do klientów. "
+              "Po tym czasie bot zostanie wstrzymany.")
+
+
+def admin_contact_html(contact: str, admins: Sequence[int]) -> str:
+    """„administratorem @nick” albo – bez nicku w konfiguracji – klikalna wzmianka admina po ID."""
+    if contact:
+        return f"administratorem {escape_html(contact)}"
+    if admins:
+        return f'<a href="tg://user?id={admins[0]}">administratorem</a>'
+    return "administratorem"
+
+
+def gate_text(contact_html: str, expired_on: str | None = None) -> str:
+    """Komunikat dla osoby bez aktywnego abonamentu (także przy każdej próbie użycia menu)."""
+    if expired_on:
+        return f"⛔ Twój abonament wygasł {expired_on}. Skontaktuj się z {contact_html}, aby go przedłużyć."
+    return f"⛔ Twój dostęp jest nieaktywny. Skontaktuj się z {contact_html}, aby opłacić abonament."
+
+
+def new_user_card(user: BotUser) -> tuple[str, Markup]:
+    """Wiadomość do admina o nowej osobie – z gotowymi komendami i przyciskami."""
     login = f" (@{escape_html(user.username)})" if user.username else ""
-    text = f"🆕 Nowa osoba chce korzystać z bota: <b>{escape_html(user.imie or str(user.chat_id))}</b>{login}"
-    return text, inline([[("✅ Wpuść", f"adm:ok:{user.chat_id}"), ("⛔ Odrzuć", f"adm:no:{user.chat_id}")]])
+    text = (f"🆕 Nowa osoba: <b>{escape_html(user.imie or str(user.chat_id))}</b>{login}\n"
+            f"ID: <code>{user.chat_id}</code>\n"
+            f"Dostęp: /trial {user.chat_id} (3 dni za darmo) albo /aktywuj {user.chat_id} 30")
+    return text, inline([[("🎁 Trial 3 dni", f"adm:trial:{user.chat_id}"),
+                          ("✅ 30 dni", f"adm:ok:{user.chat_id}"), ("⛔ Odrzuć", f"adm:no:{user.chat_id}")]])
 
 
-def users_list(users: Sequence[BotUser]) -> str:
+def activated_text(days: int, ends_on: str, name: str | None) -> str:
+    return (f"✅ Twój abonament został aktywowany na {days} dni!\nWażny do {ends_on}.\n\n" + welcome_text(name))
+
+
+def trial_text(ends_on: str, name: str | None) -> str:
+    return f"{TRIAL_TEXT}\nWażny do {ends_on}.\n\n" + welcome_text(name)
+
+
+def admin_granted_text(user: BotUser, ends_on: str, *, trial: bool, days: int, delivered: bool) -> str:
+    who = f"<b>{escape_html(user.display_name)}</b> ({user.chat_id})"
+    head = f"🎁 Trial: {who} – ważny do {ends_on}" if trial else f"✅ Aktywowano: {who} – {days} dni, ważny do {ends_on}"
+    return head if delivered else head + "\n⚠️ Nie udało się wysłać mu wiadomości (zablokował bota?)."
+
+
+def admin_usage_text() -> str:
+    return ("ℹ️ Użycie:\n/aktywuj &lt;chat_id&gt; &lt;liczba_dni&gt; – np. /aktywuj 9876543 30\n"
+            "/trial &lt;chat_id&gt; – 3 dni za darmo")
+
+
+def admin_unknown_user_text(chat_id: int) -> str:
+    return f"🤔 Nie znam użytkownika {chat_id} – poproś, żeby najpierw napisał /start do bota."
+
+
+def trial_skipped_text(user: BotUser, ends_on: str) -> str:
+    return f"ℹ️ {escape_html(user.display_name)} ma już abonament do {ends_on} – trial pominięty."
+
+
+def admin_expired_text(entries: Sequence[tuple[BotUser, str]]) -> str:
+    lines = [f"• {escape_html(user.display_name)} ({user.chat_id}) – {ends_on} · przedłuż: "
+             f"/aktywuj {user.chat_id} {DEFAULT_PAID_DAYS}" for user, ends_on in entries]
+    return "⌛ <b>Wygasłe abonamenty</b>\n" + "\n".join(lines)
+
+
+def users_list(users: Sequence[BotUser], subscription: Callable[[BotUser], str]) -> str:
+    """Lista dla admina: status, abonament (np. „do 29.10.2026”, „nieaktywny”) i tryb raportów."""
     if not users:
         return "Brak użytkowników."
     icons = {"aktywny": "✅", "oczekuje": "⏳", "odrzucony": "⛔", "zablokowany": "🚫"}
-    lines = [f"{icons.get(u.status, '•')} {escape_html(u.display_name)} · {MODE_LABELS.get(u.tryb, u.tryb)}"
-             for u in users]
+    lines = [f"{icons.get(u.status, '•')} {escape_html(u.display_name)} ({u.chat_id}) · {subscription(u)}"
+             f" · {MODE_LABELS.get(u.tryb, u.tryb)}" for u in users]
     return "👥 <b>Użytkownicy</b>\n" + "\n".join(lines)
 
 
