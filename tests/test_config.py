@@ -90,3 +90,73 @@ def test_missing_file_raises_config_error(tmp_path):
 def test_repository_config_file_is_valid():
     cfg = load_config(REPO_ROOT / "config.yaml", env={})
     assert cfg.gunb.voivodeships
+
+
+# --- Segmenty klientów ----------------------------------------------------------------------
+
+SEGMENTS_YAML = """
+gunb:
+  voivodeships: ['16']
+segments:
+  domki:
+    label: Domki jednorodzinne
+    categories: [mieszkaniowa-jednorodzinna]
+    max_kubatura: 2500
+    telegram_chat_id: ${CHAT_DOMKI}
+  duze:
+    label: Duże inwestycje
+    categories: [mieszkaniowa-jednorodzinna, mieszkaniowa-wielorodzinna, komercyjna]
+"""
+
+
+def test_segments_are_loaded_in_declared_order(tmp_path):
+    cfg = load_config(write_config(tmp_path, SEGMENTS_YAML), env={"CHAT_DOMKI": "-100777"})
+    assert [s.name for s in cfg.segments] == ["domki", "duze"]
+    domki, duze = cfg.segments
+    assert (domki.label, domki.max_kubatura, domki.min_kubatura) == ("Domki jednorodzinne", 2500, None)
+    assert domki.categories == ("mieszkaniowa-jednorodzinna",)
+    assert domki.telegram_chat_id == "-100777"
+    assert duze.telegram_chat_id == ""
+
+
+def test_config_without_segments_has_none(tmp_path):
+    assert load_config(write_config(tmp_path, "gunb:\n  voivodeships: ['16']\n"), env={}).segments == ()
+
+
+@pytest.mark.parametrize(
+    "segment,fragment",
+    [
+        ("x:\n    categories: [palace]\n", "palace"),
+        ("x:\n    min_kubatura: 5000\n    max_kubatura: 100\n", "min_kubatura"),
+        ("Zla Nazwa:\n    label: a\n", "Zla Nazwa"),
+    ],
+)
+def test_invalid_segments_raise(tmp_path, segment, fragment):
+    body = "gunb:\n  voivodeships: ['16']\nsegments:\n  " + segment
+    with pytest.raises(ConfigError, match=fragment):
+        load_config(write_config(tmp_path, body), env={})
+
+
+def test_repository_config_defines_domki_and_duze_segments():
+    cfg = load_config(REPO_ROOT / "config.yaml", env={})
+    assert [s.name for s in cfg.segments] == ["domki", "duze"]
+
+
+# --- Powiadomienia ---------------------------------------------------------------------------
+
+def test_notification_defaults(tmp_path):
+    cfg = load_config(write_config(tmp_path, "gunb:\n  voivodeships: ['16']\n"), env={})
+    assert cfg.notifications.max_leads_per_run == 200
+    assert cfg.notifications.digest_threshold == 10
+    assert cfg.telegram.delay_seconds == 1.0
+
+
+def test_legacy_max_messages_per_run_is_still_accepted(tmp_path):
+    body = "gunb:\n  voivodeships: ['16']\nnotifications:\n  max_messages_per_run: 30\n"
+    assert load_config(write_config(tmp_path, body), env={}).notifications.max_leads_per_run == 30
+
+
+def test_telegram_cannot_send_faster_than_one_message_per_second(tmp_path):
+    body = "gunb:\n  voivodeships: ['16']\ntelegram:\n  delay_seconds: 0.5\n"
+    with pytest.raises(ConfigError, match="delay_seconds"):
+        load_config(write_config(tmp_path, body), env={})

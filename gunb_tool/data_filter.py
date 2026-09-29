@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Sequence
 
-from .config import FilterConfig
+from .config import FilterConfig, SegmentConfig
 from .models import BUILDING_CATEGORIES, NOISE_CATEGORY, GunbCase
 from .text import clean, fold_polish, normalize_text
 
@@ -76,6 +76,7 @@ class FilterDecision:
     classification: Classification
     investor: str | None
     designer: Designer | None
+    segment: str | None = None
 
 
 class LeadFilter:
@@ -83,10 +84,12 @@ class LeadFilter:
 
     Args:
         config: słowa wykluczające, kategorie szumu, wzorce budynków mieszkalnych/komercyjnych.
+        segments: segmenty klientów (kolejność = priorytet dopasowania).
     """
 
-    def __init__(self, config: FilterConfig) -> None:
+    def __init__(self, config: FilterConfig, segments: Sequence[SegmentConfig] = ()) -> None:
         self.config = config
+        self.segments = tuple(segments)
         self._exclude = _compile(config.exclude_keywords)
         self._residential = _compile(config.residential_patterns)
         self._commercial = _compile(config.commercial_patterns)
@@ -126,6 +129,19 @@ class LeadFilter:
             kategoria = "inna"
 
         return Classification(is_residential, is_commercial, noise_reason is not None, kategoria, noise_reason)
+
+    def segment_for(self, kategoria: str, kubatura: float | None) -> str | None:
+        """Nazwa pierwszego pasującego segmentu klientów albo ``None``."""
+        for segment in self.segments:
+            if segment.categories and kategoria not in segment.categories:
+                continue
+            if kubatura is not None and (
+                (segment.min_kubatura is not None and kubatura < segment.min_kubatura)
+                or (segment.max_kubatura is not None and kubatura > segment.max_kubatura)
+            ):
+                continue
+            return segment.name
+        return None
 
     def extract_investor(self, case: GunbCase) -> str | None:
         """Nazwa inwestora, jeśli jawna (GUNB ukrywa dane osób fizycznych)."""
@@ -171,6 +187,7 @@ class LeadFilter:
             classification=classification,
             investor=self.extract_investor(case),
             designer=self.extract_designer(case),
+            segment=None if classification.is_noise else self.segment_for(classification.kategoria, case.kubatura),
         )
 
     def _noise_reason(self, case: GunbCase, text: str, category: str) -> str | None:

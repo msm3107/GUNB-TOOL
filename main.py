@@ -34,6 +34,7 @@ from gunb_tool.models import Source
 from gunb_tool.pipeline import (
     FetchReport,
     LeadPipeline,
+    build_formatter,
     build_query,
     create_pipeline,
     notification_http_client,
@@ -81,8 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     notify = parser.add_argument_group("opcje powiadomień")
     notify.add_argument("--dry-run", action="store_true", help="wypisz wiadomości zamiast je wysyłać")
-    notify.add_argument("--max-messages", type=int, metavar="N",
-                        help="limit wiadomości na kanał (nadpisuje notifications.max_messages_per_run)")
+    notify.add_argument("--max-leads", "--max-messages", dest="max_leads", type=int, metavar="N",
+                        help="najwięcej leadów obsłużonych na kanał (nadpisuje notifications.max_leads_per_run)")
     return parser
 
 
@@ -106,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     exit_code = EXIT_OK
     with LeadRepository(config.storage.db_path, negative_cache_days=config.geocoding.negative_cache_days) as repo:
-        pipeline = LeadPipeline(repo)
+        pipeline = LeadPipeline(repo, formatter=build_formatter(config))
         if args.fetch:
             pipeline = create_pipeline(config, repo, geocode=not args.no_geocode)
             exit_code = max(exit_code, _run_fetch(pipeline, config, args))
@@ -173,21 +174,23 @@ def _date_basis(query: FetchQuery) -> str:
 
 
 def _run_notify(pipeline: LeadPipeline, config: AppConfig, channel: str, args: argparse.Namespace) -> int:
+    segment_chats = _segment_chats(config) if channel == "telegram" else {}
     try:
-        notifier = _DryRunNotifier(channel) if args.dry_run else _make_notifier(channel, config)
+        notifier = (_DryRunNotifier(channel, segment_chats) if args.dry_run
+                    else _make_notifier(channel, config, segment_chats))
     except NotificationError as exc:
         log.error("%s: %s", channel, exc)
         return EXIT_PARTIAL_FAILURE
-    delay = config.telegram.delay_seconds if channel == "telegram" else config.discord.delay_seconds
     report = pipeline.notify(
         notifier,
-        limit=args.max_messages or config.notifications.max_messages_per_run,
+        limit=args.max_leads or config.notifications.max_leads_per_run,
         max_age_days=config.notifications.max_age_days,
-        delay=delay,
+        digest_threshold=config.notifications.digest_threshold,
         dry_run=args.dry_run,
     )
     mode = " (dry-run – nic nie wysłano)" if args.dry_run else ""
-    print(f"{channel}: wiadomości {report.sent}, błędy {report.failed}{mode}")
+    digests = f", raporty zbiorcze {report.digests}" if report.digests else ""
+    print(f"{channel}: wiadomości {report.messages}, leady {report.leads}{digests}, błędy {report.failed}{mode}")
     return EXIT_PARTIAL_FAILURE if report.failed else EXIT_OK
 
 
@@ -208,20 +211,29 @@ def _run_sync_sheets(pipeline: LeadPipeline, config: AppConfig) -> int:
     return EXIT_OK
 
 
-def _make_notifier(channel: str, config: AppConfig) -> Notifier:
+def _segment_chats(config: AppConfig) -> dict[str, str]:
+    return {segment.name: segment.telegram_chat_id for segment in config.segments if segment.telegram_chat_id}
+
+
+def _make_notifier(channel: str, config: AppConfig, segment_chats: dict[str, str]) -> Notifier:
     http = notification_http_client(config)
     if channel == "telegram":
-        return TelegramNotifier(http, config.telegram.bot_token, config.telegram.chat_id)
-    return DiscordNotifier(http, config.discord.webhook_url)
+        return TelegramNotifier(http, config.telegram.bot_token, config.telegram.chat_id,
+                                segment_chats=segment_chats, min_interval=config.telegram.delay_seconds)
+    return DiscordNotifier(http, config.discord.webhook_url, min_interval=config.discord.delay_seconds)
 
 
 class _DryRunNotifier:
-    """Zaślepka kanału w trybie ``--dry-run`` (nie wymaga tokenów, nic nie wysyła)."""
+    """Zaślepka kanału w trybie ``--dry-run`` (nie wymaga tokenów, nic nie wysyła, pokazuje routing)."""
 
-    def __init__(self, channel: str) -> None:
+    def __init__(self, channel: str, segment_chats: dict[str, str] | None = None) -> None:
         self.channel = channel
+        self.segment_chats = segment_chats or {}
 
-    def send(self, text: str) -> None:  # pragma: no cover - w dry-run pipeline nie wywołuje send()
+    def destination(self, segment: str | None) -> str:
+        return self.segment_chats.get(segment or "", "czat domyślny")
+
+    def send(self, message: object, destination: str | None = None) -> None:  # pragma: no cover
         raise NotificationError("dry-run")
 
 
@@ -250,6 +262,7 @@ def _print_stats(stats: dict) -> None:
     print(f"Leady w bazie: {stats['razem']} (z lokalizacją {stats['z_lokalizacja']})")
     print(f"  statusy:    {fmt(stats['statusy'])}")
     print(f"  kategorie:  {fmt(stats['kategorie'])}")
+    print(f"  segmenty:   {fmt(stats['segmenty'])}")
     print(f"  źródła:     {fmt(stats['zrodla'])}")
     print(f"  niewysłane: {stats['niewyslane']} · do arkusza: {stats['do_arkusza']} · "
           f"zmiany statusu: {stats['zmiany_statusu']}")

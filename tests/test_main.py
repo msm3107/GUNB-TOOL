@@ -101,3 +101,14 @@ def test_sync_sheets_without_configuration_fails_cleanly(workdir, caplog):
     seed(workdir)
     assert run(workdir, "--sync-sheets") == 1
     assert "GOOGLE_SHEET_ID" in caplog.text
+
+
+def test_max_leads_option_and_legacy_alias_limit_dry_run(workdir, capsys):
+    seed(workdir)
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        repo.upsert(Investment(id_sprawy="B/2", zrodlo="pozwolenia", status="decyzja", kategoria="komercyjna",
+                               nazwa_zamierzenia="Budowa hali magazynowej"))
+    assert run(workdir, "--notify-telegram", "--dry-run", "--max-leads", "1") == 0
+    assert "wiadomości 1, leady 1" in capsys.readouterr().out
+    assert run(workdir, "--notify-discord", "--dry-run", "--max-messages", "2") == 0
+    assert "wiadomości 2, leady 2" in capsys.readouterr().out

@@ -265,3 +265,40 @@ def test_evaluate_bundles_entities(lead_filter):
     assert decision.investor == "Testowa Sp. z o.o."
     assert decision.designer.name == "Jan Nowak"
     assert decision.classification.kategoria == "komercyjna"
+
+
+# --- Segmenty klientów ----------------------------------------------------------------------
+
+from gunb_tool.config import SegmentConfig
+
+SEGMENTS = (
+    SegmentConfig("domki", "Domki jednorodzinne", ("mieszkaniowa-jednorodzinna",), max_kubatura=2500),
+    SegmentConfig("duze", "Duże inwestycje", ("mieszkaniowa-jednorodzinna", "mieszkaniowa-wielorodzinna",
+                                              "mieszana", "komercyjna", "publiczna")),
+)
+
+
+@pytest.mark.parametrize(
+    "kategoria,kubatura,expected",
+    [
+        ("mieszkaniowa-jednorodzinna", 878.0, "domki"),     # mediana z powiatu poznańskiego
+        ("mieszkaniowa-jednorodzinna", None, "domki"),      # zgłoszenia zwykle bez kubatury
+        ("mieszkaniowa-jednorodzinna", 6195.0, "duze"),     # osiedle domów – duży podwykonawca
+        ("mieszkaniowa-wielorodzinna", 26265.0, "duze"),
+        ("komercyjna", 900.0, "duze"),
+        ("rolnicza", 500.0, None),
+    ],
+)
+def test_segment_is_first_matching_rule(kategoria, kubatura, expected):
+    assert LeadFilter(FilterConfig(), SEGMENTS).segment_for(kategoria, kubatura) == expected
+
+
+def test_without_segments_nothing_is_assigned():
+    assert LeadFilter(FilterConfig()).segment_for("mieszkaniowa-jednorodzinna", 800.0) is None
+
+
+def test_evaluate_assigns_segment_to_kept_lead():
+    decision = LeadFilter(FilterConfig(), SEGMENTS).evaluate(
+        case("Budowa budynku mieszkalnego wielorodzinnego", "XIII", kubatura=12000.0)
+    )
+    assert decision.segment == "duze"

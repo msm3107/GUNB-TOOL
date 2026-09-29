@@ -88,6 +88,21 @@ filter:
   #   publiczna, rolnicza, inna
   include_categories: []
 
+# Segmenty klientów – lead trafia do PIERWSZEGO pasującego segmentu (kolejność ma znaczenie).
+# Warunki: kategoria leada z listy `categories` i kubatura w zakresie min/max (nieznana kubatura,
+# typowa dla zgłoszeń, nie wyklucza). `telegram_chat_id` kieruje segment na osobny czat/kanał –
+# puste = domyślny czat (TELEGRAM_CHAT_ID). Leady bez segmentu (rolnicze, inne) też idą na domyślny.
+segments:
+  domki:
+    label: Domki jednorodzinne
+    categories: [mieszkaniowa-jednorodzinna]
+    max_kubatura: 2500     # powiat poznański: mediana domu 878 m³, 90% poniżej 1540 m³
+    telegram_chat_id: ${TELEGRAM_CHAT_ID_DOMKI}
+  duze:
+    label: Duże inwestycje / wielorodzinne
+    categories: [mieszkaniowa-jednorodzinna, mieszkaniowa-wielorodzinna, mieszana, komercyjna, publiczna]
+    telegram_chat_id: ${TELEGRAM_CHAT_ID_DUZE}
+
 geocoding:
   enabled: true
   # Ile działek sprawy próbować zlokalizować w ULDK, zanim użyjemy środka obrębu.
@@ -114,15 +129,17 @@ storage:
   db_path: data/gunb_leads.sqlite
 
 notifications:
-  # Limit wiadomości na kanał na jedno uruchomienie (reszta pójdzie przy następnym).
-  max_messages_per_run: 30
+  # Najwięcej leadów obsłużonych na kanał w jednym uruchomieniu (reszta pójdzie przy następnym).
+  max_leads_per_run: 200
+  # Powyżej tylu leadów dla jednego czatu zamiast serii wiadomości idzie raport zbiorczy.
+  digest_threshold: 10
   # Nie powiadamiaj o leadach, których status zmienił się dawniej niż N dni temu.
   max_age_days: 14
 
 telegram:
   bot_token: ${TELEGRAM_BOT_TOKEN}
   chat_id: ${TELEGRAM_CHAT_ID}
-  delay_seconds: 1.1     # limit Telegrama: ~1 wiadomość/s na czat
+  delay_seconds: 1.0     # odstęp między wiadomościami; minimum 1 s (limit Telegrama: ~1 wiadomość/s na czat)
 
 discord:
   webhook_url: ${DISCORD_WEBHOOK_URL}

@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import re
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 from gunb_tool.config import HttpConfig
 from gunb_tool.geocoding_uldk import POLAND_BOUNDS, WGS84_SRID, UldkClient, UldkError, UldkGeocoder, wkt_srid
@@ -40,7 +42,7 @@ def run(parcel: Parcel) -> int:
     checks = Checks()
     client = UldkClient(ResilientHttpClient(HttpConfig(timeout=30, max_retries=2, min_delay=0.0, max_delay=0.0)))
 
-    print(f"[1/3] ULDK: GetParcelByIdOrNr id={parcel.uldk_id} srid={WGS84_SRID}")
+    print(f"[1/4] ULDK: GetParcelByIdOrNr id={parcel.uldk_id} srid={WGS84_SRID}")
     started = time.monotonic()
     rows = client.find_parcels(parcel.uldk_id)
     if not checks.check(bool(rows), f"ULDK zwrócił {len(rows)} wynik(i) w {time.monotonic() - started:.2f} s"):
@@ -50,7 +52,7 @@ def run(parcel: Parcel) -> int:
     print(f"      geom_wkt: {row['geom_wkt'][:72]}…")
     checks.check(wkt_srid(row["geom_wkt"]) == WGS84_SRID, f"geometria w układzie EPSG:{WGS84_SRID} (WGS84)")
 
-    print("[2/3] Geokodowanie i link Google Maps")
+    print("[2/4] Geokodowanie i link Google Maps")
     result = UldkGeocoder(client, region_fallback=False).geocode([parcel])
     if not checks.check(result is not None, "geokoder wyznaczył punkt (centroid działki)"):
         return 1
@@ -64,7 +66,7 @@ def run(parcel: Parcel) -> int:
                      "link wskazuje wyznaczony punkt (kolejność: lat, lon)")
     print(f"      Geoportal: {result.geoportal_url}")
 
-    print("[3/3] SQLite (:memory:): zapis i odczyt przykładowego leada")
+    print("[3/4] SQLite (:memory:): zapis i odczyt przykładowego leada")
     with LeadRepository(":memory:") as repo:
         lead = Investment(
             id_sprawy="SANITY/1/2026",
@@ -93,6 +95,12 @@ def run(parcel: Parcel) -> int:
         checks.check(second.change is ChangeType.UNCHANGED, f"ponowny zapis tego samego rekordu: {second.change.value}")
         print(f"      rekord: {stored.id_sprawy} | {stored.status} | {stored.teryt_dzialki} | "
               f"{stored.lat:.6f}, {stored.lon:.6f} | czy_wyslano={int(stored.czy_wyslano)}")
+
+    print("[4/4] SQLite (plik tymczasowy): tryb WAL")
+    with tempfile.TemporaryDirectory() as tmp, LeadRepository(Path(tmp) / "wal.sqlite") as repo:
+        repo.upsert(lead)
+        checks.check(repo.journal_mode == "wal", f"PRAGMA journal_mode = {repo.journal_mode}")
+        checks.check(repo.busy_timeout_ms >= 1000, f"PRAGMA busy_timeout = {repo.busy_timeout_ms} ms")
 
     print(f"\nWynik: {'OK – wszystkie kontrole przeszły' if not checks.failed else f'BŁĘDY: {checks.failed}'}")
     return 0 if not checks.failed else 1

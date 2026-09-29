@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
@@ -11,7 +10,7 @@ from typing import Any, Callable, Protocol, Sequence
 
 from .config import AppConfig, GunbConfig
 from .data_filter import FilterDecision, LeadFilter
-from .exporter import MessageFormatter, NotificationError, Notifier, SheetsSyncResult
+from .exporter import MessageFormatter, NotificationError, Notifier, OutgoingMessage, SheetsSyncResult
 from .geocoding_uldk import GeocodeResult, GeoPrecision, UldkClient, UldkGeocoder, google_maps_url
 from .gunb_scraper import FetchQuery, GunbScraper, Page
 from .http_client import ResilientHttpClient
@@ -30,7 +29,7 @@ class PageSource(Protocol):
 class Geocoder(Protocol):
     """Geokoder spraw (``UldkGeocoder`` lub atrapa w testach)."""
 
-    def geocode(self, parcels: Sequence[Any]) -> GeocodeResult | None: ...
+    def geocode(self, parcels: Sequence[Any], *, gmina_teryt: str | None = None) -> GeocodeResult | None: ...
 
 
 class SheetsExporter(Protocol):
@@ -61,7 +60,9 @@ class NotifyReport:
     """Podsumowanie wysyłki na jeden kanał."""
 
     channel: str
-    sent: int = 0
+    messages: int = 0
+    leads: int = 0
+    digests: int = 0
     failed: int = 0
     dry_run: bool = False
     aborted: bool = False
@@ -76,7 +77,6 @@ class LeadPipeline:
         lead_filter: kategoryzacja i odrzucanie szumu (wymagane dla :meth:`fetch`).
         geocoder: geokoder ULDK; ``None`` = bez geokodowania.
         formatter: formater wiadomości.
-        sleep: funkcja usypiająca (odstępy między wiadomościami).
     """
 
     def __init__(
@@ -87,14 +87,12 @@ class LeadPipeline:
         lead_filter: LeadFilter | None = None,
         geocoder: Geocoder | None = None,
         formatter: MessageFormatter | None = None,
-        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.repo = repo
         self.scraper = scraper
         self.lead_filter = lead_filter
         self.geocoder = geocoder
         self.formatter = formatter or MessageFormatter()
-        self._sleep = sleep
 
     # --- Pobieranie ------------------------------------------------------------------
 
@@ -170,46 +168,60 @@ class LeadPipeline:
         *,
         limit: int,
         max_age_days: int | None,
-        delay: float,
+        digest_threshold: int = 10,
         dry_run: bool = False,
         output: Callable[[str], None] = print,
         max_failures: int = 3,
     ) -> NotifyReport:
         """Wysyła oczekujące leady na kanał ``notifier.channel`` i oznacza je jako wysłane.
 
-        Pojedyncza odrzucona wiadomość jest pomijana (zostaje w kolejce), a po ``max_failures``
-        kolejnych błędach wysyłka jest przerywana. W trybie ``dry_run`` wiadomości trafiają do
-        ``output`` i nie są oznaczane jako wysłane.
+        Leady są grupowane według miejsca docelowego (np. czat segmentu). Gdy w grupie jest ich
+        więcej niż ``digest_threshold``, zamiast pojedynczych wiadomości wysyłany jest raport zbiorczy.
+        Tempo wysyłki pilnuje notyfikator (kolejka z limitem). Odrzucona wiadomość zostaje w kolejce,
+        a po ``max_failures`` kolejnych błędach wysyłka jest przerywana. W trybie ``dry_run``
+        wiadomości trafiają do ``output`` i nie są oznaczane jako wysłane.
         """
         channel = notifier.channel
-        render = self.formatter.telegram if channel == "telegram" else self.formatter.discord
+        single = self.formatter.telegram if channel == "telegram" else self.formatter.discord
+        digest = self.formatter.telegram_digest if channel == "telegram" else self.formatter.discord_digest
         report = NotifyReport(channel=channel, dry_run=dry_run)
-        consecutive_failures = 0
-        pending = self.repo.pending_notifications(channel, limit=limit, max_age_days=max_age_days)
 
-        for index, investment in enumerate(pending):
-            text = render(investment, self.repo.last_status_change(investment.id_sprawy))
-            if dry_run:
-                output(text)
-                output("─" * 40)
-                report.sent += 1
-                continue
-            if index and delay > 0:
-                self._sleep(delay)
-            try:
-                notifier.send(text)
-            except NotificationError as exc:
-                report.failed += 1
-                consecutive_failures += 1
-                log.error("%s: nie wysłano %s: %s", channel, investment.id_sprawy, exc)
-                if consecutive_failures >= max_failures:
-                    report.aborted = True
-                    log.error("%s: %d kolejnych błędów – przerywam wysyłkę", channel, consecutive_failures)
-                    break
-                continue
-            consecutive_failures = 0
-            self.repo.mark_sent(investment.id_sprawy, channel)
-            report.sent += 1
+        groups: dict[str, list[Investment]] = {}
+        for investment in self.repo.pending_notifications(channel, limit=limit, max_age_days=max_age_days):
+            groups.setdefault(notifier.destination(investment.segment), []).append(investment)
+
+        consecutive_failures = 0
+        for destination, leads in groups.items():
+            changes = {inv.id_sprawy: self.repo.last_status_change(inv.id_sprawy) for inv in leads}
+            if len(leads) > digest_threshold:
+                messages = digest(leads, changes)
+                report.digests += 1
+            else:
+                messages = [single(inv, changes[inv.id_sprawy]) for inv in leads]
+
+            for message in messages:
+                if dry_run:
+                    _preview(message, channel, destination, output)
+                    report.messages += 1
+                    report.leads += len(message.lead_ids)
+                    continue
+                try:
+                    notifier.send(message, destination)
+                except NotificationError as exc:
+                    report.failed += 1
+                    consecutive_failures += 1
+                    log.error("%s: nie wysłano (%s): %s", channel, ", ".join(message.lead_ids[:3]), exc)
+                    if consecutive_failures >= max_failures:
+                        report.aborted = True
+                        log.error("%s: %d kolejnych błędów – przerywam wysyłkę", channel, consecutive_failures)
+                        return report
+                    continue
+                consecutive_failures = 0
+                log.info("%s → %s: wysłano wiadomość (leady: %d)", channel, destination, len(message.lead_ids))
+                for lead_id in message.lead_ids:
+                    self.repo.mark_sent(lead_id, channel)
+                report.messages += 1
+                report.leads += len(message.lead_ids)
         return report
 
     def mark_all_sent(self, channels: Sequence[str]) -> int:
@@ -246,6 +258,7 @@ def build_investment(case: GunbCase, decision: FilterDecision) -> Investment:
         numer_decyzji=case.numer_decyzji,
         organ=case.organ,
         kategoria=classification.kategoria,
+        segment=decision.segment,
         kategoria_obiektu=case.kategoria_obiektu,
         rodzaj_robot=case.rodzaj_robot,
         nazwa_zamierzenia=case.nazwa_zamierzenia,
@@ -315,7 +328,18 @@ def create_pipeline(config: AppConfig, repo: LeadRepository, *, geocode: bool = 
             max_parcels=config.geocoding.max_parcels_per_case,
             region_fallback=config.geocoding.region_fallback,
         )
-    return LeadPipeline(repo, scraper=scraper, lead_filter=LeadFilter(config.filter), geocoder=geocoder)
+    return LeadPipeline(
+        repo,
+        scraper=scraper,
+        lead_filter=LeadFilter(config.filter, config.segments),
+        geocoder=geocoder,
+        formatter=build_formatter(config),
+    )
+
+
+def build_formatter(config: AppConfig) -> MessageFormatter:
+    """Formater wiadomości z etykietami segmentów z konfiguracji."""
+    return MessageFormatter(segment_labels={segment.name: segment.label for segment in config.segments})
 
 
 def notification_http_client(config: AppConfig) -> ResilientHttpClient:
@@ -325,6 +349,14 @@ def notification_http_client(config: AppConfig) -> ResilientHttpClient:
 
 def _iso(value: date | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _preview(message: OutgoingMessage, channel: str, destination: str, output: Callable[[str], None]) -> None:
+    """Podgląd wiadomości w trybie ``--dry-run``."""
+    output(f"── {channel} → {destination} ({len(message.lead_ids)} lead.) ──")
+    output(message.text)
+    if message.buttons:
+        output("[przyciski] " + " | ".join(f"{label}: {url}" for label, url in message.buttons))
 
 
 def _log_page(page: Page, processed: int, kept: int) -> None:

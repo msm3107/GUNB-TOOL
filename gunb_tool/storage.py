@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
@@ -91,6 +91,12 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
     zapisano TEXT NOT NULL
 );
 """
+
+_MIGRATIONS: tuple[str, ...] = (
+    _SCHEMA,                                              # v1: schemat bazowy
+    "ALTER TABLE investments ADD COLUMN segment TEXT;",   # v2: segment klientów
+)
+"""Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``."""
 
 GEO_FIELDS: tuple[str, ...] = (
     "lat", "lon", "precyzja_geo", "google_maps_url", "geoportal_url", "powiat", "gmina", "teryt_dzialki",
@@ -358,6 +364,7 @@ class LeadRepository:
             "razem": count("1 = 1"),
             "statusy": grouped("status"),
             "kategorie": grouped("kategoria"),
+            "segmenty": grouped("coalesce(segment, 'bez segmentu')"),
             "zrodla": grouped("zrodlo"),
             "niewyslane": count("czy_wyslano = 0 AND is_noise = 0"),
             "do_arkusza": count("zsynchronizowano IS NULL OR zsynchronizowano < zmieniono"),
@@ -371,9 +378,10 @@ class LeadRepository:
 
     def _migrate(self) -> None:
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < 1:
-            self._conn.executescript(_SCHEMA)
-            self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        for number, script in enumerate(_MIGRATIONS, start=1):
+            if version < number:
+                self._conn.executescript(script)
+                self._conn.execute(f"PRAGMA user_version = {number}")
 
     def _insert(self, values: dict[str, Any], now: str) -> None:
         record = {

@@ -278,6 +278,7 @@ class Investment:
     numer_decyzji: str | None = None
     organ: str | None = None
     kategoria: str | None = None
+    segment: str | None = None
     kategoria_obiektu: str | None = None
     rodzaj_robot: str | None = None
     nazwa_zamierzenia: str | None = None

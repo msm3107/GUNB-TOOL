@@ -248,3 +248,28 @@ def test_reader_sees_committed_state_while_writer_transaction_is_open(tmp_path, 
 
 def test_memory_database_has_no_wal(repo):
     assert repo.journal_mode == "memory"
+
+
+# --- Migracja schematu v1 -> v2 (kolumna segment) ----------------------------------------------
+
+def test_version_1_database_is_migrated_with_segment_column(tmp_path, clock):
+    import sqlite3
+    from gunb_tool import storage
+
+    path = tmp_path / "v1.sqlite"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(storage._SCHEMA)
+    legacy.execute("PRAGMA user_version = 1")
+    legacy.execute(
+        "INSERT INTO investments (id_sprawy, zrodlo, status, utworzono, zmieniono, status_zmieniony, ostatnio_widziany)"
+        " VALUES ('OLD/1', 'pozwolenia', 'decyzja', 'x', 'x', 'x', 'x')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repo:
+        assert repo._conn.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 2
+        assert repo.get("OLD/1").segment is None
+        repo.upsert(lead("NEW/1", segment="domki"))
+        assert repo.get("NEW/1").segment == "domki"
+        assert repo.stats()["segmenty"] == {"bez segmentu": 1, "domki": 1}

@@ -128,9 +128,16 @@ class StorageConfig:
 
 @dataclass(frozen=True)
 class NotificationsConfig:
-    """Limity wspólne dla kanałów powiadomień."""
+    """Limity i tryb wysyłki wspólne dla kanałów powiadomień.
 
-    max_messages_per_run: int = 30
+    Attributes:
+        max_leads_per_run: najwięcej leadów obsłużonych na kanał w jednym uruchomieniu.
+        digest_threshold: powyżej tylu leadów dla jednego czatu wysyłany jest raport zbiorczy.
+        max_age_days: pomija leady, których status zmienił się dawniej niż N dni temu.
+    """
+
+    max_leads_per_run: int = 200
+    digest_threshold: int = 10
     max_age_days: int = 14
 
 
@@ -140,7 +147,7 @@ class TelegramConfig:
 
     bot_token: str = ""
     chat_id: str = ""
-    delay_seconds: float = 1.1
+    delay_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -158,6 +165,23 @@ class SheetsConfig:
     service_account_file: Path | None = None
     spreadsheet_id: str = ""
     worksheet: str = "Leady"
+
+
+@dataclass(frozen=True)
+class SegmentConfig:
+    """Segment klientów, np. małe ekipy (domki) albo duzi podwykonawcy (inwestycje wielorodzinne).
+
+    Lead trafia do pierwszego segmentu (w kolejności z pliku), którego warunki spełnia: kategoria
+    z listy ``categories`` (pusta = dowolna) i kubatura w zakresie ``min_kubatura``–``max_kubatura``
+    (nieznana kubatura nie wyklucza). ``telegram_chat_id`` kieruje leady segmentu na osobny czat.
+    """
+
+    name: str
+    label: str
+    categories: tuple[str, ...] = ()
+    min_kubatura: float | None = None
+    max_kubatura: float | None = None
+    telegram_chat_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -182,12 +206,14 @@ class AppConfig:
     discord: DiscordConfig
     sheets: SheetsConfig
     logging: LoggingConfig
+    segments: tuple[SegmentConfig, ...] = ()
 
 
+_SEGMENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _KNOWN_SECTIONS = {
     "http", "gunb", "filter", "geocoding", "storage", "notifications", "telegram", "discord", "sheets",
-    "logging",
+    "logging", "segments",
 }
 
 
@@ -230,6 +256,7 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         discord=_discord(_section(raw, "discord")),
         sheets=_sheets(_section(raw, "sheets"), base_dir),
         logging=_logging(_section(raw, "logging"), base_dir),
+        segments=_segments(_section(raw, "segments")),
     )
 
 
@@ -380,10 +407,14 @@ def _storage(data: dict[str, Any], base_dir: Path) -> StorageConfig:
 
 def _notifications(data: dict[str, Any]) -> NotificationsConfig:
     defaults = NotificationsConfig()
+    if "max_leads_per_run" not in data and "max_messages_per_run" in data:
+        log.warning("notifications.max_messages_per_run jest przestarzałe – użyj max_leads_per_run")
+        data = {**data, "max_leads_per_run": data["max_messages_per_run"]}
     return NotificationsConfig(
-        max_messages_per_run=int(
-            _number(data, "notifications", "max_messages_per_run", defaults.max_messages_per_run, minimum=1)
+        max_leads_per_run=int(
+            _number(data, "notifications", "max_leads_per_run", defaults.max_leads_per_run, minimum=1)
         ),
+        digest_threshold=int(_number(data, "notifications", "digest_threshold", defaults.digest_threshold)),
         max_age_days=int(_number(data, "notifications", "max_age_days", defaults.max_age_days, minimum=1)),
     )
 
@@ -393,7 +424,8 @@ def _telegram(data: dict[str, Any]) -> TelegramConfig:
     return TelegramConfig(
         bot_token=str(data.get("bot_token") or "").strip(),
         chat_id=str(data.get("chat_id") or "").strip(),
-        delay_seconds=_number(data, "telegram", "delay_seconds", defaults.delay_seconds),
+        # Telegram przyjmuje ~1 wiadomość/s na czat – szybsze tempo kończy się błędami 429.
+        delay_seconds=_number(data, "telegram", "delay_seconds", defaults.delay_seconds, minimum=1),
     )
 
 
@@ -420,6 +452,39 @@ def _logging(data: dict[str, Any], base_dir: Path) -> LoggingConfig:
         raise ConfigError(f"logging.level: nieznany poziom {level!r}")
     log_file = str(data.get("file") or "").strip()
     return LoggingConfig(level=level, file=_path(log_file, base_dir) if log_file else None)
+
+
+def _segments(data: dict[str, Any]) -> tuple[SegmentConfig, ...]:
+    segments = []
+    for name, spec in data.items():
+        name = str(name)
+        if not _SEGMENT_NAME_RE.match(name):
+            raise ConfigError(f"segments: nazwa {name!r} – użyj małych liter, cyfr, '-' lub '_'")
+        if spec is None:
+            spec = {}
+        if not isinstance(spec, dict):
+            raise ConfigError(f"segments.{name}: oczekiwano mapy ustawień")
+        categories = tuple(str(c).strip().lower() for c in _list(spec, f"segments.{name}", "categories", ()))
+        for category in categories:
+            if category not in LEAD_CATEGORIES:
+                raise ConfigError(
+                    f"segments.{name}.categories: {category!r} – dozwolone: {', '.join(LEAD_CATEGORIES)}"
+                )
+        bounds = {
+            key: (_number(spec, f"segments.{name}", key, 0) if spec.get(key) is not None else None)
+            for key in ("min_kubatura", "max_kubatura")
+        }
+        if None not in bounds.values() and bounds["min_kubatura"] > bounds["max_kubatura"]:
+            raise ConfigError(f"segments.{name}: min_kubatura nie może być większe niż max_kubatura")
+        segments.append(SegmentConfig(
+            name=name,
+            label=str(spec.get("label") or name).strip(),
+            categories=categories,
+            min_kubatura=bounds["min_kubatura"],
+            max_kubatura=bounds["max_kubatura"],
+            telegram_chat_id=str(spec.get("telegram_chat_id") or "").strip(),
+        ))
+    return tuple(segments)
 
 
 # --- Pomocnicze -----------------------------------------------------------

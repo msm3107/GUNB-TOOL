@@ -1,30 +1,53 @@
 """Powiadomienia (Telegram, Discord) oraz eksport leadów do Google Sheets.
 
-Wiadomości są budowane z jednego opisu treści i renderowane w dwóch odmianach Markdown:
-Telegram ``MarkdownV2`` (wymaga escapowania znaków zastrzeżonych) oraz Markdown Discorda.
+Treść wiadomości powstaje z jednego opisu i jest renderowana w dwóch formatach:
+
+* Telegram – HTML (``parse_mode=HTML``): escapowane są wyłącznie ``& < >``, więc nazwy firm
+  i adresy ze znakami specjalnymi nie psują wiadomości; linki trafiają do przycisków inline,
+* Discord – Markdown z linkami w treści.
+
+Gdy do wysłania jest więcej leadów niż ``digest_threshold``, zamiast serii wiadomości wysyłany jest
+raport zbiorczy (dzielony na części mieszczące się w limicie długości wiadomości). Wysyłka jest
+kolejkowana z limitem tempa (Telegram: najwyżej 1 wiadomość na sekundę).
 """
 
 from __future__ import annotations
 
+import html
 import logging
 import re
+import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .http_client import HttpError, ResilientHttpClient
-from .models import BUILDING_CATEGORIES, Investment, Status
+from .models import BUILDING_CATEGORIES, LEAD_CATEGORIES, Investment, Status
 from .storage import StatusChange
 
 log = logging.getLogger(__name__)
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_LIMIT = 4096
+TELEGRAM_MIN_INTERVAL = 1.0
+"""Minimalny odstęp między wiadomościami Telegrama (s) – limit API to ~1 wiadomość/s na czat."""
 DISCORD_LIMIT = 2000
 DISCORD_SUPPRESS_EMBEDS = 1 << 2
 
-_MDV2_RESERVED_RE = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+CATEGORY_ICONS: dict[str, str] = {
+    "mieszkaniowa-jednorodzinna": "🏠",
+    "mieszkaniowa-wielorodzinna": "🏢",
+    "mieszana": "🏘️",
+    "komercyjna": "🏭",
+    "publiczna": "🏫",
+    "rolnicza": "🌾",
+    "inna": "🔧",
+    "szum": "🚫",
+}
+
 _DISCORD_RESERVED_RE = re.compile(r"([\\*_~`|>\[\]])")
+_DIGEST_HEADER_RESERVE = 120
 
 
 class ExportError(RuntimeError):
@@ -39,11 +62,26 @@ class SheetsError(ExportError):
     """Błąd konfiguracji lub zapisu Google Sheets."""
 
 
-# --- Escapowanie ------------------------------------------------------------------
+@dataclass(frozen=True)
+class OutgoingMessage:
+    """Wiadomość gotowa do wysłania.
 
-def escape_markdown_v2(text: str) -> str:
-    """Escapuje znaki zastrzeżone Telegram MarkdownV2 w zwykłym tekście."""
-    return _MDV2_RESERVED_RE.sub(r"\\\1", text)
+    Attributes:
+        text: treść w formacie kanału (HTML dla Telegrama, Markdown dla Discorda).
+        buttons: przyciski-linki ``(etykieta, url)``; Telegram pokazuje każdy w osobnym, pełnym wierszu.
+        lead_ids: leady opisane wiadomością – po udanej wysyłce oznaczane jako wysłane.
+    """
+
+    text: str
+    buttons: tuple[tuple[str, str], ...] = ()
+    lead_ids: tuple[str, ...] = ()
+
+
+# --- Escapowanie i style ---------------------------------------------------------------
+
+def escape_html(text: str) -> str:
+    """Escapuje tekst do Telegram HTML (``&``, ``<``, ``>``)."""
+    return html.escape(text, quote=False)
 
 
 def escape_discord(text: str) -> str:
@@ -51,22 +89,22 @@ def escape_discord(text: str) -> str:
     return _DISCORD_RESERVED_RE.sub(r"\\\1", text)
 
 
-class _TelegramStyle:
+class _HtmlStyle:
     @staticmethod
     def text(value: str) -> str:
-        return escape_markdown_v2(value)
+        return escape_html(value)
 
     @staticmethod
     def bold(value: str) -> str:
-        return "*" + escape_markdown_v2(value) + "*"
+        return "<b>" + escape_html(value) + "</b>"
 
     @staticmethod
     def code(value: str) -> str:
-        return "`" + value.replace("\\", "\\\\").replace("`", "\\`") + "`"
+        return "<code>" + escape_html(value) + "</code>"
 
     @staticmethod
     def link(label: str, url: str) -> str:
-        return "[" + escape_markdown_v2(label) + "](" + url.replace("\\", "\\\\").replace(")", "\\)") + ")"
+        return '<a href="' + html.escape(url, quote=True) + '">' + escape_html(label) + "</a>"
 
 
 class _DiscordStyle:
@@ -99,36 +137,59 @@ class _Line:
 
 
 class MessageFormatter:
-    """Buduje czytelne wiadomości o leadach.
+    """Buduje wiadomości o pojedynczych leadach oraz raporty zbiorcze.
 
     Args:
         description_limit: maksymalna długość opisu zamierzenia (dłuższe są skracane „…”).
+        segment_labels: czytelne nazwy segmentów klientów (``{"domki": "Domki jednorodzinne"}``).
     """
 
-    def __init__(self, description_limit: int = 400) -> None:
+    def __init__(self, description_limit: int = 400, segment_labels: Mapping[str, str] | None = None) -> None:
         self.description_limit = description_limit
+        self.segment_labels = dict(segment_labels or {})
 
-    def telegram(self, investment: Investment, change: StatusChange | None = None) -> str:
-        """Wiadomość w formacie Telegram MarkdownV2 (``parse_mode=MarkdownV2``)."""
-        return self._fit(investment, change, _TelegramStyle, TELEGRAM_LIMIT)
+    # Pojedyncze leady ------------------------------------------------------------------
 
-    def discord(self, investment: Investment, change: StatusChange | None = None) -> str:
-        """Wiadomość w Markdown Discorda (pole ``content`` webhooka)."""
-        return self._fit(investment, change, _DiscordStyle, DISCORD_LIMIT)
+    def telegram(self, investment: Investment, change: StatusChange | None = None) -> OutgoingMessage:
+        """Wiadomość Telegram (HTML) z przyciskami „Otwórz w Google Maps” i „Geoportal”."""
+        text = self._fit(investment, change, _HtmlStyle, TELEGRAM_LIMIT, links_in_text=False)
+        return OutgoingMessage(text, buttons=_buttons(investment), lead_ids=(investment.id_sprawy,))
 
-    def _fit(self, investment: Investment, change: StatusChange | None, style: Any, limit: int) -> str:
+    def discord(self, investment: Investment, change: StatusChange | None = None) -> OutgoingMessage:
+        """Wiadomość w Markdown Discorda (linki w treści)."""
+        text = self._fit(investment, change, _DiscordStyle, DISCORD_LIMIT, links_in_text=True)
+        return OutgoingMessage(text, lead_ids=(investment.id_sprawy,))
+
+    # Raporty zbiorcze -----------------------------------------------------------------
+
+    def telegram_digest(
+        self, leads: Sequence[Investment], changes: Mapping[str, StatusChange | None] | None = None
+    ) -> list[OutgoingMessage]:
+        """Raport zbiorczy w Telegram HTML, podzielony na wiadomości ≤ 4096 znaków."""
+        return self._digest(leads, changes or {}, _HtmlStyle, TELEGRAM_LIMIT)
+
+    def discord_digest(
+        self, leads: Sequence[Investment], changes: Mapping[str, StatusChange | None] | None = None
+    ) -> list[OutgoingMessage]:
+        """Raport zbiorczy w Markdown Discorda, podzielony na wiadomości ≤ 2000 znaków."""
+        return self._digest(leads, changes or {}, _DiscordStyle, DISCORD_LIMIT)
+
+    # Wewnętrzne ------------------------------------------------------------------------
+
+    def _fit(self, inv: Investment, change: StatusChange | None, style: Any, limit: int, *, links_in_text: bool) -> str:
         text = ""
         for description_limit in (self.description_limit, 200, 80):
-            text = self._render(investment, change, style, description_limit)
+            text = self._render(inv, change, style, description_limit, links_in_text)
             if len(text) <= limit:
                 return text
         return text[:limit]
 
-    def _render(self, inv: Investment, change: StatusChange | None, style: Any, description_limit: int) -> str:
+    def _render(
+        self, inv: Investment, change: StatusChange | None, style: Any, description_limit: int, links_in_text: bool
+    ) -> str:
         if change is not None and change.stary_status:
-            icon, title, detail = "🔄", "ZMIANA STATUSU", (
-                f"{_status_word(change.stary_status)} → {_status_word(change.nowy_status)}"
-            )
+            icon, title = "🔄", "ZMIANA STATUSU"
+            detail = f"{_status_word(change.stary_status)} → {_status_word(change.nowy_status)}"
         else:
             icon, title = "🏗️", "NOWY LEAD"
             detail = "pozwolenie na budowę" if inv.zrodlo == "pozwolenia" else "zgłoszenie budowy"
@@ -138,58 +199,159 @@ class MessageFormatter:
             style.bold(_truncate(inv.nazwa_zamierzenia or "(brak opisu zamierzenia)", description_limit)),
             "",
         ]
-        for line in _details(inv):
+        for line in self._details(inv):
             value = style.code(line.value) if line.code else style.text(line.value)
             if line.suffix:
                 value += " " + style.text(line.suffix)
             lines.append(f"{line.icon} {style.text(line.label)}: {value}")
+        if links_in_text:
+            links = [(label, url) for label, url in (("Google Maps", inv.google_maps_url),
+                                                     ("Geoportal", inv.geoportal_url)) if url]
+            if links:
+                lines += ["", " · ".join(style.link(label, url) for label, url in links)]
+        return "\n".join(lines)
 
-        links = [(label, url) for label, url in (("Google Maps", inv.google_maps_url),
-                                                 ("Geoportal", inv.geoportal_url)) if url]
-        if links:
-            lines += ["", " · ".join(style.link(label, url) for label, url in links)]
+    def _details(self, inv: Investment) -> list[_Line]:
+        lines = [_Line("📌", "Status", _status_label(inv.status))]
+        if inv.segment:
+            lines.append(_Line("🎯", "Segment", self.segment_labels.get(inv.segment, inv.segment)))
+
+        category = inv.kategoria or "inna"
+        if inv.kategoria_obiektu:
+            description = BUILDING_CATEGORIES.get(inv.kategoria_obiektu)
+            category += f" · kat. {inv.kategoria_obiektu}" + (f" – {description}" if description else "")
+        lines.append(_Line("🏷️", "Kategoria", category))
+
+        if inv.adres_opisowy:
+            lines.append(_Line("📍", "Adres", inv.adres_opisowy))
+        location = ", ".join(p for p in (f"gm. {inv.gmina}" if inv.gmina else None, inv.powiat) if p)
+        if inv.precyzja_geo == "obreb":
+            location = f"{location} (lokalizacja przybliżona – środek obrębu)".strip()
+        if location:
+            lines.append(_Line("🗺️", "Lokalizacja", location))
+
+        lines.append(_Line("💼", "Inwestor", inv.inwestor or "niejawny (osoba fizyczna lub brak w rejestrze)"))
+        designer = ", ".join(dict.fromkeys(p for p in (inv.projektant, inv.pracownia) if p))
+        if designer:
+            if inv.projektant_uprawnienia:
+                designer += f" (upr. {inv.projektant_uprawnienia})"
+            lines.append(_Line("📐", "Projektant", designer))
+        if inv.kubatura:
+            lines.append(_Line("📦", "Kubatura", _volume(inv.kubatura)))
+
+        dates = " · ".join(p for p in (
+            f"decyzja {inv.data_decyzji}" if inv.data_decyzji else None,
+            f"wpływ {inv.data_wplywu}" if inv.data_wplywu else None,
+        ) if p)
+        if dates:
+            lines.append(_Line("📅", "Daty", dates))
+        if inv.organ:
+            lines.append(_Line("🏛️", "Organ", inv.organ))
+        if inv.teryt_dzialki:
+            extra = len(inv.dzialki) - 1
+            lines.append(_Line("🧩", "Działka", inv.teryt_dzialki, code=True, suffix=f"(+{extra})" if extra > 0 else ""))
+        lines.append(_Line("🔖", "Sprawa", inv.id_sprawy, code=True))
+        return lines
+
+    def _digest(
+        self, leads: Sequence[Investment], changes: Mapping[str, StatusChange | None], style: Any, limit: int
+    ) -> list[OutgoingMessage]:
+        if not leads:
+            return []
+        newest_first = sorted(leads, key=lambda inv: inv.data_aktualizacji or "", reverse=True)
+        ordered = sorted(newest_first, key=lambda inv: _category_rank(inv.kategoria))
+        summary = self._digest_summary(leads, changes, style)
+        budget = limit - _DIGEST_HEADER_RESERVE - len(summary)
+
+        chunks: list[list[tuple[str, str]]] = []
+        current: list[tuple[str, str]] = []
+        size = 0
+        for inv in ordered:
+            entry = self._digest_entry(inv, changes.get(inv.id_sprawy), style)
+            if current and size + len(entry) + 2 > budget:
+                chunks.append(current)
+                current, size = [], 0
+            current.append((inv.id_sprawy, entry))
+            size += len(entry) + 2
+        chunks.append(current)
+
+        messages = []
+        for number, chunk in enumerate(chunks, start=1):
+            header = f"📊 {style.bold('Raport GUNB')} · {style.text(plural_leads(len(leads)))}"
+            if len(chunks) > 1:
+                header += f" ({number}/{len(chunks)})"
+            parts = [header, *([summary] if number == 1 else []), *(entry for _, entry in chunk)]
+            messages.append(OutgoingMessage("\n\n".join(parts), lead_ids=tuple(lead_id for lead_id, _ in chunk)))
+        return messages
+
+    def _digest_summary(self, leads: Sequence[Investment], changes: Mapping[str, StatusChange | None], style: Any) -> str:
+        categories = Counter(inv.kategoria or "inna" for inv in leads)
+        lines = [" · ".join(
+            f"{CATEGORY_ICONS.get(name, '•')} {name}: {categories[name]}"
+            for name in sorted(categories, key=_category_rank)
+        )]
+        segments = Counter(inv.segment for inv in leads if inv.segment)
+        if segments:
+            lines.append("🎯 " + " · ".join(f"{self.segment_labels.get(name, name)}: {count}"
+                                             for name, count in segments.most_common()))
+        changed = sum(1 for inv in leads if _is_status_change(changes.get(inv.id_sprawy)))
+        if changed:
+            lines.append(f"🔄 zmiany statusu: {changed}")
+        return "\n".join(style.text(line) for line in lines)
+
+    @staticmethod
+    def _digest_entry(inv: Investment, change: StatusChange | None, style: Any) -> str:
+        icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+        lines = [f"{icon} {style.bold(_truncate(inv.nazwa_zamierzenia or '(brak opisu zamierzenia)', 110))}"]
+        if _is_status_change(change):
+            lines.append(style.text(f"🔄 {_status_word(change.stary_status)} → {_status_word(change.nowy_status)}"))
+        event = (f"decyzja {inv.data_decyzji}" if inv.data_decyzji
+                 else f"wpływ {inv.data_wplywu}" if inv.data_wplywu else None)
+        facts = [_truncate(p, 90) for p in (inv.adres_opisowy or inv.miejscowosc,
+                                            _volume(inv.kubatura) if inv.kubatura else None, event) if p]
+        if facts:
+            lines.append(style.text(" · ".join(facts)))
+        refs = []
+        if inv.google_maps_url:
+            refs.append(style.link("📍 mapa", inv.google_maps_url))
+        if inv.geoportal_url:
+            refs.append(style.link("🏛️ działka", inv.geoportal_url))
+        refs.append(style.code(inv.id_sprawy))
+        lines.append(" · ".join(refs))
         return "\n".join(lines)
 
 
-def _details(inv: Investment) -> list[_Line]:
-    lines = [_Line("📌", "Status", _status_label(inv.status))]
+def plural_leads(count: int) -> str:
+    """„1 lead”, „3 leady”, „11 leadów”, „22 leady” – polska odmiana liczebnika."""
+    if count == 1:
+        word = "lead"
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        word = "leady"
+    else:
+        word = "leadów"
+    return f"{count} {word}"
 
-    category = inv.kategoria or "inna"
-    if inv.kategoria_obiektu:
-        description = BUILDING_CATEGORIES.get(inv.kategoria_obiektu)
-        category += f" · kat. {inv.kategoria_obiektu}" + (f" – {description}" if description else "")
-    lines.append(_Line("🏷️", "Kategoria", category))
 
-    if inv.adres_opisowy:
-        lines.append(_Line("📍", "Adres", inv.adres_opisowy))
-    location = ", ".join(p for p in (f"gm. {inv.gmina}" if inv.gmina else None, inv.powiat) if p)
-    if inv.precyzja_geo == "obreb":
-        location = f"{location} (lokalizacja przybliżona – środek obrębu)".strip()
-    if location:
-        lines.append(_Line("🗺️", "Lokalizacja", location))
+def _buttons(inv: Investment) -> tuple[tuple[str, str], ...]:
+    buttons = []
+    if inv.google_maps_url:
+        buttons.append(("📍 Otwórz w Google Maps", inv.google_maps_url))
+    if inv.geoportal_url:
+        buttons.append(("🏛️ Geoportal", inv.geoportal_url))
+    return tuple(buttons)
 
-    lines.append(_Line("💼", "Inwestor", inv.inwestor or "niejawny (osoba fizyczna lub brak w rejestrze)"))
-    designer = ", ".join(dict.fromkeys(p for p in (inv.projektant, inv.pracownia) if p))
-    if designer:
-        if inv.projektant_uprawnienia:
-            designer += f" (upr. {inv.projektant_uprawnienia})"
-        lines.append(_Line("📐", "Projektant", designer))
-    if inv.kubatura:
-        lines.append(_Line("📦", "Kubatura", format(inv.kubatura, ",.0f").replace(",", " ") + " m³"))
 
-    dates = " · ".join(p for p in (
-        f"decyzja {inv.data_decyzji}" if inv.data_decyzji else None,
-        f"wpływ {inv.data_wplywu}" if inv.data_wplywu else None,
-    ) if p)
-    if dates:
-        lines.append(_Line("📅", "Daty", dates))
-    if inv.organ:
-        lines.append(_Line("🏛️", "Organ", inv.organ))
-    if inv.teryt_dzialki:
-        extra = len(inv.dzialki) - 1
-        lines.append(_Line("🧩", "Działka", inv.teryt_dzialki, code=True, suffix=f"(+{extra})" if extra > 0 else ""))
-    lines.append(_Line("🔖", "Sprawa", inv.id_sprawy, code=True))
-    return lines
+def _is_status_change(change: StatusChange | None) -> bool:
+    return change is not None and change.stary_status is not None
+
+
+def _category_rank(category: str | None) -> int:
+    order = (*LEAD_CATEGORIES, "szum")
+    return order.index(category) if category in order else len(order)
+
+
+def _volume(kubatura: float) -> str:
+    return format(kubatura, ",.0f").replace(",", " ") + " m³"
 
 
 def _status_label(status: str) -> str:
@@ -210,20 +372,72 @@ def _truncate(text: str, limit: int) -> str:
 
 # --- Wysyłka ----------------------------------------------------------------------------
 
+class RateLimiter:
+    """Kolejkuje wywołania tak, by między kolejnymi upłynęło co najmniej ``min_interval`` sekund."""
+
+    def __init__(
+        self,
+        min_interval: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.min_interval = min_interval
+        self._clock = clock
+        self._sleep = sleep
+        self._last: float | None = None
+
+    def wait(self) -> None:
+        """Czeka tyle, ile trzeba, by zachować odstęp od poprzedniego wywołania."""
+        if self._last is not None:
+            remaining = self.min_interval - (self._clock() - self._last)
+            if remaining > 0:
+                self._sleep(remaining)
+        self._last = self._clock()
+
+    def touch(self) -> None:
+        """Zapamiętuje koniec operacji – kolejny odstęp liczony jest od tej chwili.
+
+        Bez tego dłuższe pierwsze żądanie (np. nawiązanie TLS) „zjadało” część odstępu
+        i serwer dostawał wiadomości częściej niż raz na ``min_interval``.
+        """
+        self._last = self._clock()
+
+
 class Notifier(Protocol):
     """Kanał powiadomień."""
 
     channel: str
 
-    def send(self, text: str) -> None: ...
+    def destination(self, segment: str | None) -> str: ...
+
+    def send(self, message: OutgoingMessage, destination: str | None = None) -> None: ...
 
 
 class TelegramNotifier:
-    """Wysyła wiadomości przez Bot API (``sendMessage`` z ``parse_mode=MarkdownV2``)."""
+    """Bot API ``sendMessage`` w trybie HTML, z przyciskami inline i limitem 1 wiadomość/s.
+
+    Args:
+        http: klient HTTP.
+        bot_token: token od @BotFather.
+        chat_id: domyślny czat/kanał.
+        segment_chats: osobne czaty dla segmentów klientów (``{"domki": "-100…"}``).
+        min_interval: odstęp między wiadomościami; wartości poniżej 1 s są podnoszone do 1 s.
+    """
 
     channel = "telegram"
 
-    def __init__(self, http: ResilientHttpClient, bot_token: str, chat_id: str) -> None:
+    def __init__(
+        self,
+        http: ResilientHttpClient,
+        bot_token: str,
+        chat_id: str,
+        *,
+        segment_chats: Mapping[str, str] | None = None,
+        min_interval: float = TELEGRAM_MIN_INTERVAL,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         if not bot_token or not chat_id:
             raise NotificationError(
                 "Brak konfiguracji Telegrama – ustaw TELEGRAM_BOT_TOKEN i TELEGRAM_CHAT_ID (sekcja telegram)"
@@ -231,19 +445,31 @@ class TelegramNotifier:
         self.http = http
         self._url = TELEGRAM_API_URL.format(token=bot_token)
         self.chat_id = chat_id
+        self.segment_chats = {name: chat for name, chat in (segment_chats or {}).items() if chat}
+        self._limiter = RateLimiter(max(TELEGRAM_MIN_INTERVAL, min_interval), clock=clock, sleep=sleep)
 
-    def send(self, text: str) -> None:
+    def destination(self, segment: str | None) -> str:
+        """Czat dla leada z danego segmentu (domyślny, gdy segment nie ma własnego)."""
+        return self.segment_chats.get(segment or "", self.chat_id)
+
+    def send(self, message: OutgoingMessage, destination: str | None = None) -> None:
         """Wysyła wiadomość; rzuca :class:`NotificationError`, gdy Telegram ją odrzuci."""
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "MarkdownV2",
+        payload: dict[str, Any] = {
+            "chat_id": destination or self.chat_id,
+            "text": message.text,
+            "parse_mode": "HTML",
             "link_preview_options": {"is_disabled": True},
         }
+        if message.buttons:
+            payload["reply_markup"] = {"inline_keyboard": [[{"text": label, "url": url}]
+                                                           for label, url in message.buttons]}
+        self._limiter.wait()
         try:
             response = self.http.post(self._url, json=payload)
         except HttpError as exc:
             raise NotificationError(f"Telegram: {exc}") from exc
+        finally:
+            self._limiter.touch()
         body = _json(response)
         if response.status_code != 200 or not body.get("ok"):
             raise NotificationError(
@@ -252,23 +478,39 @@ class TelegramNotifier:
 
 
 class DiscordNotifier:
-    """Wysyła wiadomości na webhook Discorda (bez wzmianek @everyone i bez podglądów linków)."""
+    """Webhook Discorda (bez wzmianek @everyone i bez podglądów linków), z limitem tempa."""
 
     channel = "discord"
 
-    def __init__(self, http: ResilientHttpClient, webhook_url: str) -> None:
+    def __init__(
+        self,
+        http: ResilientHttpClient,
+        webhook_url: str,
+        *,
+        min_interval: float = 1.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         if not webhook_url:
             raise NotificationError("Brak konfiguracji Discorda – ustaw DISCORD_WEBHOOK_URL (sekcja discord)")
         self.http = http
         self._url = webhook_url
+        self._limiter = RateLimiter(min_interval, clock=clock, sleep=sleep)
 
-    def send(self, text: str) -> None:
+    def destination(self, segment: str | None) -> str:
+        """Discord ma jeden webhook – wszystkie segmenty trafiają na ten sam kanał."""
+        return "discord"
+
+    def send(self, message: OutgoingMessage, destination: str | None = None) -> None:
         """Wysyła wiadomość; rzuca :class:`NotificationError`, gdy Discord ją odrzuci."""
-        payload = {"content": text, "allowed_mentions": {"parse": []}, "flags": DISCORD_SUPPRESS_EMBEDS}
+        payload = {"content": message.text, "allowed_mentions": {"parse": []}, "flags": DISCORD_SUPPRESS_EMBEDS}
+        self._limiter.wait()
         try:
             response = self.http.post(self._url, json=payload)
         except HttpError as exc:
             raise NotificationError(f"Discord: {exc}") from exc
+        finally:
+            self._limiter.touch()
         if response.status_code not in (200, 204):
             raise NotificationError(
                 f"Discord odrzucił wiadomość (HTTP {response.status_code}): {_json(response).get('message', '')}"
@@ -290,6 +532,7 @@ SHEET_COLUMNS: tuple[tuple[str, str], ...] = (
     ("status", "Status"),
     ("data_aktualizacji", "Data aktualizacji"),
     ("kategoria", "Kategoria"),
+    ("segment", "Segment"),
     ("kategoria_obiektu", "Kat. obiektu"),
     ("nazwa_zamierzenia", "Nazwa zamierzenia"),
     ("adres_opisowy", "Adres"),

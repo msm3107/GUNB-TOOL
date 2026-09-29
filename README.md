@@ -10,14 +10,18 @@ GUNB (RWDZ – pozwolenia na budowę i zgłoszenia) dla lokalnych wykonawców bu
   (`is_residential`, `is_commercial`, `is_noise` + kategoria biznesowa),
 - wyciąga **inwestora** (gdy jawny) i **projektanta / pracownię** z numerem uprawnień,
 - lokalizuje działki przez **ULDK (GUGiK)** → współrzędne WGS84, link do **Google Maps** i **Geoportalu**,
-- zapisuje wszystko w **SQLite** z wykrywaniem nowych spraw i **zmian statusu**,
-- wysyła powiadomienia **Telegram / Discord** (Markdown) i synchronizuje **Google Sheets**.
+- dzieli leady na **segmenty klientów** (np. „domki” dla małych ekip, „duże inwestycje” dla większych
+  podwykonawców) – każdy segment może trafiać na osobny czat,
+- zapisuje wszystko w **SQLite** (tryb WAL) z wykrywaniem nowych spraw i **zmian statusu**,
+- wysyła powiadomienia **Telegram** (HTML, przyciski inline, raporty zbiorcze zamiast spamu, limit
+  1 wiadomość/s) i **Discord**, synchronizuje **Google Sheets**.
 
 ```
 🏗️ NOWY LEAD · pozwolenie na budowę
 Budowa budynku mieszkalnego wielorodzinnego z lokalami usługowymi
 
 📌 Status: decyzja – pozwolenie na budowę
+🎯 Segment: Duże inwestycje / wielorodzinne
 🏷️ Kategoria: mieszana · kat. XIII – pozostałe budynki mieszkalne
 📍 Adres: ul. Przykładowa 15, Opole
 🗺️ Lokalizacja: gm. Opole (miasto), powiat Opole
@@ -27,7 +31,8 @@ Budowa budynku mieszkalnego wielorodzinnego z lokalami usługowymi
 📅 Daty: decyzja 2026-09-21 · wpływ 2026-08-14
 🔖 Sprawa: ST-OP-OP/WNIOSEK/1234/2026
 
-Google Maps · Geoportal
+[ 📍 Otwórz w Google Maps ]      ← przyciski inline Telegrama
+[ 🏛️ Geoportal             ]
 ```
 
 ---
@@ -81,10 +86,10 @@ main.py (CLI)
 |---|---|
 | `gunb_tool/gunb_scraper.py` | Pobieranie paczek GUNB, strumieniowe parsowanie CSV, filtrowanie po województwie, powiecie i dacie, scalanie działek w sprawy, **paginacja** wyników (`Page`, `page_size`). |
 | `gunb_tool/http_client.py` | **Retry policy** (wykładniczy backoff z jitterem, `Retry-After`), **rotacja User-Agent**, **losowe opóźnienia** między zapytaniami, pobieranie warunkowe i wznawiane, maskowanie tokenów w logach. |
-| `gunb_tool/data_filter.py` | Flagi `is_residential` / `is_commercial` / `is_noise`, kategoria biznesowa, ekstrakcja inwestora i projektanta (pracownia, uprawnienia, porządkowanie nazwisk). |
-| `gunb_tool/geocoding_uldk.py` | ULDK: identyfikator działki → centroid WGS84, nazwy gminy/powiatu, linki Google Maps i Geoportal; fallback do środka obrębu; cache; bezpiecznik przy awarii usługi. |
-| `gunb_tool/storage.py` | SQLite: tabela `investments`, historia statusów, wykrywanie zmian, kolejka powiadomień per kanał, kolejka synchronizacji arkusza, cache geokodowania. |
-| `gunb_tool/exporter.py` | Wiadomości Markdown (Telegram MarkdownV2 / Discord), wysyłka, upsert do Google Sheets (`gspread`). |
+| `gunb_tool/data_filter.py` | Flagi `is_residential` / `is_commercial` / `is_noise`, kategoria biznesowa, **segment klientów**, ekstrakcja inwestora i projektanta (pracownia, uprawnienia, porządkowanie nazwisk). |
+| `gunb_tool/geocoding_uldk.py` | ULDK: identyfikator działki → centroid WGS84, nazwy gminy/powiatu, linki Google Maps i Geoportal; ponowna próba w jednostce z kodu TERC adresu; fallback do środka obrębu; cache; bezpiecznik przy awarii usługi. |
+| `gunb_tool/storage.py` | SQLite (WAL, migracje schematu): tabela `investments`, historia statusów, wykrywanie zmian, kolejka powiadomień per kanał, kolejka synchronizacji arkusza, cache geokodowania. |
+| `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
 | `gunb_tool/config.py` | `config.yaml` + zmienne środowiskowe (`${VAR}`), walidacja. |
 | `gunb_tool/models.py`, `teryt.py`, `text.py` | Modele domenowe, słownik województw TERYT, normalizacja polskiego tekstu. |
@@ -125,6 +130,22 @@ filter:
   exclude_keywords: [ogrodzen, zjazd, przyłącz, sieć, gazow, ...]
   noise_categories: [IV, XXII, XXV, XXVI, XXIX, ...]
   include_categories: []               # np. [mieszkaniowa-jednorodzinna, komercyjna]
+
+segments:                              # pierwszy pasujący segment wygrywa
+  domki:
+    label: Domki jednorodzinne
+    categories: [mieszkaniowa-jednorodzinna]
+    max_kubatura: 2500
+    telegram_chat_id: ${TELEGRAM_CHAT_ID_DOMKI}   # puste = domyślny czat
+  duze:
+    label: Duże inwestycje / wielorodzinne
+    categories: [mieszkaniowa-jednorodzinna, mieszkaniowa-wielorodzinna, mieszana, komercyjna, publiczna]
+    telegram_chat_id: ${TELEGRAM_CHAT_ID_DUZE}
+
+notifications:
+  max_leads_per_run: 200               # leady obsłużone na kanał w jednym uruchomieniu
+  digest_threshold: 10                 # > 10 leadów na czat → raport zbiorczy
+  max_age_days: 14
 ```
 
 - **Kody TERYT** podawaj w cudzysłowie (`"0201"`) – bez niego YAML może przeczytać `0201` jako liczbę
@@ -151,14 +172,14 @@ python main.py --stats
 | Parametr | Opis |
 |---|---|
 | `--fetch` | Pobiera paczki GUNB, filtruje, geokoduje i zapisuje w bazie. |
-| `--notify-telegram`, `--notify-discord` | Wysyła leady nowe i ze zmienionym statusem (limit: `notifications.max_messages_per_run`). |
+| `--notify-telegram`, `--notify-discord` | Wysyła leady nowe i ze zmienionym statusem; powyżej `notifications.digest_threshold` na czat – raport zbiorczy. |
 | `--sync-sheets` | Eksportuje do Google Sheets leady nowe/zmienione od ostatniej synchronizacji. |
 | `--mark-sent` | Oznacza wszystkie oczekujące leady jako wysłane – bez wysyłania. |
 | `--stats` | Podsumowanie bazy. |
 | `--since`, `--until`, `--days` | Zakres dat (nadpisuje `lookback_days`). |
 | `--voivodeship`, `--powiat`, `--source` | Zakres danych zamiast ustawień z pliku (można powtarzać). |
 | `--no-geocode`, `--limit N` | Pominięcie ULDK / przetworzenie najwyżej N spraw. |
-| `--dry-run`, `--max-messages N` | Podgląd wiadomości zamiast wysyłki / limit wiadomości. |
+| `--dry-run`, `--max-leads N` | Podgląd wiadomości (z czatem docelowym i przyciskami) zamiast wysyłki / limit leadów na kanał (dawniej `--max-messages`). |
 | `-c/--config`, `-v/--verbose` | Plik konfiguracyjny / logi DEBUG. |
 
 Akcje można łączyć – wykonują się w kolejności `fetch → mark-sent → notify → sync-sheets → stats`.
@@ -199,8 +220,17 @@ Linux (cron):
 3. Identyfikator czatu odczytasz z `https://api.telegram.org/bot<TOKEN>/getUpdates` (pole `chat.id`,
    dla grup/kanałów liczba ujemna, np. `-1001234567890`) → `TELEGRAM_CHAT_ID`.
 
-Wiadomości używają `parse_mode=MarkdownV2` (wszystkie znaki zastrzeżone są escapowane), odstęp
-między wiadomościami to `telegram.delay_seconds` (limit Telegrama ~1 wiadomość/s na czat).
+Wiadomości używają `parse_mode=HTML` – escapowane są tylko `& < >`, więc nazwy firm i adresy ze
+znakami specjalnymi (`Kowalski & Syn`, `ul. 3 Maja 5/7`) nie psują formatowania. Linki do Google Maps
+i Geoportalu są **przyciskami inline** (każdy w osobnym, pełnym wierszu) – wygodne do kliknięcia kciukiem.
+
+- **Kolejka z limitem tempa:** najwyżej 1 wiadomość na sekundę (`telegram.delay_seconds`, minimum 1 s);
+  odstęp liczony jest od *zakończenia* poprzedniej wysyłki – zweryfikowane na API Telegrama (1,000 s).
+- **Raport zbiorczy:** gdy dla czatu czeka więcej niż `notifications.digest_threshold` leadów (domyślnie
+  10), zamiast serii wiadomości idzie jeden raport: podsumowanie kategorii/segmentów i zwięzła lista
+  leadów z linkami, dzielona na części ≤ 4096 znaków (każdy lead dokładnie raz).
+- **Segmenty na osobnych czatach:** `TELEGRAM_CHAT_ID_DOMKI` / `TELEGRAM_CHAT_ID_DUZE` (puste = domyślny
+  czat) pozwalają obsługiwać dwie grupy klientów jednym botem.
 
 **Discord** – *Ustawienia kanału → Integracje → Webhooki → Nowy webhook → Kopiuj URL* →
 `DISCORD_WEBHOOK_URL`. Wiadomości nie wywołują wzmianek (`@everyone`) ani podglądów linków.
@@ -237,6 +267,7 @@ Plik SQLite (`storage.db_path`), tabela **`investments`** – pola ze specyfikac
 | `lat`, `lon` | Współrzędne WGS84 (centroid działki lub środek obrębu) |
 | `google_maps_url` | Link `https://www.google.com/maps?q={lat},{lon}` (budowany zawsze ze współrzędnych) |
 | `projektant` | Imię i nazwisko projektanta lub nazwa pracowni |
+| `segment` | Segment klientów (`domki`, `duze`… wg `segments`) |
 | `czy_wyslano` | Czy powiadomienie o bieżącym stanie leada zostało wysłane |
 
 Dodatkowo m.in.: `zrodlo`, `status_opis`, `data_wplywu`, `data_decyzji`, `numer_decyzji`, `organ`,
@@ -246,6 +277,11 @@ Dodatkowo m.in.: `zrodlo`, `status_opis`, `data_wplywu`, `data_decyzji`, `numer_
 
 Tabele pomocnicze: `status_history` (pełna historia statusów), `geocode_cache` (wyniki ULDK,
 również negatywne – ponawiane po `geocoding.negative_cache_days`).
+
+Baza działa w trybie **WAL** (`PRAGMA journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout` 5 s) –
+odczyty (np. `--sync-sheets` z innego zadania) nie blokują trwającego `--fetch`. Plik bazy musi leżeć
+na dysku lokalnym (WAL nie działa na udziałach sieciowych). Schemat jest wersjonowany
+(`PRAGMA user_version`) i migrowany automatycznie przy starcie.
 
 ### Statusy i wykrywanie zmian
 
@@ -288,6 +324,20 @@ i wzorców w opisie (np. „mieszkal” bez „niemieszkalny”, „hala”, „
 pierwszeństwo przed polem „rodzaj inwestycji”. Wszystkie listy słów można zmienić w `config.yaml`
 (dopasowanie bez polskich znaków, wpisy mogą być wyrażeniami regularnymi).
 
+### Segmenty klientów
+
+Każdy lead trafia do **pierwszego pasującego** segmentu z `segments` (kategoria z listy + kubatura
+w zakresie; nieznana kubatura – typowa dla zgłoszeń – nie wyklucza). Domyślnie:
+
+| Segment | Warunek | Dla kogo |
+|---|---|---|
+| `domki` | dom jednorodzinny do 2500 m³ | małe ekipy, instalatorzy (np. pompy ciepła) |
+| `duze` | pozostałe domy (osiedla), wielorodzinne, mieszane, komercyjne, publiczne | duzi podwykonawcy |
+| — | rolnicze, inne | domyślny czat |
+
+Próg 2500 m³ wynika z danych: w powiecie poznańskim mediana kubatury domu to 878 m³, 90% domów ma
+poniżej 1540 m³, a powyżej 2500 m³ są pojedyncze „domy” będące w praktyce osiedlami.
+
 Projektant: usuwane są tytuły i prefiksy („mgr inż. arch.”, „Projektant:”), nazwiska pisane
 WIELKIMI LITERAMI są porządkowane, wpisy typu „Brak projektu” pomijane, a nazwy pracowni
 („Pracownia…”, „Biuro…”, „sp. z o.o.”, „s.c.”) rozpoznawane. Inwestor jest jawny tylko dla
@@ -304,8 +354,17 @@ podmiotów innych niż osoby fizyczne.
 - `GetParcelByIdOrNr` – ULDK sam dopasowuje arkusz mapy (`…0058.52/11` → `…0058.AR_1.52/11`);
   gdy wyników jest kilka, wybierany jest ten z arkuszem zapisanym w RWDZ.
 - Współrzędne to centroid geometrii WKT (ważony powierzchnią, z uwzględnieniem otworów i multipoligonów).
+- Pole działki bywa nietypowe: kilka numerów (`12/1, 12/2`), pełne identyfikatory
+  (`146510_8.0309.24/35, 146510_8.0309.24/36`) lub dopiski (`3/1 część`) – parser rozpoznaje wszystkie,
+  zachowując kolejność, a geokoder używa pierwszej istniejącej działki.
+- **Niespójna jednostka w RWDZ:** zdarza się, że wpisana jednostka ewidencyjna nie istnieje
+  (`302105_5`), a działka jest zarejestrowana w jednostce z kodu TERC adresu (`302108_5`). Geokoder
+  ponawia wtedy próbę w jednostce z adresu (zweryfikowane: obręby zgadzają się z miejscowościami).
+  Celowo **nie** zgaduje innych typów gminy – ten sam numer działki i obrębu istnieje w sąsiednich
+  gminach, co dawało błędną lokalizację.
 - Starsze działki bywają podzielone – sprawdzanych jest do `max_parcels_per_case` działek sprawy,
   a gdy żadnej nie ma, używany jest środek obrębu (`precyzja_geo = obreb`).
+- Identyfikator działki potwierdzony przez ULDK trafia do `teryt_dzialki`.
 - Wyniki (także „nie znaleziono”) trafiają do cache; znany lead nie jest geokodowany ponownie.
 - Po kilku kolejnych błędach sieci geokodowanie jest wyłączane do końca uruchomienia – awaria ULDK
   nie blokuje zapisu leadów.
@@ -320,6 +379,8 @@ podmiotów innych niż osoby fizyczne.
   nie nadpisze poprzedniej paczki;
 - zmiana formatu CSV po stronie GUNB → czytelny błąd z nazwą brakującej kolumny;
 - odrzucona wiadomość nie blokuje kolejki; po kilku kolejnych błędach wysyłka jest przerywana;
+- nieoczekiwany błąd geokodowania jednej sprawy nie przerywa zapisu strony (lead zapisuje się bez
+  współrzędnych i dostanie je przy kolejnym uruchomieniu);
 - tokeny bota i webhooka są maskowane w logach.
 
 ---
@@ -341,6 +402,20 @@ sprawdza układ współrzędnych i format linku Google Maps, zapisuje rekord w S
 python sanity_check.py                        # działka 146510_8.0309.24/35
 python sanity_check.py 161106_5.0058.52/11    # dowolna inna działka
 ```
+
+### Wydajność (test obciążeniowy)
+
+Powiat poznański, pełne 30 dni, oba rejestry, pierwsze uruchomienie (pusta baza i cache):
+
+| Etap | Czas | Wynik |
+|---|---|---|
+| Pobranie paczki wielkopolskiej (35,4 MB) | 1,3 s | – |
+| Parsowanie 519 419 wierszy CSV | 2,8 s | 212 spraw w oknie |
+| Geokodowanie ULDK + zapis | ~196 s | 179/179 leadów z lokalizacją, 0 błędów sieci |
+| Paczka zgłoszeń (927 tys. wierszy) | 4,8 s | 4 sprawy |
+
+Czas pierwszego uruchomienia wyznacza celowo spowolnione geokodowanie (~0,9 s/sprawę); kolejne
+uruchomienia trwają kilka sekund (paczki 304, lokalizacje z bazy).
 
 ---
 

@@ -7,7 +7,7 @@ from gunb_tool.data_filter import LeadFilter
 from gunb_tool.exporter import NotificationError, SheetsSyncResult
 from gunb_tool.geocoding_uldk import GeocodeResult, GeoPrecision
 from gunb_tool.gunb_scraper import FetchQuery, Page
-from gunb_tool.models import GunbCase, Parcel, Source, Status
+from gunb_tool.models import GunbCase, Investment, Parcel, Source, Status
 from gunb_tool.pipeline import LeadPipeline, build_query
 from gunb_tool.storage import LeadRepository
 
@@ -69,17 +69,21 @@ class FakeGeocoder:
 class FakeNotifier:
     """Notyfikator zapamiętujący wiadomości; ``fail_on`` = numery prób, które mają się nie udać ("*" = wszystkie)."""
 
-    def __init__(self, channel="telegram", fail_on=()):
+    def __init__(self, channel="telegram", fail_on=(), routes=None):
         self.channel = channel
         self.sent = []
         self.attempts = 0
         self.fail_on = set(fail_on)
+        self.routes = routes or {}
 
-    def send(self, text):
+    def destination(self, segment):
+        return self.routes.get(segment, "czat-domyslny")
+
+    def send(self, message, destination=None):
         attempt, self.attempts = self.attempts, self.attempts + 1
         if "*" in self.fail_on or attempt in self.fail_on:
             raise NotificationError("odrzucone")
-        self.sent.append(text)
+        self.sent.append((destination, message))
 
 
 @pytest.fixture
@@ -89,14 +93,8 @@ def repo():
     repository.close()
 
 
-def make_pipeline(repo, cases, geocoder=None, sleeps=None):
-    return LeadPipeline(
-        repo,
-        scraper=FakeScraper(cases),
-        lead_filter=LeadFilter(FilterConfig()),
-        geocoder=geocoder,
-        sleep=(sleeps.append if sleeps is not None else lambda s: None),
-    )
+def make_pipeline(repo, cases, geocoder=None):
+    return LeadPipeline(repo, scraper=FakeScraper(cases), lead_filter=LeadFilter(FilterConfig()), geocoder=geocoder)
 
 
 QUERY = FetchQuery(voivodeships=("16",))
@@ -160,38 +158,66 @@ def test_limit_stops_processing(repo):
 
 # --- notify ------------------------------------------------------------------------------
 
-def seed(repo, count=3):
-    make_pipeline(repo, [gunb_case(f"L/{i}") for i in range(count)]).fetch(QUERY, page_size=10)
+def seed(repo, count=3, segment=None):
+    for i in range(count):
+        repo.upsert(Investment(id_sprawy=f"L/{segment or 'x'}/{i}", zrodlo="pozwolenia", status="decyzja",
+                               kategoria="mieszkaniowa-jednorodzinna", segment=segment,
+                               nazwa_zamierzenia=f"Budowa budynku mieszkalnego nr {i}", data_aktualizacji="2026-09-25",
+                               lat=50.0, lon=17.0, google_maps_url="https://www.google.com/maps?q=50.000000,17.000000"))
 
 
-def test_notify_sends_marks_and_throttles(repo):
+def test_notify_sends_individual_messages_with_buttons_and_marks_leads(repo):
     seed(repo)
-    sleeps = []
     notifier = FakeNotifier()
-    report = make_pipeline(repo, [], sleeps=sleeps).notify(notifier, limit=10, max_age_days=14, delay=1.5)
+    report = make_pipeline(repo, []).notify(notifier, limit=50, max_age_days=14, digest_threshold=10)
 
-    assert (report.sent, report.failed) == (3, 0)
-    assert all(text.startswith("🏗️ *NOWY LEAD*") for text in notifier.sent)
-    assert sleeps == [1.5, 1.5]
+    assert (report.messages, report.leads, report.digests, report.failed) == (3, 3, 0, 0)
+    assert all(msg.text.startswith("🏗️ <b>NOWY LEAD</b>") for _, msg in notifier.sent)
+    assert all(msg.buttons[0][0] == "📍 Otwórz w Google Maps" for _, msg in notifier.sent)
     assert repo.pending_notifications("telegram", limit=10) == []
-    assert repo.get("L/0").czy_wyslano is True
+    assert repo.get("L/x/0").czy_wyslano is True
+
+
+def test_notify_sends_digest_instead_of_spam_above_threshold(repo):
+    seed(repo, count=12)
+    notifier = FakeNotifier()
+    report = make_pipeline(repo, []).notify(notifier, limit=50, max_age_days=14, digest_threshold=10)
+
+    assert report.digests == 1
+    assert report.leads == 12
+    assert report.messages == len(notifier.sent) < 12
+    assert notifier.sent[0][1].text.startswith("📊 <b>Raport GUNB</b> · 12 leadów")
+    assert repo.pending_notifications("telegram", limit=50) == []
+
+
+def test_notify_routes_segments_to_their_destinations(repo):
+    seed(repo, count=2, segment="domki")
+    seed(repo, count=1, segment="duze")
+    notifier = FakeNotifier(routes={"domki": "czat-domki"})
+
+    report = make_pipeline(repo, []).notify(notifier, limit=50, max_age_days=14, digest_threshold=1)
+
+    destinations = [destination for destination, _ in notifier.sent]
+    assert destinations == ["czat-domki", "czat-domyslny"]      # domki: raport (2 > 1), duze: pojedyncza
+    assert notifier.sent[0][1].text.startswith("📊 <b>Raport GUNB</b> · 2 leady")
+    assert report.digests == 1 and report.leads == 3
 
 
 def test_notify_dry_run_prints_without_marking(repo):
     seed(repo, count=1)
     printed = []
     report = make_pipeline(repo, []).notify(
-        FakeNotifier("discord"), limit=10, max_age_days=14, delay=0, dry_run=True, output=printed.append
+        FakeNotifier("discord"), limit=10, max_age_days=14, dry_run=True, output=printed.append
     )
-    assert report.sent == 1 and report.dry_run
-    assert printed[0].startswith("🏗️ **NOWY LEAD**")
+    assert report.messages == 1 and report.dry_run
+    assert any(line.startswith("🏗️ **NOWY LEAD**") for line in printed)
     assert len(repo.pending_notifications("discord", limit=10)) == 1
 
 
 def test_notify_respects_limit(repo):
     seed(repo, count=3)
     notifier = FakeNotifier()
-    make_pipeline(repo, []).notify(notifier, limit=2, max_age_days=14, delay=0)
+    make_pipeline(repo, []).notify(notifier, limit=2, max_age_days=14)
     assert len(notifier.sent) == 2
     assert len(repo.pending_notifications("telegram", limit=10)) == 1
 
@@ -199,13 +225,13 @@ def test_notify_respects_limit(repo):
 def test_notify_skips_single_failure_and_aborts_after_consecutive_failures(repo):
     seed(repo, count=3)
     flaky = FakeNotifier(fail_on={0})
-    report = make_pipeline(repo, []).notify(flaky, limit=10, max_age_days=14, delay=0)
-    assert (report.sent, report.failed) == (2, 1)
+    report = make_pipeline(repo, []).notify(flaky, limit=10, max_age_days=14)
+    assert (report.messages, report.failed) == (2, 1)
+    assert len(repo.pending_notifications("telegram", limit=10)) == 1  # odrzucony lead czeka w kolejce
 
-    seed(repo, count=0)
     broken = FakeNotifier("discord", fail_on={"*"})
-    report = make_pipeline(repo, []).notify(broken, limit=10, max_age_days=14, delay=0, max_failures=2)
-    assert (report.sent, report.failed) == (0, 2)
+    report = make_pipeline(repo, []).notify(broken, limit=10, max_age_days=14, max_failures=2)
+    assert (report.messages, report.failed) == (0, 2)
     assert report.aborted
 
 
