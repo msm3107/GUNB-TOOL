@@ -101,7 +101,7 @@ def test_subscribers_are_only_users_with_paid_access_plus_admins(store, clock):
 
     assert [u.chat_id for u in store.subscribers(iso(now), admins=(5,))] == [1, 5]
     assert [u.chat_id for u in store.subscribers(iso(now), admins=(5,), tryb="wieczor")] == []
-    assert [u.chat_id for u in store.expired_subscriptions(iso(now))] == [2]
+    assert [u.chat_id for u in store.access_ended(now, admins=(5,))] == [2]  # do jednorazowej informacji o końcu
 
 
 def test_new_user_starts_without_subscription(store):

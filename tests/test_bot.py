@@ -32,7 +32,7 @@ def test_admin_is_active_at_once_and_gets_big_menu_buttons(bot, api):
 
 
 GATE = "⛔ Twój dostęp jest nieaktywny. Skontaktuj się z administratorem @admin_gunb, aby opłacić abonament."
-TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 3 dni! Zobacz, jak szybciej docierać do klientów. "
+TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 7 dni! Zobacz, jak szybciej docierać do klientów. "
               "Po tym czasie bot zostanie wstrzymany.")
 
 
@@ -44,7 +44,7 @@ def test_new_user_is_saved_inactive_and_told_to_contact_admin(bot, api):
     assert api.last_to(MIETEK)["text"] == GATE
     card = api.last_to(ADMIN)  # admin od razu wie, kogo aktywować
     assert "Mietek" in card["text"] and f"/trial {MIETEK}" in card["text"] and f"/aktywuj {MIETEK} 30" in card["text"]
-    assert buttons(card["markup"]) == [("🎁 Trial 3 dni", f"adm:trial:{MIETEK}"), ("✅ 30 dni", f"adm:ok:{MIETEK}"),
+    assert buttons(card["markup"]) == [("🎁 Test 7 dni", f"adm:trial:{MIETEK}"), ("✅ 30 dni", f"adm:ok:{MIETEK}"),
                                        ("⛔ Odrzuć", f"adm:no:{MIETEK}")]
 
 
@@ -88,22 +88,14 @@ def test_activation_extends_a_running_subscription(bot, api):
     assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-11-28T05:00:00+00:00"
 
 
-def test_admin_grants_three_day_trial(bot, api):
+def test_trial_command_works_like_the_card_button(bot, api):
+    """Szczegóły 7-dniowego testu: tests/test_bot_access.py."""
     bot.handle_update(message(MIETEK, "/start"))
 
     bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    bot.handle_update(click(MIETEK, "ts"))
 
-    user = BotStore(bot.repo).get_user(MIETEK)
-    assert user.is_active is True
-    assert user.subscription_ends == "2026-10-02T05:00:00+00:00"  # równo 3 dni od teraz
-    assert api.last_to(MIETEK)["text"].startswith(TRIAL_TEXT)
-    assert "Trial" in api.last_to(ADMIN)["text"]
-
-
-def test_trial_button_in_new_user_card_works_like_command(bot, api):
-    bot.handle_update(message(MIETEK, "/start"))
-    bot.handle_update(click(ADMIN, f"adm:trial:{MIETEK}"))
-    assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-10-02T05:00:00+00:00"
+    assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-10-06T05:00:00+00:00"
     assert api.last_to(MIETEK)["text"].startswith(TRIAL_TEXT)
 
 
@@ -141,7 +133,7 @@ def test_only_admin_can_activate(bot, api):
 
 def test_expired_subscription_blocks_the_bot_again(bot, api, clock):
     bot.handle_update(message(MIETEK, "/start"))
-    bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 3"))
     clock.advance(days=3, minutes=1)
 
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
@@ -164,7 +156,7 @@ def test_lead_rounds_reach_only_paying_users(bot, api, repo):
 
 def test_expiry_is_announced_once_to_user_and_admin(bot, api, clock):
     bot.handle_update(message(MIETEK, "/start"))
-    bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 3"))
     clock.advance(days=3, minutes=11)
     api.sent.clear()
 
@@ -173,7 +165,6 @@ def test_expiry_is_announced_once_to_user_and_admin(bot, api, clock):
     bot.run_due_jobs()
 
     assert [m["text"][:30] for m in api.to(MIETEK)] == ["⛔ Twój abonament wygasł 02.10."]
-    assert BotStore(bot.repo).get_user(MIETEK).is_active is False
     assert f"/aktywuj {MIETEK} 30" in api.to(ADMIN)[-1]["text"]
 
 

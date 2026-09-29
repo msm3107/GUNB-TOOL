@@ -176,6 +176,11 @@ class BotUser:
     branza: str | None = None
     is_active: bool = False
     subscription_ends: str | None = None
+    bez_limitu: bool = False
+    rodzaj_dostepu: str | None = None
+    test_dozwolony: bool = False
+    test_start: str | None = None
+    test_koniec: str | None = None
 
     @property
     def display_name(self) -> str:
@@ -183,8 +188,23 @@ class BotUser:
         return self.imie or (f"@{self.username}" if self.username else str(self.chat_id))
 
     def has_subscription(self, now_iso: str) -> bool:
-        """Czy abonament jest aktywny i nie wygasł (daty w UTC, format ISO)."""
+        """Czy okno dostępu (test albo abonament) jest otwarte i nie minęło (daty w UTC, format ISO)."""
         return self.is_active and bool(self.subscription_ends) and (self.subscription_ends or "") > now_iso
+
+    @property
+    def trial_used(self) -> bool:
+        """Test już wystartował (raz na osobę – nawet po odebraniu dostępu drugiego nie ma)."""
+        return self.test_start is not None
+
+    @property
+    def trial_available(self) -> bool:
+        """Admin pozwolił na test, a osoba jeszcze go nie zaczęła."""
+        return self.test_dozwolony and not self.trial_used
+
+    @property
+    def on_trial(self) -> bool:
+        """Obecne (albo ostatnie) okno dostępu to darmowy test."""
+        return self.rodzaj_dostepu == "test"
 
 
 @dataclass(frozen=True)
@@ -291,26 +311,76 @@ class BotStore:
         return [_user(row) for row in self._conn.execute(sql + " ORDER BY chat_id", params).fetchall()]
 
     def subscribers(self, now_iso: str, *, admins: Sequence[int], tryb: str | None = None) -> list[BotUser]:
-        """Odbiorcy leadów: tylko osoby z aktywnym, niewygasłym abonamentem (plus administratorzy)."""
+        """Odbiorcy automatycznych wysyłek – ta sama reguła co ``LeadBot._has_access`` (test to pilnuje):
+        dostęp bez limitu, otwarte okno testu/abonamentu albo administrator; tylko status ``aktywny``."""
         marks = ",".join("?" for _ in admins) or "NULL"
-        sql = (f"SELECT * FROM bot_users WHERE status = 'aktywny'"
-               f" AND ((is_active = 1 AND subscription_ends > ?) OR chat_id IN ({marks}))")
+        sql = (f"SELECT * FROM bot_users WHERE status = 'aktywny' AND (dostep_bez_limitu = 1"
+               f" OR (is_active = 1 AND subscription_ends > ?) OR chat_id IN ({marks}))")
         params: list[object] = [now_iso, *admins]
         if tryb is not None:
             sql += " AND tryb = ?"
             params.append(tryb)
         return [_user(row) for row in self._conn.execute(sql + " ORDER BY chat_id", params).fetchall()]
 
-    def expired_subscriptions(self, now_iso: str) -> list[BotUser]:
-        """Abonamenty oznaczone jako aktywne, których termin już minął (do wyłączenia i powiadomienia)."""
-        rows = self._conn.execute(
-            "SELECT * FROM bot_users WHERE is_active = 1 AND subscription_ends <= ? ORDER BY chat_id", (now_iso,)
-        ).fetchall()
+    def set_subscription(self, chat_id: int, ends_iso: str | None, *, active: bool) -> None:
+        """Ustawia okno dostępu wprost: ``active`` i termin (UTC, ISO)."""
+        self._update(chat_id, is_active=int(active), subscription_ends=ends_iso)
+
+    # Dostęp: test i abonament --------------------------------------------------------------------
+
+    def set_access(self, chat_id: int, ends_iso: str, *, kind: str = "platny") -> None:
+        """Dostęp nadany przez admina do ``ends_iso`` – zastępuje też dostęp bez limitu (nowy model)."""
+        self._update(chat_id, is_active=1, subscription_ends=ends_iso, rodzaj_dostepu=kind, dostep_bez_limitu=0)
+
+    def revoke_access(self, chat_id: int) -> None:
+        """Admin odbiera dostęp od razu; zapisane inwestycje, ustawienia i historia testu zostają."""
+        self._update(chat_id, is_active=0, dostep_bez_limitu=0, test_dozwolony=0)
+
+    def allow_trial(self, chat_id: int) -> bool:
+        """Admin pozwala na test; ``False`` – ta osoba już go wykorzystała."""
+        cursor = self._conn.execute(
+            "UPDATE bot_users SET test_dozwolony = 1, zmieniono = ? WHERE chat_id = ? AND test_start IS NULL",
+            (_iso(self.repo.now()), chat_id),
+        )
+        return cursor.rowcount == 1
+
+    def start_trial(self, chat_id: int, start: datetime, end: datetime) -> bool:
+        """Start testu kliknięty przez osobę – raz na zawsze; ``False``, gdy nie był dozwolony albo już ruszył."""
+        cursor = self._conn.execute(
+            "UPDATE bot_users SET test_start = ?, test_koniec = ?, is_active = 1, subscription_ends = ?,"
+            " rodzaj_dostepu = 'test', zmieniono = ? WHERE chat_id = ? AND test_dozwolony = 1 AND test_start IS NULL",
+            (_iso(start), _iso(end), _iso(end), _iso(start), chat_id),
+        )
+        return cursor.rowcount == 1
+
+    def unlimited_users(self) -> list[BotUser]:
+        """Dotychczasowi użytkownicy z dostępem bez terminu (sprzed abonamentów)."""
+        rows = self._conn.execute("SELECT * FROM bot_users WHERE dostep_bez_limitu = 1 ORDER BY chat_id").fetchall()
         return [_user(row) for row in rows]
 
-    def set_subscription(self, chat_id: int, ends_iso: str | None, *, active: bool) -> None:
-        """Ustawia abonament: ``active`` i termin wygaśnięcia (UTC, ISO)."""
-        self._update(chat_id, is_active=int(active), subscription_ends=ends_iso)
+    def access_ending(self, now: datetime, until: datetime, *, admins: Sequence[int]) -> list[BotUser]:
+        """Okna dostępu kończące się w ``(now, until]``, o których jeszcze nie przypomnieliśmy."""
+        return self._access_query("subscription_ends > ? AND subscription_ends <= ?"
+                                  " AND przypomniano_koniec IS NOT subscription_ends", [_iso(now), _iso(until)], admins)
+
+    def access_ended(self, now: datetime, *, admins: Sequence[int]) -> list[BotUser]:
+        """Okna dostępu, które minęły, a informacja o końcu jeszcze nie wyszła."""
+        return self._access_query("subscription_ends <= ? AND zgloszono_koniec IS NOT subscription_ends",
+                                  [_iso(now)], admins)
+
+    def mark_access_reminded(self, chat_id: int, ends_iso: str) -> None:
+        self._conn.execute("UPDATE bot_users SET przypomniano_koniec = ? WHERE chat_id = ?", (ends_iso, chat_id))
+
+    def mark_access_end_reported(self, chat_id: int, ends_iso: str) -> None:
+        self._conn.execute("UPDATE bot_users SET zgloszono_koniec = ? WHERE chat_id = ?", (ends_iso, chat_id))
+
+    def _access_query(self, condition: str, params: list[object], admins: Sequence[int]) -> list[BotUser]:
+        marks = ",".join("?" for _ in admins) or "NULL"
+        rows = self._conn.execute(
+            f"SELECT * FROM bot_users WHERE status = 'aktywny' AND is_active = 1 AND dostep_bez_limitu = 0"
+            f" AND chat_id NOT IN ({marks}) AND {condition} ORDER BY chat_id", [*admins, *params]
+        ).fetchall()
+        return [_user(row) for row in rows]
 
     def set_status(self, chat_id: int, status: str) -> None:
         self._update(chat_id, status=status)
@@ -653,6 +723,11 @@ def _user(row) -> BotUser:
         branza=row["branza"],
         is_active=bool(row["is_active"]),
         subscription_ends=row["subscription_ends"],
+        bez_limitu=bool(row["dostep_bez_limitu"]),
+        rodzaj_dostepu=row["rodzaj_dostepu"],
+        test_dozwolony=bool(row["test_dozwolony"]),
+        test_start=row["test_start"],
+        test_koniec=row["test_koniec"],
     )
 
 

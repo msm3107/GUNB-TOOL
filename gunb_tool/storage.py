@@ -224,6 +224,29 @@ def _jobs_in_utc(conn: sqlite3.Connection, from_version: int) -> None:
         conn.execute("INSERT OR REPLACE INTO zadania (nazwa, ostatnio) VALUES (?, ?)", (nazwa, _iso(moment)))
 
 
+def _trial_and_access(conn: sqlite3.Connection, from_version: int) -> None:
+    """v9: 7-dniowy test (raz na osobę) i dostęp bez limitu dla użytkowników sprzed abonamentów.
+
+    Okno dostępu (test albo abonament) zostaje w ``is_active`` + ``subscription_ends`` – kod z v6 nadal je
+    rozumie. Bazy sprzed v6 nie znały abonamentów: każdy zaakceptowany (także ten, który zablokował bota)
+    miał dostęp – zachowuje go bez terminu, aż admin świadomie przełączy go na nowy model (``/nowymodel``).
+    """
+    _run_script(conn, """
+        ALTER TABLE bot_users ADD COLUMN dostep_bez_limitu INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE bot_users ADD COLUMN rodzaj_dostepu TEXT;
+        ALTER TABLE bot_users ADD COLUMN test_dozwolony INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE bot_users ADD COLUMN test_start TEXT;
+        ALTER TABLE bot_users ADD COLUMN test_koniec TEXT;
+        ALTER TABLE bot_users ADD COLUMN przypomniano_koniec TEXT;
+        ALTER TABLE bot_users ADD COLUMN zgloszono_koniec TEXT;
+        UPDATE bot_users SET rodzaj_dostepu = 'platny' WHERE subscription_ends IS NOT NULL;
+        UPDATE bot_users SET zgloszono_koniec = subscription_ends
+            WHERE is_active = 0 AND subscription_ends IS NOT NULL;
+    """)
+    if from_version < 6:
+        conn.execute("UPDATE bot_users SET dostep_bez_limitu = 1 WHERE status IN ('aktywny', 'zablokowany')")
+
+
 Migration = str | Callable[[sqlite3.Connection, int], None]
 
 _MIGRATIONS: tuple[Migration, ...] = (
@@ -235,6 +258,7 @@ _MIGRATIONS: tuple[Migration, ...] = (
     _SUBSCRIPTION_COLUMNS,                                # v6: abonament (paywall) – is_active, subscription_ends
     _independent_lead_flags,                              # v7: zapisany / przejrzany / ukryty niezależnie
     _jobs_in_utc,                                         # v8: zadania w UTC, kolejka wysyłek, blokady
+    _trial_and_access,                                    # v9: 7-dniowy test, dostęp dotychczasowych
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

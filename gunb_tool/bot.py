@@ -26,7 +26,7 @@ from typing import Any, Callable, Sequence
 from . import bot_ui as ui
 from .bot_store import BotStore, BotUser, Send, UserFilters, investor_key, watch_match
 from .bot_ui import BOT_COMMANDS, MENU_BUTTONS
-from .clock import at_local_time, local
+from .clock import WARSAW, at_local_time, local
 from .config import BotConfig
 from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
 from .gunb_scraper import GunbFormatError
@@ -68,6 +68,14 @@ QUIET_FROM, QUIET_UNTIL = clock_time(22, 0), clock_time(6, 0)
 LATE_GRACE = timedelta(minutes=15)
 """Tyle po terminie wysyłka jest jeszcze „na czas” – także gdy termin wypada w ciszy nocnej."""
 
+NONE, SETUP, FULL = 0, 1, 2
+"""Poziomy uprawnień: konto i pomoc (każdy) · ustawienia (test dozwolony, jeszcze nie ruszył) · inwestycje."""
+TRIAL_LENGTH = timedelta(days=ui.TRIAL_DAYS)
+ACCESS_REMINDER_BEFORE = timedelta(hours=24)
+ACCESS_REMINDER_JOB = "dostep_przypomnienie"
+ACCESS_END_JOB = "dostep_koniec"
+NO_ACCESS_TOAST = "⛔ Brak aktywnego dostępu (test albo abonament) – szczegóły: /konto"
+
 MENU_ACTIONS: dict[str, str] = {
     "📊 Co nowego?": "_show_news",
     "🔎 Filtry": "_show_filters",
@@ -88,11 +96,21 @@ COMMAND_ACTIONS: dict[str, str] = {
     "/tryb": "_show_mode",
     "/tylkohot": "_toggle_hot",
     "/pomoc": "_show_help",
+    "/konto": "_show_account",
     "/uzytkownicy": "_show_users",
 }
+ACTION_LEVELS: dict[str, int] = {
+    "_show_news": FULL, "_show_saved": FULL, "_show_watchlist": FULL,
+    "_show_filters": SETUP, "_show_nearby": SETUP, "_show_trade": SETUP, "_show_mode": SETUP, "_toggle_hot": SETUP,
+    "_cancel_input": NONE, "_show_help": NONE, "_show_account": NONE, "_show_users": NONE,
+}
+"""Jaki poziom uprawnień jest potrzebny do ekranu z menu albo komendy (sprawdzane w jednym miejscu)."""
 ADMIN_COMMANDS: dict[str, str] = {
-    "/aktywuj": "_cmd_activate",  # /aktywuj <chat_id> <liczba_dni>
-    "/trial": "_cmd_trial",  # /trial <chat_id> – 3 dni za darmo
+    "/aktywuj": "_cmd_activate",  # /aktywuj <chat_id> <dni|data> – abonament
+    "/przedluz": "_cmd_activate",  # to samo: dni liczone od końca obecnego dostępu
+    "/odbierz": "_cmd_revoke",  # /odbierz <chat_id> – wyłącza dostęp od razu
+    "/trial": "_cmd_trial",  # /trial <chat_id> – pozwala na 7-dniowy test (startuje klient)
+    "/nowymodel": "_cmd_new_model",  # /nowymodel <chat_id|wszyscy> <dni|data> – termin dla dotychczasowych
     "/status": "_cmd_status",  # import GUNB, wątek zadań, wysyłki z ostatniej doby
 }
 """Komendy zastrzeżone dla ``bot.admins`` (``ADMIN_CHAT_ID``); u innych działają jak nieznany tekst."""
@@ -218,7 +236,8 @@ class LeadBot:
         if ran or last is None or last + interval <= now:
             self.store.set_job_time("natychmiast", now)
             if self.settings.access != "open":
-                self.expire_subscriptions()  # co kilka minut – klient dowiaduje się o końcu abonamentu od razu
+                self.notify_access_changes()  # co kilka minut – przypomnienie i koniec dostępu bez opóźnień
+                self.process_sends()
             self.deliver_instant()
             ran.append("natychmiast")
         return ran
@@ -260,7 +279,12 @@ class LeadBot:
         if not self.store.claim_send(item.zadanie, item.chat_id):
             return 0  # tę wysyłkę obsłużył w międzyczasie inny proces
         try:
-            delivered = self.send_stage_reminder(user) if job == STAGE_REMINDER_JOB else self.send_report(user)
+            if job == STAGE_REMINDER_JOB:
+                delivered = self.send_stage_reminder(user)
+            elif job in (ACCESS_REMINDER_JOB, ACCESS_END_JOB):
+                delivered = self._send_access_notice(user, ended=job == ACCESS_END_JOB)
+            else:
+                delivered = self.send_report(user)
         except TelegramApiError as exc:
             if exc.blocked:
                 self._delivery_failed(user, exc)
@@ -279,7 +303,12 @@ class LeadBot:
         """Powód, by wysyłki już nie robić (``None`` – można wysyłać)."""
         if user is None or user.status != "aktywny":
             return f"odbiorca {user.status if user else 'nieznany'}"
-        if not self._has_access(user):
+        if job in (ACCESS_REMINDER_JOB, ACCESS_END_JOB):  # wiadomości o dostępie idą także bez dostępu
+            if user.subscription_ends != item.zadanie.partition(":")[2]:
+                return "termin dostępu się zmienił"
+            if (job == ACCESS_END_JOB) == self._has_access(user):
+                return "dostęp przedłużony" if job == ACCESS_END_JOB else "dostęp już się skończył"
+        elif not self._has_access(user):
             return "brak dostępu"
         if job in REPORT_JOBS and user.tryb != REPORT_JOBS[job]:
             return "zmieniony tryb raportów"
@@ -334,19 +363,20 @@ class LeadBot:
         if command == "/start" or user is None:
             self._start(chat_id, message.get("from") or {})
             return
-        if user.status == "zablokowany":  # odblokował bota i znów pisze
+        if user.status == "zablokowany":  # odblokował bota i znów pisze – dostęp zostaje, jaki był
             self.store.set_status(chat_id, "aktywny")
             user = self.store.get_user(chat_id)
         if user.status == "odrzucony":
             self._send(chat_id, ui.rejected_text())
             return
-        if not self._has_access(user):  # bramkarz: bez opłaconego abonamentu żadne menu ani filtr nie działa
-            self._send(chat_id, self._gate_text(user))
+        action = COMMAND_ACTIONS.get(command) if command else MENU_ACTIONS.get(text)
+        needed = ACTION_LEVELS.get(action, FULL) if action and not message.get("location") else SETUP
+        if self._level(user) < needed:  # bramkarz: jedno miejsce dla wszystkich wiadomości i komend
+            self._send_gate(user)
             return
         if message.get("location"):
             self._set_base(user, message["location"])
             return
-        action = COMMAND_ACTIONS.get(command) if command else MENU_ACTIONS.get(text)
         if action:
             if user.oczekuje_na:
                 self.store.set_awaiting(chat_id, None)
@@ -358,21 +388,27 @@ class LeadBot:
             self._send(chat_id, ui.unknown_text(), ui.menu_keyboard())
 
     def _on_callback(self, callback: dict[str, Any]) -> None:
+        """Kliknięcie przycisku: uprawnienia sprawdza się dla osoby, która kliknęła (``from.id``)."""
         message = callback.get("message") or {}
-        chat_id = (message.get("chat") or {}).get("id") or (callback.get("from") or {}).get("id")
+        sender = (callback.get("from") or {}).get("id")
+        chat_id = (message.get("chat") or {}).get("id", sender)
         message_id = message.get("message_id")
         data = callback.get("data") or ""
         answer: str | None = None
         try:
             if data.startswith("adm:"):
-                answer = self._admin_decision(chat_id, message_id, data)
+                answer = self._admin_decision(sender, chat_id, message_id, data)
+            elif sender is None or chat_id != sender:
+                answer = "⛔ Ten przycisk nie jest dla Ciebie"
             else:
-                user = self.store.get_user(chat_id)
-                if user is None or user.status == "odrzucony" or not self._has_access(user):
-                    answer = "⛔ Brak aktywnego abonamentu – skontaktuj się z administratorem"
+                user = self.store.get_user(sender)
+                prefix, _, arg = data.partition(":")
+                handler = _CALLBACKS.get(prefix)
+                if user is None or user.status == "odrzucony":
+                    answer = NO_ACCESS_TOAST
+                elif self._level(user) < _CALLBACK_LEVELS.get(prefix, FULL):
+                    answer = "▶️ Najpierw zacznij 7-dniowy test – /konto" if user.trial_available else NO_ACCESS_TOAST
                 else:
-                    prefix, _, arg = data.partition(":")
-                    handler = _CALLBACKS.get(prefix)
                     answer = handler(self, user, arg, message_id) if handler else None
         finally:
             self.api.answer_callback_query(callback.get("id"), answer)
@@ -380,7 +416,10 @@ class LeadBot:
     # === Rejestracja i admin ===================================================================
 
     def _start(self, chat_id: int, sender: dict[str, Any]) -> None:
-        """Rejestracja: nowa osoba zapisuje się jako nieaktywna (bez abonamentu), admin dostaje jej kartę."""
+        """Rejestracja: nowa osoba zapisuje się bez dostępu, admin dostaje jej kartę.
+
+        Ponowny ``/start`` niczego nie odnawia – ani testu, ani abonamentu.
+        """
         existed = self.store.get_user(chat_id) is not None
         user = self.store.register(chat_id, sender.get("first_name"), sender.get("username"), status="aktywny",
                                    backlog_days=self.settings.welcome_backlog_days)
@@ -389,48 +428,228 @@ class LeadBot:
             user = self.store.get_user(chat_id)
         if user.status == "odrzucony":
             self._send(chat_id, ui.rejected_text())
-        elif self._has_access(user):
+            return
+        level = self._level(user)
+        if level == FULL:
             self._send(chat_id, ui.welcome_text(user.imie), ui.menu_keyboard())
+        elif level == SETUP:
+            self._send(chat_id, ui.welcome_text(user.imie), ui.menu_keyboard())
+            self._send(chat_id, *ui.trial_offer())
         else:
             self._send(chat_id, self._gate_text(user))
-            if not existed:
-                text, markup = ui.new_user_card(user)
-                for admin in self.settings.admins:
-                    self._send_safely(admin, text, markup)
+        if not existed and level < FULL:
+            text, markup = ui.new_user_card(user)
+            for admin in self.settings.admins:
+                self._send_safely(admin, text, markup)
 
-    def _admin_decision(self, chat_id: int, message_id: int, data: str) -> str:
-        """Przyciski z karty nowej osoby: 🎁 trial, ✅ 30 dni, ⛔ odrzuć."""
-        if chat_id not in self.settings.admins:
+    def _admin_decision(self, sender: int | None, chat_id: int, message_id: int, data: str) -> str:
+        """Przyciski z karty nowej osoby: 🎁 test 7 dni, ✅ 30 dni, ⛔ odrzuć – tylko dla admina, który kliknął."""
+        if sender not in self.settings.admins:
             return "⛔ Tylko administrator może to zrobić"
         _, decision, target = data.split(":", 2)
         user = self.store.get_user(int(target)) if target.lstrip("-").isdigit() else None
         if user is None:
             return "Nie ma takiej osoby"
-        if decision in ("ok", "trial"):
-            report = self._grant(user, days=ui.DEFAULT_PAID_DAYS, trial=decision == "trial")
-            self.api.edit_message_text(chat_id, message_id, report)
-            return "🎁 Trial włączony" if decision == "trial" else "✅ Abonament aktywny"
+        if decision == "trial":
+            self.api.edit_message_text(chat_id, message_id, self._allow_trial(user))
+            return "🎁 Test dostępny"
+        if decision == "ok":
+            self.api.edit_message_text(chat_id, message_id, self._grant_paid(user, days=ui.DEFAULT_PAID_DAYS))
+            return "✅ Abonament aktywny"
         self.store.set_status(user.chat_id, "odrzucony")
-        self.store.set_subscription(user.chat_id, user.subscription_ends, active=False)
+        self.store.revoke_access(user.chat_id)
         self._send_safely(user.chat_id, ui.rejected_text())
         self.api.edit_message_text(chat_id, message_id, f"⛔ Odrzucono: {escape_html(user.display_name)}")
         return "⛔ Odrzucono"
 
-    # === Abonament (paywall) ======================================================================
+    # === Dostęp: test i abonament ====================================================================
 
     def _cmd_activate(self, admin_chat: int, args: list[str]) -> None:
-        """``/aktywuj <chat_id> <liczba_dni>`` – tylko admin."""
-        if len(args) != 2 or not _is_chat_id(args[0]) or not args[1].isdigit() or not 1 <= int(args[1]) <= 3650:
+        """``/aktywuj`` i ``/przedluz <chat_id> <dni|RRRR-MM-DD|DD.MM.RRRR>`` – tylko admin."""
+        term = self._parse_term(args[1]) if len(args) == 2 and _is_chat_id(args[0]) else None
+        if term is None:
             self._send(admin_chat, ui.admin_usage_text())
             return
-        self._grant_by_id(admin_chat, int(args[0]), days=int(args[1]), trial=False)
+        user = self._known_user(admin_chat, int(args[0]))
+        if user is not None:
+            days, until = term
+            self._send(admin_chat, self._grant_paid(user, days=days, until=until))
 
     def _cmd_trial(self, admin_chat: int, args: list[str]) -> None:
-        """``/trial <chat_id>`` – tylko admin: równo 3 dni od teraz."""
+        """``/trial <chat_id>`` – tylko admin: pozwala na 7-dniowy test; zegar rusza, gdy klient kliknie start."""
         if len(args) != 1 or not _is_chat_id(args[0]):
             self._send(admin_chat, ui.admin_usage_text())
             return
-        self._grant_by_id(admin_chat, int(args[0]), days=ui.TRIAL_DAYS, trial=True)
+        user = self._known_user(admin_chat, int(args[0]))
+        if user is not None:
+            self._send(admin_chat, self._allow_trial(user))
+
+    def _cmd_revoke(self, admin_chat: int, args: list[str]) -> None:
+        """``/odbierz <chat_id>`` – tylko admin: wyłącza dostęp od razu (dane klienta zostają)."""
+        if len(args) != 1 or not _is_chat_id(args[0]):
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        user = self._known_user(admin_chat, int(args[0]))
+        if user is not None:
+            self.store.revoke_access(user.chat_id)
+            self._notify(user.chat_id, ui.access_revoked_text(self._contact_html()))
+            self._send(admin_chat, ui.admin_revoked_text(user))
+
+    def _cmd_new_model(self, admin_chat: int, args: list[str]) -> None:
+        """``/nowymodel <chat_id|wszyscy> <dni|data>`` – dotychczasowym użytkownikom (dostęp bez terminu)
+        admin świadomie ustawia termin; potem obowiązują ich zwykłe zasady (przypomnienie, koniec, przedłużenie)."""
+        term = self._parse_term(args[1]) if len(args) == 2 else None
+        if term is None or not (args[0].lower() == "wszyscy" or _is_chat_id(args[0])):
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        targets = [u for u in self.store.unlimited_users() if args[0].lower() == "wszyscy" or str(u.chat_id) == args[0]]
+        days, until = term
+        ends_iso = _utc_iso(until or self._now() + timedelta(days=days or 0))
+        ends_on = self._local_date(ends_iso, with_time=True)
+        for user in targets:
+            self.store.set_access(user.chat_id, ends_iso)
+            self._notify(user.chat_id, ui.access_term_text(ends_on))
+        self._send(admin_chat, ui.admin_new_model_text(len(targets), ends_on))
+
+    def _known_user(self, admin_chat: int, chat_id: int) -> BotUser | None:
+        user = self.store.get_user(chat_id)
+        if user is None:
+            self._send(admin_chat, ui.admin_unknown_user_text(chat_id))
+        return user
+
+    def _parse_term(self, text: str) -> tuple[int | None, datetime | None] | None:
+        """Termin od admina: liczba dni (1–3650) albo data (koniec dnia czasu polskiego); ``None`` – błędny."""
+        if text.isdigit():
+            return (int(text), None) if 1 <= int(text) <= 3650 else None
+        for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+            try:
+                day = datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+            until = datetime.combine(day, clock_time(23, 59), tzinfo=WARSAW).astimezone(timezone.utc)
+            return (None, until) if until > self._now() else None
+        return None
+
+    def _grant_paid(self, user: BotUser, *, days: int | None = None, until: datetime | None = None) -> str:
+        """Abonament do daty albo na N dni – liczone od końca trwającego dostępu (klient nie traci dni).
+
+        Zastępuje dostęp bez limitu (przełączenie na nowy model); zwraca potwierdzenie dla admina.
+        """
+        now = self._now()
+        if until is None:
+            current = datetime.fromisoformat(user.subscription_ends) \
+                if user.subscription_ends and user.has_subscription(_utc_iso(now)) else now
+            until = current + timedelta(days=days or 0)
+        ends_iso = _utc_iso(until)
+        self.store.set_access(user.chat_id, ends_iso)
+        if user.status != "aktywny":  # np. wcześniej odrzucony albo „zablokowany” – admin daje nową szansę
+            self.store.set_status(user.chat_id, "aktywny")
+        ends_on = self._local_date(ends_iso, with_time=True)
+        delivered = self._notify(user.chat_id, ui.activated_text(ends_on, user.imie, days=days), ui.menu_keyboard())
+        return ui.admin_granted_text(user, ends_on, days=days, delivered=delivered)
+
+    def _allow_trial(self, user: BotUser) -> str:
+        """Pozwolenie na test (raz na osobę); zwraca odpowiedź dla admina."""
+        if user.trial_used:
+            return ui.admin_trial_used_text(user, self._local_date(user.test_koniec, with_time=True))
+        if self._has_access(user):
+            ends_on = self._local_date(user.subscription_ends) if user.has_subscription(_utc_iso(self._now())) \
+                else "bez terminu"
+            return ui.trial_skipped_text(user, ends_on)
+        self.store.allow_trial(user.chat_id)
+        if user.status != "aktywny":
+            self.store.set_status(user.chat_id, "aktywny")
+        delivered = self._notify(user.chat_id, *ui.trial_offer())
+        return ui.admin_trial_allowed_text(user, delivered=delivered)
+
+    def _cb_trial_start(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """„▶️ Zacznij 7-dniowy test” – świadomy start; kolejne kliknięcia (także stare przyciski) nic nie zmieniają."""
+        if user.trial_used:
+            ends_on = self._local_date(user.test_koniec, with_time=True)
+            if user.on_trial and self._has_access(user):
+                return f"🎁 Test trwa do {ends_on}"
+            return f"Darmowy test został już wykorzystany (do {ends_on})"
+        if self._has_access(user):
+            return "✅ Masz już pełny dostęp"
+        if not user.test_dozwolony:
+            return "⛔ Test nie jest jeszcze dostępny – czekamy na administratora"
+        now = self._now()
+        if not self.store.start_trial(user.chat_id, now, now + TRIAL_LENGTH):
+            return None  # drugie kliknięcie w tej samej chwili – test już ruszył
+        ends_on = self._local_date(_utc_iso(now + TRIAL_LENGTH), with_time=True)
+        self._send(user.chat_id, ui.trial_started_text(ends_on), ui.menu_keyboard())
+        return "🎁 Test wystartował"
+
+    def notify_access_changes(self) -> None:
+        """Jedno przypomnienie przed końcem testu/abonamentu i jedna informacja po nim (przez kolejkę wysyłek).
+
+        Termin, o którym poszła wiadomość, zapisuje się razem z wysyłką – restart niczego nie dubluje,
+        a przedłużenie (nowy termin) zaczyna cykl od nowa. W ciszy nocnej wiadomości czekają do rana.
+        """
+        now = self._now()
+        if self._quiet(now):
+            return
+        admins = self.settings.admins
+        for user in self.store.access_ending(now, now + ACCESS_REMINDER_BEFORE, admins=admins):
+            with self.repo.transaction():
+                self.store.enqueue_sends(f"{ACCESS_REMINDER_JOB}:{user.subscription_ends}", [user.chat_id])
+                self.store.mark_access_reminded(user.chat_id, user.subscription_ends or "")
+        ended = self.store.access_ended(now, admins=admins)
+        for user in ended:
+            with self.repo.transaction():
+                self.store.enqueue_sends(f"{ACCESS_END_JOB}:{user.subscription_ends}", [user.chat_id])
+                self.store.mark_access_end_reported(user.chat_id, user.subscription_ends or "")
+        if ended:
+            entries = [(user, self._local_date(user.subscription_ends, with_time=True)) for user in ended]
+            for admin in admins:
+                self._send_safely(admin, ui.admin_expired_text(entries))
+
+    def _send_access_notice(self, user: BotUser, *, ended: bool) -> bool:
+        ends_on = self._local_date(user.subscription_ends, with_time=True)
+        contact = self._contact_html()
+        self._send(user.chat_id, ui.access_ended_text(ends_on, trial=user.on_trial, contact_html=contact) if ended
+                   else ui.access_reminder_text(ends_on, trial=user.on_trial, contact_html=contact))
+        return True
+
+    def _level(self, user: BotUser) -> int:
+        """Poziom uprawnień: pełny dostęp, same ustawienia (test czeka na start) albo tylko konto i pomoc."""
+        if self._has_access(user):
+            return FULL
+        return SETUP if user.trial_available else NONE
+
+    def _access_state(self, user: BotUser) -> tuple[str, str | None]:
+        """Stan dostępu do ekranu „Konto”, bramki i listy admina: (stan, termin w czasie polskim)."""
+        if user.chat_id in self.settings.admins:
+            return "admin", None
+        if self.settings.access == "open":
+            return "open", None
+        if user.bez_limitu:
+            return "bez_limitu", None
+        ends_on = self._local_date(user.subscription_ends, with_time=True) if user.subscription_ends else None
+        if user.has_subscription(_utc_iso(self._now())):
+            return ("test" if user.on_trial else "platny"), ends_on
+        if user.trial_available:
+            return "test_dostepny", None
+        if user.subscription_ends and user.is_active:
+            return ("test_koniec" if user.on_trial else "platny_koniec"), ends_on
+        if user.subscription_ends:
+            return "wylaczony", ends_on
+        return "brak", None
+
+    def _send_gate(self, user: BotUser) -> None:
+        if user.trial_available:
+            self._send(user.chat_id, *ui.trial_waiting())
+        else:
+            self._send(user.chat_id, self._gate_text(user))
+
+    def _notify(self, chat_id: int, text: str, markup: dict | None = None) -> bool:
+        """Wiadomość o zmianie dostępu – błąd wysyłki nie przerywa akcji admina; zwraca, czy doszła."""
+        try:
+            self._send(chat_id, text, markup)
+        except TelegramApiError as exc:
+            log.warning("Nie udało się powiadomić %s: %s", chat_id, exc)
+            return False
+        return True
 
     def _cmd_status(self, admin_chat: int, args: list[str]) -> None:
         """``/status`` – tylko admin: stan importu GUNB, wątku zadań i wysyłek z ostatniej doby."""
@@ -442,79 +661,34 @@ class LeadBot:
             sends=self.store.send_counts(day_ago), failed=self.store.failed_sends(day_ago),
         ))
 
-    def _grant_by_id(self, admin_chat: int, chat_id: int, *, days: int, trial: bool) -> None:
-        user = self.store.get_user(chat_id)
-        if user is None:
-            self._send(admin_chat, ui.admin_unknown_user_text(chat_id))
-            return
-        self._send(admin_chat, self._grant(user, days=days, trial=trial))
-
-    def _grant(self, user: BotUser, *, days: int, trial: bool) -> str:
-        """Włącza abonament i powiadamia klienta; zwraca potwierdzenie dla admina.
-
-        Trial: równo 3 dni od teraz (nie skraca trwającego, dłuższego abonamentu). Płatny: N dni
-        od teraz, a gdy abonament jeszcze trwa – przedłużenie od jego końca (klient nie traci dni).
-        """
-        now = self.repo.now()
-        current = datetime.fromisoformat(user.subscription_ends) \
-            if user.subscription_ends and user.has_subscription(_utc_iso(now)) else None
-        if trial:
-            ends = now + timedelta(days=ui.TRIAL_DAYS)
-            if current is not None and current >= ends:
-                return ui.trial_skipped_text(user, self._local_date(user.subscription_ends))
-        else:
-            ends = (current or now) + timedelta(days=days)
-        ends_iso = _utc_iso(ends)
-        self.store.set_subscription(user.chat_id, ends_iso, active=True)
-        if user.status != "aktywny":  # np. wcześniej odrzucony albo „zablokowany” – admin daje nową szansę
-            self.store.set_status(user.chat_id, "aktywny")
-        ends_on = self._local_date(ends_iso)
-        text = ui.trial_text(ends_on, user.imie) if trial else ui.activated_text(days, ends_on, user.imie)
-        try:
-            self._send(user.chat_id, text, ui.menu_keyboard())
-            delivered = True
-        except TelegramApiError as exc:
-            log.warning("Nie udało się powiadomić %s o abonamencie: %s", user.chat_id, exc)
-            delivered = False
-        return ui.admin_granted_text(user, self._local_date(ends_iso, with_time=True), trial=trial, days=days,
-                                     delivered=delivered)
-
-    def expire_subscriptions(self) -> int:
-        """Wyłącza abonamenty po terminie: klient dostaje jedno powiadomienie, admin – listę do przedłużenia."""
-        expired = self.store.expired_subscriptions(_utc_iso(self.repo.now()))
-        entries = []
-        for user in expired:
-            self.store.set_subscription(user.chat_id, user.subscription_ends, active=False)
-            ends_on = self._local_date(user.subscription_ends)
-            self._send_safely(user.chat_id, ui.gate_text(self._contact_html(), expired_on=ends_on))
-            entries.append((user, ends_on))
-        if entries:
-            for admin in self.settings.admins:
-                self._send_safely(admin, ui.admin_expired_text(entries))
-        return len(entries)
-
     def _has_access(self, user: BotUser) -> bool:
-        return (user.chat_id in self.settings.admins or self.settings.access == "open"
-                or user.has_subscription(_utc_iso(self.repo.now())))
+        """Pełny dostęp – ta sama reguła co zapytanie ``BotStore.subscribers`` dla wysyłek w tle."""
+        return (user.chat_id in self.settings.admins or self.settings.access == "open" or user.bez_limitu
+                or user.has_subscription(_utc_iso(self._now())))
 
     def _gate_text(self, user: BotUser) -> str:
-        expired_on = self._local_date(user.subscription_ends) if user.subscription_ends else None
-        return ui.gate_text(self._contact_html(), expired_on=expired_on)
+        state, ends_on = self._access_state(user)
+        contact = self._contact_html()
+        if state in ("test_koniec", "platny_koniec"):
+            return ui.access_ended_text(ends_on or "—", trial=state == "test_koniec", contact_html=contact)
+        if state == "wylaczony":
+            return ui.access_revoked_text(contact)
+        return ui.gate_text(contact)
 
     def _contact_html(self) -> str:
         return ui.admin_contact_html(self.settings.admin_contact, self.settings.admins)
 
     def _subscribers(self, tryb: str | None = None) -> list[BotUser]:
-        """Odbiorcy pętli wysyłkowych: z bazy tylko osoby z aktywnym abonamentem (i admini)."""
+        """Odbiorcy pętli wysyłkowych: z bazy tylko osoby z dostępem (i admini)."""
         if self.settings.access == "open":
             return self.store.users(tryb=tryb)
-        return self.store.subscribers(_utc_iso(self.repo.now()), admins=self.settings.admins, tryb=tryb)
+        return self.store.subscribers(_utc_iso(self._now()), admins=self.settings.admins, tryb=tryb)
 
     def _local_date(self, utc_iso: str | None, *, with_time: bool = False) -> str:
-        """Data z bazy (UTC) w czasie polskim – do komunikatów (np. „29.10.2026”)."""
+        """Data z bazy (UTC) w czasie polskim – do komunikatów (np. „29.10.2026” albo „29.10.2026, 07:00”)."""
         if not utc_iso:
             return "—"
-        return local(datetime.fromisoformat(utc_iso)).strftime("%d.%m.%Y %H:%M" if with_time else "%d.%m.%Y")
+        return local(datetime.fromisoformat(utc_iso)).strftime("%d.%m.%Y, %H:%M" if with_time else "%d.%m.%Y")
 
     # === Ekrany z menu =========================================================================
 
@@ -572,6 +746,13 @@ class LeadBot:
         self._send(user.chat_id, ui.help_text(self.settings, admin=user.chat_id in self.settings.admins),
                    ui.menu_keyboard())
 
+    def _show_account(self, user: BotUser) -> None:
+        """„👤 Konto” – jaki dostęp, do kiedy i jak przedłużyć; działa także po końcu dostępu."""
+        state, ends_on = self._access_state(user)
+        markup = ui.inline([[ui.START_TRIAL_BUTTON]]) if state == "test_dostepny" else None
+        self._send(user.chat_id, ui.account_text(state=state, ends_on=ends_on, contact_html=self._contact_html()),
+                   markup)
+
     def _show_users(self, user: BotUser) -> None:
         if user.chat_id not in self.settings.admins:
             self._send(user.chat_id, ui.unknown_text(), ui.menu_keyboard())
@@ -580,14 +761,15 @@ class LeadBot:
         self._send(user.chat_id, ui.users_list(everyone, self._subscription_label))
 
     def _subscription_label(self, user: BotUser) -> str:
-        """Stan abonamentu na liście admina: „admin”, „do 29.10.2026”, „wygasł 02.10.2026”, „nieaktywny”."""
-        if user.chat_id in self.settings.admins:
-            return "👑 admin"
-        if user.has_subscription(_utc_iso(self.repo.now())):
-            return f"💳 do {self._local_date(user.subscription_ends)}"
-        if user.subscription_ends:
-            return f"⌛ wygasł {self._local_date(user.subscription_ends)}"
-        return "nieaktywny"
+        """Dostęp na liście admina, np. „💳 do 29.10.2026”, „🎁 test do …”, „⌛ wygasł …”, „nieaktywny”."""
+        state, ends_on = self._access_state(user)
+        day = self._local_date(user.subscription_ends)
+        return {
+            "admin": "👑 admin", "open": "✅ otwarty", "bez_limitu": "♾️ bez terminu (dotychczasowy)",
+            "test": f"🎁 test do {ends_on}", "platny": f"💳 do {day}", "test_dostepny": "🎁 test czeka na start",
+            "test_koniec": f"⌛ test skończył się {day}", "platny_koniec": f"⌛ wygasł {day}",
+            "wylaczony": "⛔ wyłączony",
+        }.get(state, "nieaktywny")
 
     # === Kliknięcia: lead ======================================================================
 
@@ -672,7 +854,10 @@ class LeadBot:
             self.store.set_filters(user.chat_id, UserFilters(baza=user.filtry.baza))  # bazę firmy pamiętamy
             self._edit_filters(user, message_id)
             return "🧹 Filtry wyczyszczone"
-        if arg == "go":
+        if arg == "go":  # „Pokaż pasujące” – to już inwestycje, nie ustawienia
+            if self._level(user) < FULL:
+                self._send_gate(user)
+                return None
             self.send_report(user, on_demand=True)
             return None
         if arg == "trade":
@@ -703,7 +888,7 @@ class LeadBot:
             return None
         self.store.set_trade(user.chat_id, trade.key if trade else None)
         self.api.edit_message_text(user.chat_id, message_id, *ui.trade_picker(trade.key if trade else None))
-        if trade is None or trade.months is None:
+        if trade is None or trade.months is None or self._level(user) < FULL:
             self._send(user.chat_id, ui.trade_saved_text(trade))
         else:  # od razu pokaż budowy, które już są na etapie tej branży
             self.send_stage_reminder(self.store.get_user(user.chat_id), on_demand=True)  # type: ignore[arg-type]
@@ -1126,7 +1311,13 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "m": LeadBot._cb_mode,
     "sv": LeadBot._cb_saved_page,
     "wd": LeadBot._cb_watch_delete,
+    "ts": LeadBot._cb_trial_start,
 }
+_CALLBACK_LEVELS: dict[str, int] = {
+    **{prefix: SETUP for prefix in ("f", "fp", "fpr", "fr", "fb", "ft", "fv", "fi", "m")},
+    "ts": NONE,
+}
+"""Poziom uprawnień przycisków (domyślnie pełny dostęp – inwestycje, zapisane, obserwowane)."""
 
 
 def _ranked(leads: Sequence[Investment], nearest: Callable[[Investment], float | None] | None = None) -> list[Investment]:

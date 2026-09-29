@@ -94,8 +94,8 @@ def welcome_text(name: str | None) -> str:
 
 
 def help_text(settings: BotConfig, *, admin: bool = False) -> str:
-    admin_part = ("\n\n👑 <b>Admin</b>: /aktywuj &lt;chat_id&gt; &lt;dni&gt; · /trial &lt;chat_id&gt; · /uzytkownicy"
-                  if admin else "")
+    admin_part = ("\n\n👑 <b>Admin</b>: /aktywuj &lt;chat_id&gt; &lt;dni|data&gt; · /przedluz · /odbierz · "
+                  "/trial &lt;chat_id&gt; · /nowymodel · /uzytkownicy · /status" if admin else "")
     return _help_body(settings) + admin_part
 
 
@@ -121,10 +121,11 @@ def rejected_text() -> str:
 
 # --- Abonament (paywall) i panel admina --------------------------------------------------------------
 
-TRIAL_DAYS = 3
+TRIAL_DAYS = 7
 DEFAULT_PAID_DAYS = 30
-TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 3 dni! Zobacz, jak szybciej docierać do klientów. "
+TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 7 dni! Zobacz, jak szybciej docierać do klientów. "
               "Po tym czasie bot zostanie wstrzymany.")
+START_TRIAL_BUTTON = ("▶️ Zacznij 7-dniowy test", "ts")
 
 
 def admin_contact_html(contact: str, admins: Sequence[int]) -> str:
@@ -148,28 +149,111 @@ def new_user_card(user: BotUser) -> tuple[str, Markup]:
     login = f" (@{escape_html(user.username)})" if user.username else ""
     text = (f"🆕 Nowa osoba: <b>{escape_html(user.imie or str(user.chat_id))}</b>{login}\n"
             f"ID: <code>{user.chat_id}</code>\n"
-            f"Dostęp: /trial {user.chat_id} (3 dni za darmo) albo /aktywuj {user.chat_id} 30")
-    return text, inline([[("🎁 Trial 3 dni", f"adm:trial:{user.chat_id}"),
+            f"Dostęp: /trial {user.chat_id} (7 dni testu – ruszą, gdy klient kliknie ▶️) "
+            f"albo /aktywuj {user.chat_id} 30")
+    return text, inline([[("🎁 Test 7 dni", f"adm:trial:{user.chat_id}"),
                           ("✅ 30 dni", f"adm:ok:{user.chat_id}"), ("⛔ Odrzuć", f"adm:no:{user.chat_id}")]])
 
 
-def activated_text(days: int, ends_on: str, name: str | None) -> str:
-    return (f"✅ Twój abonament został aktywowany na {days} dni!\nWażny do {ends_on}.\n\n" + welcome_text(name))
+def activated_text(ends_on: str, name: str | None, *, days: int | None = None) -> str:
+    head = f"✅ Twój abonament został aktywowany na {days} dni!" if days else "✅ Twój abonament został aktywowany!"
+    return f"{head}\nWażny do <b>{ends_on}</b>.\n\n" + welcome_text(name)
 
 
-def trial_text(ends_on: str, name: str | None) -> str:
-    return f"{TRIAL_TEXT}\nWażny do {ends_on}.\n\n" + welcome_text(name)
+def trial_offer() -> tuple[str, Markup]:
+    """Admin pozwolił na test – osoba sama decyduje, kiedy go zacząć."""
+    return ("🎁 Możesz wypróbować Żółtą Tablicę przez <b>7 dni za darmo</b>.\n"
+            "Test ruszy dopiero wtedy, gdy klikniesz <b>▶️ Zacznij</b> – najpierw ustaw branżę i obszar "
+            "(🔎 Filtry), żeby od pierwszego dnia dostawać właściwe inwestycje.",
+            inline([[START_TRIAL_BUTTON]]))
 
 
-def admin_granted_text(user: BotUser, ends_on: str, *, trial: bool, days: int, delivered: bool) -> str:
+def trial_started_text(ends_on: str) -> str:
+    return f"{TRIAL_TEXT}\nTest trwa do <b>{ends_on}</b>."
+
+
+def trial_waiting() -> tuple[str, Markup]:
+    """Test dozwolony, ale jeszcze nie ruszył – a osoba chce zobaczyć inwestycje."""
+    return ("▶️ Twój 7-dniowy test jeszcze się nie zaczął. Kliknij, kiedy chcesz go zacząć – "
+            "od tej chwili liczy się 7 dni.", inline([[START_TRIAL_BUTTON]]))
+
+
+def access_reminder_text(ends_on: str, *, trial: bool, contact_html: str) -> str:
+    what = "Twój darmowy test" if trial else "Twój abonament"
+    return (f"⏳ {what} kończy się <b>{ends_on}</b>. Jeśli chcesz dalej dostawać inwestycje, "
+            f"skontaktuj się z {contact_html}.")
+
+
+def access_ended_text(ends_on: str, *, trial: bool, contact_html: str) -> str:
+    """Informacja o końcu dostępu – jednorazowa i przy każdej próbie użycia danych."""
+    what = "Twój darmowy test skończył się" if trial else "Twój abonament wygasł"
+    return (f"⛔ {what} {ends_on}. Raporty i przypomnienia są wstrzymane, a zapisane inwestycje i ustawienia "
+            f"czekają na Ciebie. Skontaktuj się z {contact_html}, aby przedłużyć dostęp.")
+
+
+def access_revoked_text(contact_html: str) -> str:
+    return (f"⛔ Twój dostęp do Żółtej Tablicy został wyłączony. Zapisane inwestycje i ustawienia zostają. "
+            f"Jeśli to pomyłka, skontaktuj się z {contact_html}.")
+
+
+def access_term_text(ends_on: str) -> str:
+    """Dotychczasowy użytkownik przełączony na nowy model – dostaje termin zamiast „bez limitu”."""
+    return (f"ℹ️ Zmieniamy zasady dostępu do Żółtej Tablicy: Twój dostęp jest ważny do <b>{ends_on}</b>. "
+            "Wszystko działa jak dotąd.")
+
+
+def account_text(*, state: str, ends_on: str | None, contact_html: str) -> str:
+    """Ekran „👤 Konto”: jaki dostęp, do kiedy i jak przedłużyć."""
+    lines = {
+        "admin": "👑 Jesteś administratorem – pełny dostęp bez limitu.",
+        "open": "✅ Pełny dostęp (bot otwarty dla wszystkich).",
+        "bez_limitu": "♾️ Pełny dostęp bez terminu (dotychczasowy użytkownik).",
+        "test": f"🎁 Darmowy test trwa do <b>{ends_on}</b>.",
+        "platny": f"💳 Abonament ważny do <b>{ends_on}</b>.",
+        "test_dostepny": "🎁 Czeka na Ciebie 7-dniowy darmowy test – ruszy, gdy klikniesz ▶️ Zacznij.",
+        "test_koniec": f"⌛ Darmowy test skończył się {ends_on}.",
+        "platny_koniec": f"⌛ Abonament wygasł {ends_on}.",
+        "brak": "⏳ Dostęp jeszcze nieaktywny.",
+    }
+    extend = ("" if state in ("admin", "open", "bez_limitu")
+              else f"\nAby {'przedłużyć' if state != 'brak' else 'uzyskać'} dostęp, skontaktuj się z {contact_html}.")
+    return "👤 <b>Twoje konto</b>\n\n" + lines.get(state, lines["brak"]) + extend
+
+
+def admin_granted_text(user: BotUser, ends_on: str, *, days: int | None, delivered: bool) -> str:
     who = f"<b>{escape_html(user.display_name)}</b> ({user.chat_id})"
-    head = f"🎁 Trial: {who} – ważny do {ends_on}" if trial else f"✅ Aktywowano: {who} – {days} dni, ważny do {ends_on}"
+    head = f"✅ Aktywowano: {who} – {f'{days} dni, ' if days else ''}ważny do {ends_on}"
     return head if delivered else head + "\n⚠️ Nie udało się wysłać mu wiadomości (zablokował bota?)."
 
 
+def admin_trial_allowed_text(user: BotUser, *, delivered: bool) -> str:
+    head = (f"🎁 Test 7 dni dostępny dla <b>{escape_html(user.display_name)}</b> ({user.chat_id}) – "
+            "ruszy, gdy kliknie ▶️ Zacznij.")
+    return head if delivered else head + "\n⚠️ Nie udało się wysłać mu wiadomości (zablokował bota?)."
+
+
+def admin_trial_used_text(user: BotUser, ended_on: str) -> str:
+    return (f"ℹ️ {escape_html(user.display_name)} ({user.chat_id}) wykorzystał już darmowy test (do {ended_on}). "
+            f"Dostęp: /aktywuj {user.chat_id} {DEFAULT_PAID_DAYS}")
+
+
+def admin_revoked_text(user: BotUser) -> str:
+    return f"⛔ Wyłączono dostęp: <b>{escape_html(user.display_name)}</b> ({user.chat_id})."
+
+
+def admin_new_model_text(count: int, ends_on: str) -> str:
+    if not count:
+        return "ℹ️ Nikt nie ma już dostępu bez terminu."
+    return f"✅ Przełączono na nowy model: {count} {_plural(count, 'osoba', 'osoby', 'osób')} – dostęp do {ends_on}."
+
+
 def admin_usage_text() -> str:
-    return ("ℹ️ Użycie:\n/aktywuj &lt;chat_id&gt; &lt;liczba_dni&gt; – np. /aktywuj 9876543 30\n"
-            "/trial &lt;chat_id&gt; – 3 dni za darmo")
+    return ("ℹ️ Użycie:\n"
+            "/aktywuj &lt;chat_id&gt; &lt;dni albo data&gt; – np. /aktywuj 9876543 30 albo /aktywuj 9876543 2026-12-31\n"
+            "/przedluz &lt;chat_id&gt; &lt;dni albo data&gt; – to samo: dni liczone od końca obecnego dostępu\n"
+            "/odbierz &lt;chat_id&gt; – wyłącz dostęp od razu\n"
+            "/trial &lt;chat_id&gt; – pozwól na 7-dniowy test (ruszy, gdy osoba kliknie ▶️)\n"
+            "/nowymodel &lt;chat_id|wszyscy&gt; &lt;dni albo data&gt; – dostęp z terminem dla dotychczasowych")
 
 
 def admin_unknown_user_text(chat_id: int) -> str:
@@ -177,13 +261,13 @@ def admin_unknown_user_text(chat_id: int) -> str:
 
 
 def trial_skipped_text(user: BotUser, ends_on: str) -> str:
-    return f"ℹ️ {escape_html(user.display_name)} ma już abonament do {ends_on} – trial pominięty."
+    return f"ℹ️ {escape_html(user.display_name)} ma już dostęp do {ends_on} – test pominięty."
 
 
 def admin_expired_text(entries: Sequence[tuple[BotUser, str]]) -> str:
-    lines = [f"• {escape_html(user.display_name)} ({user.chat_id}) – {ends_on} · przedłuż: "
-             f"/aktywuj {user.chat_id} {DEFAULT_PAID_DAYS}" for user, ends_on in entries]
-    return "⌛ <b>Wygasłe abonamenty</b>\n" + "\n".join(lines)
+    lines = [f"• {escape_html(user.display_name)} ({user.chat_id}) – {'test' if user.on_trial else 'abonament'} "
+             f"do {ends_on} · przedłuż: /aktywuj {user.chat_id} {DEFAULT_PAID_DAYS}" for user, ends_on in entries]
+    return "⌛ <b>Koniec dostępu</b>\n" + "\n".join(lines)
 
 
 def users_list(users: Sequence[BotUser], subscription: Callable[[BotUser], str]) -> str:
