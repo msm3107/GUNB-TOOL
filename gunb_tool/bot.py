@@ -357,6 +357,9 @@ class LeadBot:
             self.store.set_filters(user.chat_id, UserFilters())
             self._edit_filters(user, message_id)
             return "🧹 Filtry wyczyszczone"
+        if arg == "go":
+            self.send_report(user, on_demand=True)
+            return None
         screens = {"place": lambda f: ui.place_picker(f, self.store.place_options(self.powiat_codes)),
                    "type": ui.type_picker, "vol": ui.volume_picker, "inv": ui.investor_picker}
         if arg in screens:
@@ -471,29 +474,44 @@ class LeadBot:
 
     def send_report(self, user: BotUser, *, on_demand: bool = False,
                     leads: Sequence[Investment] | None = None) -> bool:
-        """Wysyła raport: podsumowanie + lista pasujących leadów z numerami do kliknięcia."""
-        since = self._report_since(user)
+        """Wysyła raport: podsumowanie + lista pasujących leadów z numerami do kliknięcia.
+
+        Za „widziane” uznawane są tylko leady faktycznie pokazane na liście (reszta trafi do kolejnego
+        raportu); niepasujące do filtrów – jako pominięte. Gdy nowych pasujących brak, raport na żądanie
+        pokazuje pasujące z ostatnich ``recent_days`` dni, żeby po zmianie filtrów od razu było coś widać.
+        """
+        candidates = self.store.candidates(user.chat_id, self._window_start(user))
         if leads is None:
-            leads = [inv for inv in self.store.candidates(user.chat_id, since) if self._wanted(user, inv)]
-        newest_first = sorted(leads, key=lambda i: i.data_aktualizacji or "", reverse=True)
-        leads = sorted(newest_first, key=lambda i: (_PRIORITY_RANK.get(i.priorytet or "", 3), -(i.punkty or 0)))
+            leads = [inv for inv in candidates if self._wanted(user, inv)]
+        leads = _ranked(leads)
+        chosen = {inv.id_sprawy for inv in leads}
+        skipped = [inv for inv in candidates if inv.id_sprawy not in chosen]
         now_iso = _utc_iso(self.repo.now())
+        watched = self.store.deliveries_since(user.chat_id, self._report_since(user), "watchlista")
         if not leads and not on_demand:
+            self.store.record_delivery(user.chat_id, skipped, "pominiety")
             self.store.mark_report(user.chat_id, now_iso)
             return False
-        summary = dict(
-            total_new=self.store.count_new_since(since),
-            matching=len(leads),
-            hot=sum(1 for inv in leads if inv.priorytet == HOT),
-            watched=self.store.deliveries_since(user.chat_id, since, "watchlista"),
-        )
-        shown = min(len(leads), self.settings.max_leads_in_report)
-        text, markup = ui.report(f"{self._clock():%d.%m}", leads=leads[:shown], **summary)
+        recent: list[Investment] = []
+        if not leads:
+            date_from = (self._clock().date() - timedelta(days=self.settings.recent_days)).isoformat()
+            recent = _ranked([inv for inv in self.store.recent_leads(user.chat_id, date_from) if self._wanted(user, inv)])
+
+        def build(count: int) -> tuple[str, dict | None]:
+            return ui.report(
+                f"{self._clock():%d.%m}", total_new=len(candidates), leads=leads[:count], matching=len(leads),
+                hot=sum(1 for inv in leads if inv.priorytet == HOT), watched=watched,
+                recent=recent[:count], recent_total=len(recent), recent_days=self.settings.recent_days,
+            )
+
+        shown = min(len(leads or recent), self.settings.max_leads_in_report)
+        text, markup = build(shown)
         while len(text) > TELEGRAM_LIMIT and shown > 1:  # długie opisy/adresy – mniej pozycji na liście
             shown = max(1, shown - 3)
-            text, markup = ui.report(f"{self._clock():%d.%m}", leads=leads[:shown], **summary)
+            text, markup = build(shown)
         self._send(user.chat_id, text, markup)
-        self.store.record_delivery(user.chat_id, leads, "raport")
+        self.store.record_delivery(user.chat_id, leads[:shown], "raport")
+        self.store.record_delivery(user.chat_id, skipped, "pominiety")
         self.store.mark_report(user.chat_id, now_iso)
         return True
 
@@ -622,6 +640,12 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "sv": LeadBot._cb_saved_page,
     "wd": LeadBot._cb_watch_delete,
 }
+
+
+def _ranked(leads: Sequence[Investment]) -> list[Investment]:
+    """Najpierw 🔥 HOT i więcej punktów, w obrębie tego samego – najnowsze."""
+    newest_first = sorted(leads, key=lambda i: i.data_aktualizacji or "", reverse=True)
+    return sorted(newest_first, key=lambda i: (_PRIORITY_RANK.get(i.priorytet or "", 3), -(i.punkty or 0)))
 
 
 def _parse_volume(text: str) -> float | None:

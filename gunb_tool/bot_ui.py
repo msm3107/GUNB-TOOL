@@ -138,6 +138,7 @@ def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConf
         [("📍 Miejsce", "f:place"), ("🏗️ Rodzaj", "f:type")],
         [("📦 Kubatura", "f:vol"), ("💼 Inwestor", "f:inv")],
         [("🧹 Wyczyść filtry", "f:clear")],
+        [("📊 Pokaż pasujące", "f:go")],
     ])
     return "\n".join(lines), markup
 
@@ -238,33 +239,52 @@ def watch_header(item: WatchItem, inv: Investment) -> tuple[str, str, str]:
 
 # --- Raport ---------------------------------------------------------------------------------------
 
-def report(date_label: str, total_new: int, leads: Sequence[Investment], matching: int, hot: int,
-           watched: int) -> tuple[str, Markup | None]:
-    """Raport zbiorczy: podsumowanie + ponumerowana lista; numery otwierają szczegóły leada."""
-    if total_new == 0 and matching == 0:
-        return ("📭 <b>Brak nowych inwestycji</b> od ostatniego raportu.\n"
-                "Zajrzyj później albo poszerz 🔎 Filtry.", None)
-    summary = [f"Znaleziono {_count(total_new, 'nową inwestycję', 'nowe inwestycje', 'nowych inwestycji')}."]
-    if matching:
-        summary.append(f"{matching} {_plural(matching, 'spełnia', 'spełniają', 'spełnia')} Twoje filtry.")
-    else:
-        summary.append("Żadna nie spełnia Twoich filtrów.")
-    if hot:
-        summary.append(f"{hot} to 🔥 {_plural(hot, 'HOT LEAD', 'HOT LEADY', 'HOT LEADÓW')}.")
-    if watched:
-        summary.append(f"{watched} {_plural(watched, 'dotyczy obserwowanego inwestora lub gminy', 'dotyczą obserwowanych inwestorów lub gmin', 'dotyczy obserwowanych inwestorów lub gmin')}.")
-    lines = [f"📊 <b>Raport {date_label}</b>", " ".join(summary[:2]), " ".join(summary[2:])]
-    lines = [line for line in lines if line]
+def report(date_label: str, *, total_new: int, leads: Sequence[Investment], matching: int, hot: int, watched: int,
+           recent: Sequence[Investment] = (), recent_total: int = 0, recent_days: int = 30) -> tuple[str, Markup | None]:
+    """Raport: podsumowanie + ponumerowana lista (numery otwierają szczegóły leada).
+
+    Args:
+        total_new: nowe (jeszcze niewidziane) inwestycje od ostatniego raportu.
+        leads: pokazywane nowe leady pasujące do filtrów; ``matching`` – ile pasuje łącznie.
+        recent: gdy nowych pasujących brak – pasujące z ostatnich ``recent_days`` dni (już widziane).
+    """
+    watched_text = (f"{watched} {_plural(watched, 'dotyczy obserwowanego inwestora lub gminy', 'dotyczą obserwowanych inwestorów lub gmin', 'dotyczy obserwowanych inwestorów lub gmin')}"
+                    if watched else "")
     if leads:
+        summary = [
+            f"Znaleziono {_count(total_new, 'nową inwestycję', 'nowe inwestycje', 'nowych inwestycji')}.",
+            f"{matching} {_plural(matching, 'spełnia', 'spełniają', 'spełnia')} Twoje filtry.",
+        ]
+        extra = []
+        if hot:
+            extra.append(f"{hot} to 🔥 {_plural(hot, 'HOT LEAD', 'HOT LEADY', 'HOT LEADÓW')}.")
+        if watched_text:
+            extra.append(watched_text + ".")
+        lines = [f"📊 <b>Raport {date_label}</b>", " ".join(summary)] + ([" ".join(extra)] if extra else [])
         lines.append("")
-        for position, inv in enumerate(leads, start=1):
-            lines.append(_report_entry(position, inv))
+        lines += [_report_entry(position, inv) for position, inv in enumerate(leads, start=1)]
         if matching > len(leads):
-            lines.append(f"\n…i {matching - len(leads)} więcej – zawęź 🔎 Filtry, żeby widzieć najlepsze.")
+            lines.append(f"\n…i {matching - len(leads)} więcej – kliknij 📊 Co nowego?, żeby zobaczyć kolejne.")
         lines.append("\n👇 Kliknij numer, żeby zobaczyć szczegóły i zapisać.")
-        markup = inline(number_buttons([(position, inv.nr) for position, inv in enumerate(leads, start=1)]))
-        return "\n".join(lines), markup
-    return "\n".join(lines), None
+        return "\n".join(lines), inline(number_buttons([(p, inv.nr) for p, inv in enumerate(leads, start=1)]))
+
+    if total_new:
+        head = [f"📊 <b>Raport {date_label}</b>",
+                f"Znaleziono {_count(total_new, 'nową inwestycję', 'nowe inwestycje', 'nowych inwestycji')}"
+                " – żadna nie pasuje do Twoich filtrów."]
+    else:
+        head = ["📭 <b>Nic nowego</b> od ostatniego raportu."]
+    if watched_text:
+        head.append(f"👀 {watched_text} (alert już wysłany).")
+    if not recent:
+        head.append(f"\n🔎 Z ostatnich {recent_days} dni brak pasujących do Twoich filtrów – poszerz 🔎 Filtry.")
+        return "\n".join(head), None
+    lines = head + ["", f"🔎 <b>Pasujące do Twoich filtrów z ostatnich {recent_days} dni</b> ({recent_total}):", ""]
+    lines += [_report_entry(position, inv) for position, inv in enumerate(recent, start=1)]
+    if recent_total > len(recent):
+        lines.append(f"\n…i {recent_total - len(recent)} więcej – zawęź 🔎 Filtry.")
+    lines.append("\n👇 Kliknij numer, żeby otworzyć lead.")
+    return "\n".join(lines), inline(number_buttons([(p, inv.nr) for p, inv in enumerate(recent, start=1)]))
 
 
 def saved_list(leads: Sequence[Investment], page: int, total: int) -> tuple[str, Markup | None]:

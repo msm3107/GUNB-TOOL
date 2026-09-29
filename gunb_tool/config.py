@@ -196,6 +196,7 @@ class BotConfig:
         instant_every_minutes: jak często sprawdzać nowe leady dla trybu „od razu” i alertów watchlisty.
         welcome_backlog_days: z ilu dni wstecz nowy użytkownik dostaje leady w pierwszym raporcie.
         max_leads_in_report: najwięcej leadów wypisanych w jednym raporcie.
+        recent_days: gdy nic nowego nie ma, „📊 Co nowego?” pokazuje pasujące leady z tylu ostatnich dni.
         poll_timeout: czas long pollingu Telegrama (s).
     """
 
@@ -207,6 +208,7 @@ class BotConfig:
     instant_every_minutes: int = 10
     welcome_backlog_days: int = 7
     max_leads_in_report: int = 20
+    recent_days: int = 30
     poll_timeout: int = 25
 
 
@@ -507,6 +509,7 @@ def _bot(data: dict[str, Any]) -> BotConfig:
                                           minimum=1)),
         welcome_backlog_days=int(_number(data, "bot", "welcome_backlog_days", defaults.welcome_backlog_days)),
         max_leads_in_report=int(_number(data, "bot", "max_leads_in_report", defaults.max_leads_in_report, minimum=1)),
+        recent_days=int(_number(data, "bot", "recent_days", defaults.recent_days, minimum=1)),
         poll_timeout=int(_number(data, "bot", "poll_timeout", defaults.poll_timeout, minimum=1)),
         **times,
     )

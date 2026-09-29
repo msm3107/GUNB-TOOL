@@ -264,7 +264,9 @@ def test_report_summarises_and_numbers_matching_leads(bot, api, repo):
     assert buttons(report["markup"]) == [("1", f"o:{nr}")]
 
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
-    assert "Brak nowych" in api.last_to(MIETEK)["text"]  # raz pokazany lead nie wraca
+    again = api.last_to(MIETEK)["text"]  # nic nowego → pasujące z ostatnich dni (już widziane)
+    assert "Nic nowego" in again
+    assert "Budowa zespołu dwóch budynków wielorodzinnych" in again
 
 
 def test_lead_card_has_action_buttons_and_save_updates_them(bot, api, repo):
@@ -400,3 +402,55 @@ def test_long_report_is_shortened_to_fit_telegram_limit(bot, api, repo):
     report = api.last_to(MIETEK)
     assert len(report["text"]) <= 4096
     assert "więcej" in report["text"]
+
+
+
+# --- Zgłoszenie z testu na żywo: „ustawiłem filtry, a raport pusty” ----------------------------------
+
+def test_filters_set_after_unfiltered_report_still_show_matching_leads(bot, api, repo):
+    """Odtworzenie testu na żywo: najpierw raport bez filtrów, potem filtry „Warszawa + bloki + 10 000 m³”."""
+    activate(bot, api)
+    seed_leads(repo)
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))          # raport bez filtrów
+    BotStore(repo).set_filters(MIETEK, UserFilters(miejsca=("Warszawa",), kategorie=("mieszkaniowa-wielorodzinna",),
+                                                   min_kubatura=10000))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+
+    text = api.last_to(MIETEK)["text"]
+    assert "Budowa zespołu dwóch budynków wielorodzinnych" in text
+    assert "Brak nowych" not in text
+
+
+def test_only_leads_shown_in_report_count_as_seen(repo, api, clock):
+    bot = make_bot(repo, api, clock, max_leads_in_report=2)
+    activate(bot, api)
+    seed_leads(repo)
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    first = api.last_to(MIETEK)
+    assert len(buttons(first["markup"])) == 2
+    assert "więcej" in first["text"]
+
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    second = api.last_to(MIETEK)
+    assert "Nic nowego" not in second["text"]
+    assert len(buttons(second["markup"])) == 1  # trzeci lead, którego nie było na pierwszej liście
+
+
+def test_filters_screen_offers_show_matching_button(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    bot.handle_update(message(MIETEK, "🔎 Filtry"))
+    screen = api.last_to(MIETEK)
+    bot.handle_update(click(MIETEK, callback_for(screen["markup"], "Pokaż pasujące")))
+    assert "📊 <b>Raport" in api.last_to(MIETEK)["text"]
+
+
+def test_nothing_matching_in_recent_days_says_so(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    BotStore(repo).set_filters(MIETEK, UserFilters(miejsca=("Gdańsk",)))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    text = api.last_to(MIETEK)["text"]
+    assert "Nic nowego" in text
+    assert "brak pasujących" in text

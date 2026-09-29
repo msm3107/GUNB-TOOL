@@ -288,11 +288,22 @@ class BotStore:
         ).fetchall()
         return [investment_from_row(row) for row in rows]
 
-    def count_new_since(self, since_iso: str) -> int:
-        """Liczba nowych/zmienionych leadów (bez szumu) od danej chwili – do nagłówka raportu."""
-        return self._conn.execute(
-            "SELECT COUNT(*) FROM investments WHERE is_noise = 0 AND status_zmieniony > ?", (since_iso,)
-        ).fetchone()[0]
+    def recent_leads(self, chat_id: int, date_from: str, limit: int = 1000) -> list[Investment]:
+        """Leady (bez szumu i ukrytych) z datą zdarzenia od ``date_from`` (RRRR-MM-DD), także już widziane.
+
+        Służy do „pasujących z ostatnich dni” – np. zaraz po zmianie filtrów.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT i.* FROM investments i
+            WHERE i.is_noise = 0 AND i.data_aktualizacji >= ?
+              AND NOT EXISTS (SELECT 1 FROM user_leads u
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.stan = 'ukryty')
+            ORDER BY i.data_aktualizacji DESC, i.nr DESC LIMIT ?
+            """,
+            (date_from, chat_id, limit),
+        ).fetchall()
+        return [investment_from_row(row) for row in rows]
 
     def record_delivery(self, chat_id: int, investments: Iterable[Investment], rodzaj: str) -> None:
         now = _iso(self.repo.now())
