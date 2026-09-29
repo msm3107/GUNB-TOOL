@@ -10,6 +10,8 @@ venv/
 data/
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 *.db
 *.part
 *.log

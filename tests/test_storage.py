@@ -220,3 +220,31 @@ def test_stats_summarise_database(repo):
     assert stats["statusy"] == {"decyzja": 2, "brak_sprzeciwu": 1}
     assert stats["kategorie"]["komercyjna"] == 1
     assert stats["niewyslane"] == 2
+
+
+# --- Tryb WAL (prawdziwy plik bazy) -------------------------------------------------------
+
+def test_file_database_runs_in_wal_mode(tmp_path, clock):
+    path = tmp_path / "leads.sqlite"
+    with LeadRepository(path, now=clock) as repo:
+        assert repo.journal_mode == "wal"
+        assert repo.busy_timeout_ms == 5000
+        repo.upsert(lead())
+        assert (tmp_path / "leads.sqlite-wal").exists()
+    with LeadRepository(path, now=clock) as reopened:
+        assert reopened.journal_mode == "wal"
+
+
+def test_reader_sees_committed_state_while_writer_transaction_is_open(tmp_path, clock):
+    path = tmp_path / "leads.sqlite"
+    with LeadRepository(path, now=clock) as writer, LeadRepository(path, now=clock) as reader:
+        writer.upsert(lead("A/1"))
+        with writer.transaction():
+            writer.upsert(lead("B/1"))
+            assert reader.get("A/1") is not None  # odczyt nie jest blokowany przez otwartą transakcję
+            assert reader.get("B/1") is None      # i widzi tylko zatwierdzone dane
+        assert reader.get("B/1") is not None
+
+
+def test_memory_database_has_no_wal(repo):
+    assert repo.journal_mode == "memory"

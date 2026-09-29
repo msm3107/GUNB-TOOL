@@ -57,7 +57,7 @@ class FakeGeocoder:
     def __init__(self):
         self.calls = []
 
-    def geocode(self, parcels):
+    def geocode(self, parcels, **kwargs):
         self.calls.append([p.uldk_id for p in parcels])
         return GeocodeResult(
             lat=50.47, lon=17.33, precision=GeoPrecision.PARCEL, parcel_id=parcels[0].uldk_id,
@@ -245,3 +245,16 @@ def test_build_query_uses_lookback_window_or_explicit_dates():
     assert build_query(cfg, today=today, days=7).date_from == date(2026, 9, 21)
     explicit = build_query(cfg, today=today, since=date(2026, 1, 1), until=date(2026, 2, 1))
     assert (explicit.date_from, explicit.date_to) == (date(2026, 1, 1), date(2026, 2, 1))
+
+
+def test_apply_geocode_stores_parcel_id_resolved_by_uldk():
+    from gunb_tool.models import Investment
+    from gunb_tool.pipeline import apply_geocode
+    investment = Investment(id_sprawy="X/1", zrodlo="pozwolenia", status="decyzja", teryt_dzialki="302105_5.0024.57/52")
+    apply_geocode(investment, GeocodeResult(
+        lat=52.41, lon=17.23, precision=GeoPrecision.PARCEL, parcel_id="302108_5.0024.57/52",
+        region_id="302108_5.0024", voivodeship="wielkopolskie", county="powiat poznański", commune="Kostrzyn",
+        google_maps_url="", geoportal_url=None,
+    ))
+    assert investment.teryt_dzialki == "302108_5.0024.57/52"
+    assert investment.google_maps_url == "https://www.google.com/maps?q=52.410000,17.230000"

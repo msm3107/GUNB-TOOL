@@ -24,6 +24,7 @@ from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 
 SCHEMA_VERSION = 1
+BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS investments (
@@ -91,7 +92,9 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 );
 """
 
-GEO_FIELDS: tuple[str, ...] = ("lat", "lon", "precyzja_geo", "google_maps_url", "geoportal_url", "powiat", "gmina")
+GEO_FIELDS: tuple[str, ...] = (
+    "lat", "lon", "precyzja_geo", "google_maps_url", "geoportal_url", "powiat", "gmina", "teryt_dzialki",
+)
 """Pola z geokodowania – brak nowej lokalizacji nie nadpisuje zapisanej."""
 
 _BOOL_FIELDS = frozenset({"is_residential", "is_commercial", "is_noise", "czy_wyslano"})
@@ -148,12 +151,28 @@ class LeadRepository:
         self._conn = sqlite3.connect(str(db_path), isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+        if str(db_path) != ":memory:":
+            # WAL: czytelnicy nie blokują zapisu i odwrotnie (np. --sync-sheets w trakcie --fetch z innego
+            # zadania harmonogramu); tryb zapisuje się w pliku bazy. Baza musi leżeć na dysku lokalnym.
+            self._conn.execute("PRAGMA journal_mode = WAL")
+            self._conn.execute("PRAGMA synchronous = NORMAL")
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.negative_cache_days = negative_cache_days
         self._depth = 0
         self._migrate()
 
     # --- Cykl życia ---------------------------------------------------------------
+
+    @property
+    def journal_mode(self) -> str:
+        """Tryb dziennika SQLite (``wal`` dla plików, ``memory`` dla ``:memory:``)."""
+        return self._conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+    @property
+    def busy_timeout_ms(self) -> int:
+        """Jak długo (ms) czekać na zwolnienie blokady przez inny proces."""
+        return self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
 
     def close(self) -> None:
         """Zamyka połączenie z bazą."""

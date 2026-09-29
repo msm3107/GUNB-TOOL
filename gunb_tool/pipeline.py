@@ -12,7 +12,7 @@ from typing import Any, Callable, Protocol, Sequence
 from .config import AppConfig, GunbConfig
 from .data_filter import FilterDecision, LeadFilter
 from .exporter import MessageFormatter, NotificationError, Notifier, SheetsSyncResult
-from .geocoding_uldk import GeocodeResult, UldkClient, UldkGeocoder, google_maps_url
+from .geocoding_uldk import GeocodeResult, GeoPrecision, UldkClient, UldkGeocoder, google_maps_url
 from .gunb_scraper import FetchQuery, GunbScraper, Page
 from .http_client import ResilientHttpClient
 from .models import GunbCase, Investment
@@ -150,7 +150,12 @@ class LeadPipeline:
             investment.google_maps_url = google_maps_url(existing.lat, existing.lon)
             report.geocode_reused += 1
             return
-        result = self.geocoder.geocode(case.parcels) if self.geocoder is not None and case.parcels else None
+        result = None
+        if self.geocoder is not None and case.parcels:
+            try:
+                result = self.geocoder.geocode(case.parcels, gmina_teryt=case.terc)
+            except Exception:  # geokodowanie jest wzbogaceniem – nie może przerwać zapisu strony
+                log.exception("Nieoczekiwany błąd geokodowania sprawy %s", case.id_sprawy)
         if result is None:
             report.geocode_missing += 1
             return
@@ -264,6 +269,8 @@ def build_investment(case: GunbCase, decision: FilterDecision) -> Investment:
 
 def apply_geocode(investment: Investment, result: GeocodeResult) -> None:
     """Uzupełnia lead o lokalizację z ULDK."""
+    if result.precision is GeoPrecision.PARCEL and result.parcel_id:
+        investment.teryt_dzialki = result.parcel_id  # identyfikator potwierdzony przez ULDK
     investment.lat = result.lat
     investment.lon = result.lon
     investment.precyzja_geo = result.precision.value

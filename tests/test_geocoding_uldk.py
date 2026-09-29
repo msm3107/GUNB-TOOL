@@ -10,8 +10,10 @@ from gunb_tool.geocoding_uldk import (
     extent_center,
     geoportal_parcel_url,
     google_maps_url,
+    parcel_candidates,
     parcel_point,
     parse_uldk_response,
+    terc_unit,
     to_lat_lon,
     wkt_centroid,
     wkt_srid,
@@ -234,3 +236,26 @@ def test_cached_result_gets_current_google_maps_link_format():
         "google_maps_url": "https://www.google.com/maps/search/?api=1&query=52.231600,21.006600",
     }
     assert GeocodeResult.from_dict(cached).google_maps_url == "https://www.google.com/maps?q=52.231600,21.006600"
+
+
+# --- Kandydaci do geokodowania: niespójna jednostka w RWDZ (dane z powiatu poznańskiego) -----------
+
+def test_terc_unit_derives_cadastral_unit_from_gmina_code():
+    assert terc_unit("3021085") == "302108_5"
+    assert terc_unit("302108") is None
+    assert terc_unit(None) is None
+
+
+def test_candidates_add_parcels_in_unit_from_address_terc():
+    # RWDZ: jednostka 302105_5 (nie istnieje w ULDK), adres Wróblewo z TERC 3021085 -> 302108_5.0024.57/52.
+    parcel = Parcel("302105_5", "0024", "57/52")
+    assert [p.full_id for p in parcel_candidates([parcel], "3021085")] == [
+        "302105_5.0024.57/52",
+        "302108_5.0024.57/52",
+    ]
+
+
+def test_candidates_skip_duplicates_and_respect_parcel_limit():
+    parcels = [Parcel("302108_5", "0024", str(n)) for n in range(1, 6)]
+    candidates = parcel_candidates(parcels, "3021085", max_parcels=2)
+    assert [p.numer for p in candidates] == ["1", "2"]

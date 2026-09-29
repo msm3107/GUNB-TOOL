@@ -10,9 +10,11 @@ from __future__ import annotations
 import enum
 import logging
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Protocol, Sequence
 from urllib.parse import quote
+
+import requests
 
 from .http_client import HttpError, ResilientHttpClient
 from .models import Parcel
@@ -163,23 +165,31 @@ class UldkGeocoder:
         """Czy zadziałał bezpiecznik (zbyt wiele kolejnych błędów ULDK)."""
         return self._consecutive_failures >= self.failure_threshold
 
-    def geocode(self, parcels: Sequence[Parcel]) -> GeocodeResult | None:
+    def geocode(self, parcels: Sequence[Parcel], *, gmina_teryt: str | None = None) -> GeocodeResult | None:
         """Zwraca lokalizację pierwszej odnalezionej działki, a w razie potrzeby – obrębu.
+
+        Args:
+            parcels: działki sprawy w kolejności z rejestru (sprawdzane jest ``max_parcels`` pierwszych).
+            gmina_teryt: kod TERC gminy z adresu sprawy – gdy jednostka ewidencyjna wpisana w RWDZ
+                jest błędna, te same działki są szukane w jednostce wynikającej z adresu.
 
         Błędy sieci nie są cache'owane i nie przerywają przetwarzania (wynik ``None``).
         """
         if not parcels or self.disabled:
             return None
+        candidates = parcel_candidates(parcels, gmina_teryt, self.max_parcels)
         try:
-            for parcel in parcels[: self.max_parcels]:
+            for parcel in candidates:
                 result = self._cached(f"parcel:{parcel.uldk_id}", lambda p=parcel: self._locate_parcel(p))
                 if result is not None:
                     return result
             if self.region_fallback:
-                region_id = parcels[0].obreb_id
-                return self._cached(f"region:{region_id}", lambda: self._locate_region(region_id))
+                for region_id in dict.fromkeys(p.obreb_id for p in candidates if p.numer == candidates[0].numer):
+                    result = self._cached(f"region:{region_id}", lambda r=region_id: self._locate_region(r))
+                    if result is not None:
+                        return result
             return None
-        except (HttpError, UldkError) as exc:
+        except (HttpError, UldkError, requests.RequestException) as exc:
             self._consecutive_failures += 1
             log.warning("ULDK: błąd geokodowania (%s)", exc)
             if self.disabled:
@@ -243,6 +253,28 @@ class UldkGeocoder:
 
 
 # --- Funkcje pomocnicze -------------------------------------------------------
+
+def terc_unit(gmina_teryt: str | None) -> str | None:
+    """Jednostka ewidencyjna odpowiadająca 7-cyfrowemu kodowi TERC gminy (``3021085`` → ``302108_5``)."""
+    code = (gmina_teryt or "").strip()
+    return f"{code[:6]}_{code[6]}" if len(code) == 7 and code.isdigit() else None
+
+
+def parcel_candidates(
+    parcels: Sequence[Parcel], gmina_teryt: str | None = None, max_parcels: int = 3
+) -> list[Parcel]:
+    """Kolejność prób geokodowania: działki z RWDZ, potem te same działki w jednostce z kodu TERC adresu.
+
+    Urzędy bywają niekonsekwentne: w powiecie poznańskim wiersze RWDZ z adresem w gminie ``3021085``
+    miały jednostkę ``302105_5`` (nieistniejącą), podczas gdy działka jest zarejestrowana w ``302108_5``.
+    Świadomie *nie* zgadujemy innych typów gminy – ten sam numer działki i obrębu potrafi istnieć
+    w sąsiedniej gminie, co dałoby błędną lokalizację.
+    """
+    primary = list(parcels[:max_parcels])
+    unit = terc_unit(gmina_teryt)
+    fallback = [replace(p, jednostka=unit) for p in primary if unit and p.jednostka != unit]
+    return list(dict.fromkeys(primary + fallback))
+
 
 def parse_uldk_response(text: str, fields: Sequence[str]) -> list[dict[str, str]]:
     """Parsuje odpowiedź ULDK: 1. linia to status/liczba wyników (ujemna = brak), dalej wiersze ``a|b|c``.

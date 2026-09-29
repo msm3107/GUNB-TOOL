@@ -118,6 +118,30 @@ def test_multiple_parcel_numbers_in_one_field_are_split(tmp_path):
     assert [p.numer for p in case.parcels] == ["12/1", "12/2", "13"]
 
 
+def test_full_parcel_identifiers_in_parcel_field_are_parsed_in_order(tmp_path):
+    archive = write_zip(tmp_path / "w.zip", POZWOLENIA_HEADER, [
+        pozwolenie(numer_dzialki="146510_8.0309.24/35, 146510_8.0309.24/36"),
+    ])
+    (case,) = parse_archive(archive, Source.POZWOLENIA, query())
+    assert [p.full_id for p in case.parcels] == ["146510_8.0309.24/35", "146510_8.0309.24/36"]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("3/1 część", ["3/1"]),          # prawdziwy wpis z paczki wielkopolskiej
+        ("dz. nr 12/3", ["12/3"]),
+        ("1234/5/6", ["1234/5/6"]),
+        ("brak", []),
+        ("", []),
+    ],
+)
+def test_parcel_numbers_are_extracted_from_noisy_values(tmp_path, raw, expected):
+    archive = write_zip(tmp_path / "w.zip", POZWOLENIA_HEADER, [pozwolenie(numer_dzialki=raw)])
+    (case,) = parse_archive(archive, Source.POZWOLENIA, query())
+    assert [p.numer for p in case.parcels] == expected
+
+
 # --- parse_archive: filtry ---------------------------------------------------
 
 def test_filters_by_powiat_using_terc_or_parcel_unit(tmp_path):

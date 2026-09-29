@@ -38,6 +38,8 @@ ZGLOSZENIA_FILE = "wynik_zgloszenia_2022_up.zip"
 _DELIMITERS = (";", "#", ",", "\t", "|")
 _JEDNOSTKA_RE = re.compile(r"^\d{6}_\d$")
 _PARCEL_SPLIT_RE = re.compile(r"\s*[;,]\s*")
+_FULL_PARCEL_ID_RE = re.compile(r"^\d{6}_\d\.[^.\s]+\.\S+$")
+_PARCEL_NUMBER_RE = re.compile(r"\d+(?:/\d+)*")
 
 # Logiczne pole -> możliwe nazwy kolumn (pierwsza istniejąca wygrywa). Alternatywy chronią
 # przed drobnymi zmianami formatu po stronie GUNB (np. poprawką literówki „jednosta_numer_ew”).
@@ -324,10 +326,21 @@ def _build_case(row: list[str], idx: dict[str, int | None], source: Source, case
 
 
 def _parcels(row: list[str], idx: dict[str, int | None]) -> Iterator[Parcel]:
-    numbers = _cell(row, idx.get("dzialka"))
-    for numer in _PARCEL_SPLIT_RE.split(numbers.strip()):
+    """Działki z wiersza: pole numeru może zawierać kilka pozycji, pełne identyfikatory
+    (``146510_8.0309.24/35``) albo dopiski („3/1 część”, „dz. nr 12/3”)."""
+    for token in _PARCEL_SPLIT_RE.split(_cell(row, idx.get("dzialka")).strip()):
+        if _FULL_PARCEL_ID_RE.match(token):
+            try:
+                yield Parcel.from_id(token)
+            except ValueError:
+                log.debug("Pominięto niepoprawny identyfikator działki %r", token)
+            continue
+        number = _PARCEL_NUMBER_RE.search(token)
+        if number is None:
+            continue
         parcel = Parcel.from_raw(
-            _cell(row, idx.get("jednostka")), _cell(row, idx.get("obreb")), numer, _cell(row, idx.get("arkusz"))
+            _cell(row, idx.get("jednostka")), _cell(row, idx.get("obreb")), number.group(0),
+            _cell(row, idx.get("arkusz")),
         )
         if parcel is not None:
             yield parcel
