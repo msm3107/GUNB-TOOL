@@ -28,8 +28,9 @@ from gunb_tool.exporter import (
     Notifier,
     TelegramNotifier,
 )
-from gunb_tool.gunb_scraper import GunbFormatError
+from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError
 from gunb_tool.http_client import HttpError
+from gunb_tool.models import Source
 from gunb_tool.pipeline import (
     FetchReport,
     LeadPipeline,
@@ -150,7 +151,7 @@ def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespa
     log.info(
         "Pobieranie: źródła %s, województwa %s, powiaty %s, %s od %s%s",
         ",".join(s.value for s in query.sources), ",".join(query.voivodeships),
-        ",".join(sorted(query.powiats)) or "wszystkie", query.date_field, query.date_from,
+        ",".join(sorted(query.powiats)) or "wszystkie", _date_basis(query), query.date_from,
         f" do {query.date_to}" if query.date_to else "",
     )
     try:
@@ -160,6 +161,15 @@ def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespa
         return EXIT_PARTIAL_FAILURE
     _print_fetch_report(report)
     return EXIT_OK
+
+
+def _date_basis(query: FetchQuery) -> str:
+    """Opis daty filtrowania – zgłoszenia mają wyłącznie datę wpływu."""
+    if query.date_field == "wplyw" or Source.POZWOLENIA not in query.sources:
+        return "data wpływu"
+    if Source.ZGLOSZENIA in query.sources:
+        return "data decyzji (zgłoszenia: data wpływu)"
+    return "data decyzji"
 
 
 def _run_notify(pipeline: LeadPipeline, config: AppConfig, channel: str, args: argparse.Namespace) -> int:
@@ -219,7 +229,7 @@ class _DryRunNotifier:
 
 def _print_fetch_report(report: FetchReport) -> None:
     print(
-        f"Pobrano: {report.pages} stron, {report.cases} spraw → zachowano {report.kept} "
+        f"Strony: {report.pages} · sprawy: {report.cases} → zachowane: {report.kept} "
         f"(nowe {report.new}, zmiana statusu {report.status_changed}, "
         f"aktualizacja {report.updated}, bez zmian {report.unchanged})"
     )

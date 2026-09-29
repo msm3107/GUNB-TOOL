@@ -162,6 +162,23 @@ class Parcel:
             obreb = obreb.zfill(4)
         return cls(jednostka, obreb, numer, (arkusz or "").strip() or None)
 
+    @classmethod
+    def from_id(cls, parcel_id: str) -> Parcel:
+        """Parsuje identyfikator ``WWPPGG_R.OOOO[.AR_n].NR`` (np. ``146510_8.0309.24/35``).
+
+        Raises:
+            ValueError: identyfikator ma niepoprawną strukturę.
+        """
+        parts = parcel_id.strip().split(".")
+        arkusz = None
+        if len(parts) == 4 and parts[2].upper().startswith("AR_"):
+            arkusz = parts[2][3:]
+            parts = [parts[0], parts[1], parts[3]]
+        parcel = cls.from_raw(*parts, arkusz) if len(parts) == 3 else None
+        if parcel is None:
+            raise ValueError(f"Niepoprawny identyfikator działki: {parcel_id!r} (oczekiwano WWPPGG_R.OOOO.NR)")
+        return parcel
+
     @property
     def obreb_id(self) -> str:
         """Identyfikator obrębu ewidencyjnego (``WWPPGG_R.OOOO``)."""

@@ -182,7 +182,7 @@ def geo_result() -> GeocodeResult:
     return GeocodeResult(
         lat=50.5, lon=17.3, precision=GeoPrecision.PARCEL, parcel_id="160705_4.0005.13",
         region_id="160705_4.0005", voivodeship="opolskie", county="powiat nyski", commune="Nysa",
-        google_maps_url="https://maps.test", geoportal_url="https://geoportal.test",
+        google_maps_url="https://www.google.com/maps?q=50.500000,17.300000", geoportal_url="https://geoportal.test",
     )
 
 

@@ -60,6 +60,25 @@ def test_parcel_full_id_contains_map_sheet_when_present():
 
 
 @pytest.mark.parametrize(
+    "parcel_id,expected",
+    [
+        ("146510_8.0309.24/35", Parcel("146510_8", "0309", "24/35")),
+        ("161106_5.0058.AR_1.52/11", Parcel("161106_5", "0058", "52/11", "1")),
+    ],
+)
+def test_parcel_from_id_parses_teryt_identifier(parcel_id, expected):
+    parcel = Parcel.from_id(parcel_id)
+    assert parcel == expected
+    assert parcel.full_id == parcel_id
+
+
+@pytest.mark.parametrize("parcel_id", ["", "146510_8", "146510_8.0309", "zle.id.x"])
+def test_parcel_from_id_rejects_malformed_identifier(parcel_id):
+    with pytest.raises(ValueError):
+        Parcel.from_id(parcel_id)
+
+
+@pytest.mark.parametrize(
     "jednostka,obreb,numer",
     [("", "0001", "12"), ("160602_4", "", "12"), ("160602_4", "0001", ""), ("16060_4", "0001", "12")],
 )

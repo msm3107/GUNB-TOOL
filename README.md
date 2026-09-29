@@ -235,7 +235,7 @@ Plik SQLite (`storage.db_path`), tabela **`investments`** – pola ze specyfikac
 | `adres_opisowy` | Adres (ulica wg konwencji TERYT, numer, kod, miejscowość) |
 | `teryt_dzialki` | Identyfikator pierwszej działki (`WWPPGG_R.OOOO[.AR_n].NR`) |
 | `lat`, `lon` | Współrzędne WGS84 (centroid działki lub środek obrębu) |
-| `google_maps_url` | Link do punktu w Google Maps |
+| `google_maps_url` | Link `https://www.google.com/maps?q={lat},{lon}` (budowany zawsze ze współrzędnych) |
 | `projektant` | Imię i nazwisko projektanta lub nazwa pracowni |
 | `czy_wyslano` | Czy powiadomienie o bieżącym stanie leada zostało wysłane |
 
@@ -280,6 +280,7 @@ najpierw:
 | „Budowa budynku mieszkalnego wraz z przyłączami, zjazdem i ogrodzeniem” | lead mieszkaniowy |
 | „Rozbiórka budynku gospodarczego” | szum (`drop_demolitions`) |
 | „Rozbiórka starego budynku i budowa nowego budynku mieszkalnego” | lead |
+| „Budynek mieszkalny jednorodzinny oraz rozbiórka istniejącego budynku” (rodzaj robót: budowa) | lead |
 | „Przebudowa ul. Polnej” (kat. XXV) | szum (kategoria z `noise_categories`, brak słów o budynku) |
 
 Flagi `is_residential` / `is_commercial` wynikają z kategorii obiektu (I, XIII / XIV, XVI–XVIII, XX)
@@ -296,6 +297,10 @@ podmiotów innych niż osoby fizyczne.
 
 ## Geokodowanie (ULDK)
 
+- Zapytania wysyłane są z `srid=4326` – ULDK zwraca wtedy geometrię od razu w WGS84 (bez tego
+  parametru odpowiada w EPSG:2180, w metrach), więc biblioteka do przeliczeń (pyproj) nie jest potrzebna.
+  Prefiks `SRID=` odpowiedzi i zakres współrzędnych (Polska) są weryfikowane – geometria w innym
+  układzie jest odrzucana zamiast zostać zapisana jako błędny punkt.
 - `GetParcelByIdOrNr` – ULDK sam dopasowuje arkusz mapy (`…0058.52/11` → `…0058.AR_1.52/11`);
   gdy wyników jest kilka, wybierany jest ten z arkuszem zapisanym w RWDZ.
 - Współrzędne to centroid geometrii WKT (ważony powierzchnią, z uwzględnieniem otworów i multipoligonów).
@@ -328,6 +333,14 @@ pytest
 
 Testy działają bez sieci (atrapy klienta HTTP, SQLite w pamięci, atrapa arkusza) na syntetycznych
 danych w formacie GUNB. CI uruchamia je na Pythonie 3.10–3.12.
+
+Test dymny na **żywych** usługach – odpytuje ULDK o działkę testową (domyślnie Pałac Kultury i Nauki),
+sprawdza układ współrzędnych i format linku Google Maps, zapisuje rekord w SQLite `:memory:`:
+
+```bash
+python sanity_check.py                        # działka 146510_8.0309.24/35
+python sanity_check.py 161106_5.0058.52/11    # dowolna inna działka
+```
 
 ---
 

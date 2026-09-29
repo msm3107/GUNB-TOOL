@@ -129,6 +129,31 @@ def test_demolition_combined_with_construction_is_a_lead(lead_filter, descriptio
     assert result.is_residential
 
 
+def test_demolition_mentioned_in_construction_permit_is_not_noise(lead_filter):
+    # Prawdziwy opis z RWDZ (Warszawa) – literówka „budowia”, ale rodzaj robót to budowa nowego obiektu.
+    result = lead_filter.classify(
+        case("budowia budynku rozdzielni 110 kV wraz z rozbiórką istniejących obiektów", "VIII",
+             rodzaj_robot="budowa nowego/nowych obiektów budowlanych")
+    )
+    assert not result.is_noise
+
+
+def test_demolition_with_adaptation_of_house_design_is_a_lead(lead_filter):
+    # Prawdziwy opis z RWDZ: „adaptacja gotowego projektu” oznacza budowę nowego domu.
+    result = lead_filter.classify(
+        case("rozbiórka budynku gospodarczego i adaptacja gotowego projektu budowlanego budynku mieszkalnego", "I")
+    )
+    assert not result.is_noise
+
+
+def test_demolition_description_with_generic_works_type_is_noise(lead_filter):
+    result = lead_filter.classify(
+        case("Wniosek o pozwolenie na rozbiórkę budynku warsztatowego", "XVII",
+             rodzaj_robot="wykonanie robót budowlanych innych niż wymienione powyżej")
+    )
+    assert result.is_noise
+
+
 def test_demolitions_are_kept_when_disabled_in_config():
     result = LeadFilter(FilterConfig(drop_demolitions=False)).classify(case("Rozbiórka budynku gospodarczego", "III"))
     assert not result.is_noise

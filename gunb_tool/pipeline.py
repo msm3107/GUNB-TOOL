@@ -12,7 +12,7 @@ from typing import Any, Callable, Protocol, Sequence
 from .config import AppConfig, GunbConfig
 from .data_filter import FilterDecision, LeadFilter
 from .exporter import MessageFormatter, NotificationError, Notifier, SheetsSyncResult
-from .geocoding_uldk import GeocodeResult, UldkClient, UldkGeocoder
+from .geocoding_uldk import GeocodeResult, UldkClient, UldkGeocoder, google_maps_url
 from .gunb_scraper import FetchQuery, GunbScraper, Page
 from .http_client import ResilientHttpClient
 from .models import GunbCase, Investment
@@ -112,10 +112,12 @@ class LeadPipeline:
         for page in self.scraper.fetch_pages(query, page_size):
             report.pages += 1
             batch: list[Investment] = []
+            processed = 0
             for case in page.items:
                 if limit is not None and report.cases >= limit:
                     break
                 report.cases += 1
+                processed += 1
                 decision = self.lead_filter.evaluate(case)
                 if not decision.keep:
                     report.dropped[decision.reason or "?"] += 1
@@ -135,7 +137,7 @@ class LeadPipeline:
                     report.updated += 1
                 else:
                     report.unchanged += 1
-            _log_page(page, len(batch))
+            _log_page(page, processed, len(batch))
             if limit is not None and report.cases >= limit:
                 break
         return report
@@ -145,6 +147,7 @@ class LeadPipeline:
         if existing is not None and existing.lat is not None and existing.dzialki == investment.dzialki:
             for name in GEO_FIELDS:
                 setattr(investment, name, getattr(existing, name))
+            investment.google_maps_url = google_maps_url(existing.lat, existing.lon)
             report.geocode_reused += 1
             return
         result = self.geocoder.geocode(case.parcels) if self.geocoder is not None and case.parcels else None
@@ -264,7 +267,7 @@ def apply_geocode(investment: Investment, result: GeocodeResult) -> None:
     investment.lat = result.lat
     investment.lon = result.lon
     investment.precyzja_geo = result.precision.value
-    investment.google_maps_url = result.google_maps_url
+    investment.google_maps_url = google_maps_url(result.lat, result.lon)
     investment.geoportal_url = result.geoportal_url
     investment.powiat = result.county
     investment.gmina = result.commune
@@ -317,8 +320,8 @@ def _iso(value: date | None) -> str | None:
     return value.isoformat() if value else None
 
 
-def _log_page(page: Page, kept: int) -> None:
+def _log_page(page: Page, processed: int, kept: int) -> None:
     log.info(
-        "[%s] strona %d/%d: %d spraw, zachowano %d",
-        page.label, page.number, page.total_pages, len(page.items), kept,
+        "[%s] strona %d/%d: przetworzono %d z %d spraw, zachowano %d",
+        page.label, page.number, page.total_pages, processed, len(page.items), kept,
     )

@@ -23,7 +23,7 @@ AGRICULTURAL_CATEGORIES = frozenset({"II"})
 
 _BUILDING_PATTERN = r"\bbudyn"
 _DEMOLITION_RE = re.compile(r"rozbiork")
-_CONSTRUCTION_RE = re.compile(r"\b(przebudow|rozbudow|nadbudow|odbudow|wybudow|budow(a|e|y|ie)\b)")
+_CONSTRUCTION_RE = re.compile(r"\b(przebudow|rozbudow|nadbudow|odbudow|wybudow|adaptacj|budow(a|e|y|ie)\b)")
 _MULTI_FAMILY_RE = re.compile(r"wielorodzin|wielolokal")
 _AGRICULTURAL_RE = re.compile(r"inwentarsk|\bobor|chlewni|kurnik|stodol|rolnicz|gospodarstw")
 _SINGLE_FAMILY_TYPE = "budynek mieszkalny jednorodzinny"
@@ -179,9 +179,7 @@ class LeadFilter:
         if excluded and (subject is None or excluded[0] < subject[0]):
             return f"słowo wykluczające „{excluded[1]}” w opisie"
         work_text = normalize_text(case.rodzaj_robot)
-        if self.config.drop_demolitions and (
-            _DEMOLITION_RE.search(work_text) or (_DEMOLITION_RE.search(text) and not _CONSTRUCTION_RE.search(text))
-        ):
+        if self.config.drop_demolitions and self._is_demolition(text, work_text, subject):
             return "rozbiórka (bez budowy, przebudowy ani rozbudowy)"
         work = _first_match(self._exclude, work_text)
         if work:
@@ -189,6 +187,26 @@ class LeadFilter:
         if category in self._noise_categories and subject is None:
             return f"kategoria {category} ({BUILDING_CATEGORIES.get(category, '?')})"
         return None
+
+    @staticmethod
+    def _is_demolition(text: str, work_text: str, subject: tuple[int, str] | None) -> bool:
+        """Czy przedmiotem zamierzenia jest sama rozbiórka.
+
+        * rodzaj robót „rozbiórka…” – tak;
+        * opis wspomina rozbiórkę, ale też budowę/przebudowę/rozbudowę – nie;
+        * rodzaj robót to budowa/rozbudowa/nadbudowa/odbudowa – tylko gdy rozbiórka stoi w opisie
+          przed wzmianką o budynku („Rozbiórka budynku mieszkalnego”), a nie po niej
+          („Budynek mieszkalny oraz rozbiórka istniejącego”, także z literówkami typu „budowia”);
+        * pozostałe rodzaje robót – gdy opis mówi o rozbiórce.
+        """
+        if _DEMOLITION_RE.search(work_text):
+            return True
+        demolition = _DEMOLITION_RE.search(text)
+        if demolition is None or _CONSTRUCTION_RE.search(text):
+            return False
+        if _CONSTRUCTION_RE.search(work_text):
+            return subject is None or demolition.start() < subject[0]
+        return True
 
 
 def _compile(patterns: Iterable[str]) -> list[tuple[str, re.Pattern[str]]]:

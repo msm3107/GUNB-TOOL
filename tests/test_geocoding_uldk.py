@@ -10,10 +10,13 @@ from gunb_tool.geocoding_uldk import (
     extent_center,
     geoportal_parcel_url,
     google_maps_url,
+    parcel_point,
     parse_uldk_response,
     to_lat_lon,
     wkt_centroid,
+    wkt_srid,
 )
+from gunb_tool.geocoding_uldk import GeocodeResult
 from gunb_tool.models import Parcel
 from tests.fakes import FakeResponse, make_client
 
@@ -92,7 +95,7 @@ def test_axis_order_is_detected_from_polish_coordinate_ranges(x, y):
 
 
 def test_link_builders():
-    assert google_maps_url(51.1, 17.25) == "https://www.google.com/maps/search/?api=1&query=51.100000,17.250000"
+    assert google_maps_url(51.1, 17.25) == "https://www.google.com/maps?q=51.100000,17.250000"
     assert geoportal_parcel_url("161106_5.0058.AR_1.52/11") == (
         "https://mapy.geoportal.gov.pl/imap/Imgp_2.html?identifyParcel=161106_5.0058.AR_1.52/11"
     )
@@ -109,7 +112,7 @@ def test_geocodes_first_parcel_with_centroid_admin_names_and_links():
     assert (result.lat, result.lon) == pytest.approx((51.001, 17.001))
     assert result.parcel_id == "160602_4.0038.178/11"
     assert (result.county, result.commune) == ("powiat namysłowski", "Namysłów")
-    assert result.google_maps_url.endswith("query=51.001000,17.001000")
+    assert result.google_maps_url == "https://www.google.com/maps?q=51.001000,17.001000"
     assert result.geoportal_url.endswith("identifyParcel=160602_4.0038.178/11")
     params = session.calls[0].params
     assert params["request"] == "GetParcelByIdOrNr"
@@ -183,3 +186,51 @@ def test_network_failures_are_not_cached_and_trip_circuit_breaker():
     calls_before = len(session.calls)
     assert geo.geocode([P2]) is None
     assert len(session.calls) == calls_before  # po zadziałaniu bezpiecznika brak zapytań
+
+
+# --- Układ współrzędnych (dane w formatach zwracanych przez ULDK, bez atrap) ----------
+
+# Fragmenty prawdziwej odpowiedzi ULDK dla działki 146510_8.0309.24/35 (PKiN) bez i z srid=4326.
+PKIN_WKT_2180 = ("SRID=2180;POLYGON((636949.912510792 487118.535496397,636951.39488307 487114.826462336,"
+                 "636878.994335615 487085.898157001,636949.912510792 487118.535496397))")
+PKIN_EXTENT_2180 = "636821.749569414,486765.834999748,637172.485849584,487146.4539283"
+PKIN_EXTENT_4326 = "21.004071992527,52.2298917920906,21.0091601832588,52.2332887897828"
+
+
+def test_wkt_srid_reads_ewkt_prefix():
+    assert wkt_srid(SQUARE_WKT) == 4326
+    assert wkt_srid(PKIN_WKT_2180) == 2180
+    assert wkt_srid("POLYGON((0 0,1 0,1 1,0 0))") is None
+
+
+def test_parcel_point_returns_lat_lon_for_wgs84_geometry():
+    assert parcel_point({"geom_wkt": SQUARE_WKT, "geom_extent": ""}) == pytest.approx((51.001, 17.001))
+
+
+def test_parcel_point_falls_back_to_extent():
+    lat, lon = parcel_point({"geom_wkt": "", "geom_extent": PKIN_EXTENT_4326})
+    assert (lat, lon) == pytest.approx((52.23159, 21.00662), abs=1e-5)
+
+
+def test_parcel_point_rejects_geometry_in_puwg_1992():
+    with pytest.raises(UldkError, match="2180"):
+        parcel_point({"geom_wkt": PKIN_WKT_2180, "geom_extent": PKIN_EXTENT_2180})
+
+
+def test_parcel_point_rejects_coordinates_outside_poland():
+    with pytest.raises(UldkError, match="poza Polską"):
+        parcel_point({"geom_wkt": "", "geom_extent": PKIN_EXTENT_2180})
+
+
+def test_parcel_point_without_geometry_is_none():
+    assert parcel_point({"geom_wkt": "", "geom_extent": ""}) is None
+
+
+def test_cached_result_gets_current_google_maps_link_format():
+    cached = {
+        "lat": 52.2316, "lon": 21.0066, "precision": "dzialka", "parcel_id": "146510_8.0309.24/35",
+        "region_id": "146510_8.0309", "voivodeship": "mazowieckie", "county": "powiat Warszawa",
+        "commune": "Warszawa (miasto)", "geoportal_url": None,
+        "google_maps_url": "https://www.google.com/maps/search/?api=1&query=52.231600,21.006600",
+    }
+    assert GeocodeResult.from_dict(cached).google_maps_url == "https://www.google.com/maps?q=52.231600,21.006600"

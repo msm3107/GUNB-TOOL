@@ -124,7 +124,7 @@ def test_fetch_stores_kept_leads_and_counts_dropped_noise(repo):
     assert stored.teryt_dzialki == "160705_4.0005.13"
     assert stored.dzialki == ["160705_4.0005.13", "160705_4.0005.14"]
     assert (stored.lat, stored.lon, stored.gmina) == (50.47, 17.33, "Nysa")
-    assert stored.google_maps_url == "https://maps.test/50.47,17.33"
+    assert stored.google_maps_url == "https://www.google.com/maps?q=50.470000,17.330000"
     assert repo.get("B/1") is None
 
 

@@ -20,7 +20,7 @@ from .models import Parcel
 log = logging.getLogger(__name__)
 
 DEFAULT_ULDK_URL = "https://uldk.gugik.gov.pl/"
-GOOGLE_MAPS_URL = "https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}"
+GOOGLE_MAPS_URL = "https://www.google.com/maps?q={lat:.6f},{lon:.6f}"
 GEOPORTAL_PARCEL_URL = "https://mapy.geoportal.gov.pl/imap/Imgp_2.html?identifyParcel={parcel_id}"
 
 PARCEL_FIELDS: tuple[str, ...] = ("id", "voivodeship", "county", "commune", "geom_extent", "geom_wkt")
@@ -30,6 +30,11 @@ _NUMBER = r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
 _POINT_RE = re.compile(rf"({_NUMBER})\s+({_NUMBER})")
 _POLYGON_SPLIT_RE = re.compile(r"\)\s*\)\s*,\s*\(\s*\(")
 _RING_SPLIT_RE = re.compile(r"\)\s*,\s*\(")
+_SRID_RE = re.compile(r"^\s*SRID=(\d+)\s*;", re.IGNORECASE)
+
+WGS84_SRID = 4326
+POLAND_BOUNDS = (48.9, 55.0, 14.0, 24.3)
+"""Zakres (lat_min, lat_max, lon_min, lon_max) akceptowanych współrzędnych – Polska z marginesem."""
 
 
 class UldkError(RuntimeError):
@@ -66,8 +71,10 @@ class GeocodeResult:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GeocodeResult:
-        """Odtwarza wynik z :meth:`to_dict`."""
-        return cls(**{**data, "precision": GeoPrecision(data["precision"])})
+        """Odtwarza wynik z :meth:`to_dict`; link Google Maps budowany jest zawsze w bieżącym formacie."""
+        values = {**data, "precision": GeoPrecision(data["precision"])}
+        values["google_maps_url"] = google_maps_url(values["lat"], values["lon"])
+        return cls(**values)
 
 
 @dataclass(frozen=True)
@@ -197,10 +204,10 @@ class UldkGeocoder:
         if parcel.arkusz:
             marker = f".AR_{parcel.arkusz}."
             row = next((r for r in rows if marker in r.get("id", "")), row)
-        point = wkt_centroid(row.get("geom_wkt", "")) or extent_center(row.get("geom_extent", ""))
+        point = parcel_point(row)
         if point is None:
             return None
-        lat, lon = to_lat_lon(*point)
+        lat, lon = point
         parcel_id = row.get("id") or parcel.uldk_id
         return GeocodeResult(
             lat=lat,
@@ -217,10 +224,10 @@ class UldkGeocoder:
 
     def _locate_region(self, region_id: str) -> GeocodeResult | None:
         row = self.client.get_region(region_id)
-        point = extent_center(row.get("geom_extent", "")) if row else None
+        point = parcel_point(row) if row else None
         if row is None or point is None:
             return None
-        lat, lon = to_lat_lon(*point)
+        lat, lon = point
         return GeocodeResult(
             lat=lat,
             lon=lon,
@@ -258,6 +265,35 @@ def parse_uldk_response(text: str, fields: Sequence[str]) -> list[dict[str, str]
         if len(values) == len(fields):
             rows.append(dict(zip(fields, (v.strip() for v in values))))
     return rows
+
+
+def parcel_point(row: dict[str, str]) -> tuple[float, float] | None:
+    """Punkt ``(lat, lon)`` w WGS84 z wiersza ULDK: centroid ``geom_wkt``, a gdy brak – środek ``geom_extent``.
+
+    Zabezpiecza przed cichym zapisaniem współrzędnych w złym układzie (np. metrów EPSG:2180,
+    które ULDK zwraca, gdy parametr ``srid`` zostanie pominięty).
+
+    Raises:
+        UldkError: geometria w układzie innym niż EPSG:4326 albo współrzędne poza Polską.
+    """
+    wkt = row.get("geom_wkt") or ""
+    srid = wkt_srid(wkt)
+    if srid is not None and srid != WGS84_SRID:
+        raise UldkError(f"ULDK zwrócił geometrię w układzie EPSG:{srid} zamiast EPSG:{WGS84_SRID}")
+    point = wkt_centroid(wkt) or extent_center(row.get("geom_extent") or "")
+    if point is None:
+        return None
+    lat, lon = to_lat_lon(*point)
+    lat_min, lat_max, lon_min, lon_max = POLAND_BOUNDS
+    if not (lat_min <= lat <= lat_max and lon_min <= lon <= lon_max):
+        raise UldkError(f"współrzędne ({lat:.4f}, {lon:.4f}) poza Polską – nieoczekiwany układ współrzędnych")
+    return lat, lon
+
+
+def wkt_srid(wkt: str) -> int | None:
+    """Kod EPSG z prefiksu EWKT (``SRID=4326;POLYGON(...)``) lub ``None``, gdy go brak."""
+    match = _SRID_RE.match(wkt or "")
+    return int(match.group(1)) if match else None
 
 
 def wkt_centroid(wkt: str) -> tuple[float, float] | None:
