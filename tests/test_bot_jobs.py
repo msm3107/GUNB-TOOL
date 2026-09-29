@@ -5,7 +5,7 @@ Zegar jest sterowany z testu (UTC); bot sam przelicza go na czas Europe/Warsaw.
 
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -306,3 +306,67 @@ def test_import_skipped_while_another_runs_is_retried_later(repo, api, clock):
 def test_status_is_only_for_admin(bot, api):
     bot.handle_update(message(MIETEK, "/status"))
     assert "Stan bota" not in api.last_to(MIETEK)["text"]
+
+
+def test_import_killed_midway_is_retried_right_after_the_restart(repo, api, clock):
+    calls = []
+
+    def killed():  # proces ginie w trakcie importu (kill -9, brak prądu)
+        calls.append(1)
+        raise Crash()
+
+    bot = make_bot(repo, api, clock, fetch_times=("06:30",))
+    bot.fetcher = killed
+    clock.utc = AT_0631
+    with pytest.raises(Crash):
+        bot.run_due_jobs()
+
+    restarted = make_bot(repo, api, clock, fetch_times=("06:30",))
+    restarted.fetcher = lambda: calls.append(1) or "nowe 0"
+    restarted.recover_interrupted_import()
+    restarted.run_due_jobs()
+
+    assert len(calls) == 2
+    assert BotStore(repo).job_status("import").stan == "ok"
+
+
+def test_import_killed_while_its_lock_is_still_valid_is_retried_within_an_hour(repo, api, clock):
+    calls = []
+    clock.utc = AT_0631
+
+    def killed():  # import wziął blokadę (jak fetch_with_maintenance) i proces zginął – blokada zostaje
+        calls.append(1)
+        repo.acquire_lease("import", "zabity-proces", timedelta(minutes=30))
+        raise Crash()
+
+    bot = make_bot(repo, api, clock, fetch_times=("06:30",))
+    bot.fetcher = killed
+    with pytest.raises(Crash):
+        bot.run_due_jobs()
+
+    restarted = make_bot(repo, api, clock, fetch_times=("06:30",))
+    restarted.fetcher = lambda: calls.append(1) or "nowe 0"
+    restarted.recover_interrupted_import()  # blokada jeszcze ważna – nie wiadomo, czy tamten proces żyje
+    clock.advance(minutes=40)
+    restarted.run_due_jobs()
+    assert len(calls) == 1
+    clock.advance(minutes=21)  # godzina po starcie przerwanego importu, blokada dawno wygasła
+    restarted.run_due_jobs()
+    assert len(calls) == 2
+
+
+def test_scheduled_import_leaves_another_running_import_alone(repo, api, clock):
+    store = BotStore(repo)
+    repo.acquire_lease("import", "import-historii", timedelta(hours=1))
+    store.job_started("import")  # stan zapisany przez tamten proces
+    started = store.job_status("import").start
+    calls = []
+    bot = make_bot(repo, api, clock, fetch_times=("06:30",))
+    bot.fetcher = lambda: calls.append(1) or "nowe 0"
+    clock.utc = AT_0631
+
+    bot.run_due_jobs()
+
+    assert calls == []
+    assert (store.job_status("import").stan, store.job_status("import").start) == ("trwa", started)
+    assert store.job_time("pobieranie_ponow") is not None

@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from gunb_tool.alerts import install_admin_alerts, telegram_sender
-from gunb_tool.bot import JobsWorker, LeadBot
+from gunb_tool.bot import IMPORT_JOB, LAST_IMPORT_JOB, JobsWorker, LeadBot
+from gunb_tool.bot_store import BotStore
 from gunb_tool.clock import local, utc_now
 from gunb_tool.config import AppConfig, ConfigError, LoggingConfig, load_config, override_scope
 from gunb_tool.exporter import (
@@ -240,18 +241,32 @@ def fetch_with_maintenance(
 
     Naraz działa jeden import (blokada w bazie – bot, harmonogram systemu i import historii); import
     przerywa się między stronami, gdy ``should_stop()`` zwróci ``True`` albo blokada zostanie utracona.
+    Stan importu trafia do bazy niezależnie od tego, kto go uruchomił – widać go w ``/status`` i w linii
+    „🕒 Rejestr GUNB sprawdzony” pod raportami (także przy imporcie z crona albo z instalatora).
 
     Raises:
         ImportSkipped: trwa inny import (po ``wait_for_other_import`` oczekiwania).
     """
     storage = config.storage
+    status = BotStore(pipeline.repo)
     with import_lease(pipeline.repo, wait=wait_for_other_import) as renew_lease:
-        weekly_backup(pipeline.repo, storage.backup_dir or storage.db_path.parent / "backups",
-                      today=local(utc_now()).date(), every_days=storage.backup_every_days, keep=storage.backup_keep)
-        report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=limit, historical=historical,
-                                should_continue=lambda: renew_lease() and not should_stop())
-        vacuum_after_import(pipeline.repo, changed=report.new + report.status_changed + report.updated,
-                            threshold=storage.vacuum_threshold)
+        status.job_started(IMPORT_JOB)
+        try:
+            weekly_backup(pipeline.repo, storage.backup_dir or storage.db_path.parent / "backups",
+                          today=local(utc_now()).date(), every_days=storage.backup_every_days,
+                          keep=storage.backup_keep)
+            report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=limit, historical=historical,
+                                    should_continue=lambda: renew_lease() and not should_stop())
+            vacuum_after_import(pipeline.repo, changed=report.new + report.status_changed + report.updated,
+                                threshold=storage.vacuum_threshold)
+        except Exception as exc:
+            status.job_finished(IMPORT_JOB, "blad", f"{exc}")
+            raise
+        if report.interrupted:
+            status.job_finished(IMPORT_JOB, "pominieto", report.summary())
+        else:
+            status.job_finished(IMPORT_JOB, "ok", report.summary())
+            status.set_job_time(LAST_IMPORT_JOB, pipeline.repo.now())
     return report
 
 
@@ -355,6 +370,7 @@ def _run_bot(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
         jobs_bot.fetcher = bot_fetcher(create_pipeline(config, repo), config, should_stop=stop.is_set)
         ui_bot.setup()
         received = ui_bot.poll_once(timeout=0)
+        jobs_bot.recover_interrupted_import()
         ran = jobs_bot.run_due_jobs()
         print(f"Bot: odebrano {received} aktualizacji, zadania: {', '.join(ran) or 'brak'}")
         return EXIT_OK

@@ -9,6 +9,8 @@ import main
 from gunb_tool.config import FilterConfig
 from gunb_tool.data_filter import LeadFilter
 from gunb_tool.models import Investment
+from gunb_tool.bot_store import BotStore
+from gunb_tool.http_client import HttpError
 from gunb_tool.pipeline import IMPORT_LEASE, ImportSkipped, LeadPipeline
 from gunb_tool.storage import LeadRepository
 from tests.test_pipeline import FakeScraper, gunb_case
@@ -239,3 +241,32 @@ def test_unexpected_crash_is_logged_as_critical(workdir, monkeypatch, caplog):
     monkeypatch.setattr(main, "_run_fetch", crash)
     assert run(workdir, "--fetch") == 1
     assert any(r.levelname == "CRITICAL" and r.exc_info for r in caplog.records)
+
+
+def test_cli_fetch_records_the_import_for_reports_and_status(workdir, monkeypatch):
+    monkeypatch.setattr(main, "create_pipeline", fake_pipeline_factory([gunb_case("B/1")]))
+
+    assert run(workdir, "--fetch", "--no-geocode") == 0
+
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        status = BotStore(repo).job_status("import")
+        assert status.stan == "ok" and "nowe 1" in status.opis
+        assert BotStore(repo).job_time("import_udany") is not None  # „🕒 Rejestr GUNB sprawdzony: …”
+
+
+def test_cli_fetch_failure_is_recorded(workdir, monkeypatch):
+    class BrokenScraper(FakeScraper):
+        def fetch_pages(self, query, page_size=200):
+            raise HttpError("GUNB: HTTP 503", status_code=503)
+
+    def factory(config, repo, *, geocode=True):
+        return LeadPipeline(repo, scraper=BrokenScraper([]), lead_filter=LeadFilter(FilterConfig()))
+
+    monkeypatch.setattr(main, "create_pipeline", factory)
+
+    assert run(workdir, "--fetch", "--no-geocode") == 1
+
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        status = BotStore(repo).job_status("import")
+        assert status.stan == "blad" and "503" in status.opis
+        assert BotStore(repo).job_time("import_udany") is None

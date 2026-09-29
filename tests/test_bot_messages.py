@@ -122,6 +122,7 @@ def test_report_says_when_the_registry_was_last_checked(bot, api, repo, clock):
 
 
 def test_nothing_new_while_the_registry_is_being_checked(bot, api, repo):
+    repo.acquire_lease("import", "watek-zadan", timedelta(minutes=30))  # import trwa (ma blokadę)
     BotStore(repo).job_started("import")
     bot.handle_update(message(MIETEK, "📊 Inwestycje"))
     text = api.last_to(MIETEK)["text"]
@@ -180,3 +181,10 @@ def test_filters_are_never_widened_behind_the_users_back(bot, api, repo):
     bot.handle_update(message(MIETEK, "📊 Inwestycje"))
     assert BotStore(repo).get_user(MIETEK).filtry == UserFilters(powiaty=("3021",))
     assert ADMIN not in [m["chat_id"] for m in api.sent]
+
+
+def test_import_left_running_by_a_dead_process_is_not_called_running(bot, api, repo):
+    BotStore(repo).job_started("import")  # „trwa”, ale nikt nie trzyma blokady – proces zginął
+    bot.handle_update(message(MIETEK, "📊 Inwestycje"))
+    text = api.last_to(MIETEK)["text"]
+    assert "Właśnie sprawdzam" not in text and "nie zakończyło się" in text

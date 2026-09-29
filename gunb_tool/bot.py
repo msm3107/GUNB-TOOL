@@ -33,7 +33,7 @@ from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
 from .gunb_scraper import GunbFormatError
 from .http_client import HttpError
 from .models import Investment
-from .pipeline import ImportSkipped
+from .pipeline import IMPORT_LEASE, ImportSkipped
 from .scoring import HOT
 from .stages import LONGEST_WINDOW_DAYS, get_trade, is_due
 from .storage import LeadRepository
@@ -1377,9 +1377,11 @@ class LeadBot:
     def _import_note(self) -> str | None:
         """Import w toku albo nieudany – żeby „nic nowego” nie znaczyło „nic się nie wydarzyło”."""
         status = self.store.job_status(IMPORT_JOB)
+        state = status.stan if status else None
+        if state == "trwa" and self.repo.lease_holder(IMPORT_LEASE) is None:
+            state = "pominieto"  # „w toku” bez blokady = import przerwany; ponowienie jest zaplanowane
         retry_at = self.store.job_time(FETCH_RETRY_JOB)
-        return ui.import_note(status.stan if status else None,
-                              retry_at=f"{local(retry_at):%H:%M}" if retry_at else None)
+        return ui.import_note(state, retry_at=f"{local(retry_at):%H:%M}" if retry_at else None)
 
     def _cb_history(self, user: BotUser, arg: str, message_id: int) -> str | None:
         """„◀️ Wstecz / Dalej ▶️” w przeglądzie historii – edytuje tę samą wiadomość."""
@@ -1548,9 +1550,20 @@ class LeadBot:
             log.warning("Nie udało się wysłać do %s: %s", chat_id, exc)
 
     def _fetch(self) -> None:
-        """Pobiera dane GUNB (stan widoczny dla admina w ``/status``); po niepowodzeniu planuje ponowienie."""
+        """Pobiera dane GUNB (stan widoczny dla admina w ``/status``); po niepowodzeniu planuje ponowienie.
+
+        Ponowienie jest zapisane już przed startem – gdy proces zginie w trakcie (kill -9, brak prądu),
+        import wróci najpóźniej po godzinie. Import innego procesu (np. historii z instalatora) zostawiamy
+        w spokoju, łącznie z jego stanem.
+        """
         if self.fetcher is None:
             return
+        holder = self.repo.lease_holder(IMPORT_LEASE)
+        if holder is not None:
+            log.info("Pobieranie danych GUNB pominięte: trwa inny import (%s) – ponowię za godzinę", holder)
+            self.store.set_job_time(FETCH_RETRY_JOB, self._now() + FETCH_RETRY_AFTER)
+            return
+        self.store.set_job_time(FETCH_RETRY_JOB, self._now() + FETCH_RETRY_AFTER)
         self.store.job_started(IMPORT_JOB)
         retry_in: timedelta | None = FETCH_RETRY_AFTER
         try:
@@ -1573,6 +1586,17 @@ class LeadBot:
                 self.store.set_job_time(LAST_IMPORT_JOB, self._now())
                 retry_in = None
         self.store.set_job_time(FETCH_RETRY_JOB, self._now() + retry_in if retry_in is not None else None)
+
+    def recover_interrupted_import(self) -> None:
+        """Po starcie: import „w toku” bez ważnej blokady to import przerwany (np. zabity proces) –
+        oznaczamy go i ponawiamy od razu, zamiast czekać na jutrzejszy termin."""
+        status = self.store.job_status(IMPORT_JOB)
+        if status is None or status.stan != "trwa" or self.repo.lease_holder(IMPORT_LEASE) is not None:
+            return
+        log.warning("Poprzedni import danych GUNB został przerwany – ponawiam")
+        self.store.job_finished(IMPORT_JOB, "pominieto", "przerwany (restart programu)")
+        if self.fetcher is not None:
+            self.store.set_job_time(FETCH_RETRY_JOB, self._now())
 
     def _due(self, name: str, now: datetime, hhmm: str) -> bool:
         """Czy zadanie o ``hhmm`` (czas polski) jest dziś już po terminie i jeszcze go nie zrobiono."""
@@ -1603,6 +1627,7 @@ class JobsWorker(threading.Thread):
         bot, close = self._make_bot()
         bot.should_stop = self._stop_event.is_set
         try:
+            bot.recover_interrupted_import()
             while not self._stop_event.is_set():
                 try:
                     bot.run_due_jobs()
