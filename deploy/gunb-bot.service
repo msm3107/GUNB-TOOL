@@ -12,8 +12,8 @@ ExecStart=/opt/gunb-tool/.venv/bin/python main.py --config /opt/gunb-tool/config
 # Bot ma działać stale: po awarii lub restarcie serwera wstaje sam.
 Restart=always
 RestartSec=15
-# Godziny w config.yaml (pobieranie 6:30, raporty 7:00/19:00) liczone są w czasie polskim,
-# niezależnie od strefy czasowej serwera (VPS-y zwykle chodzą w UTC).
+# Godziny w config.yaml (pobieranie 6:30, raporty 7:00/19:00) bot liczy w strefie Europe/Warsaw;
+# TZ zostaje dla czasów w logach. Stop (SIGTERM) kończy import między stronami (domyślnie 90 s).
 Environment=TZ=Europe/Warsaw
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONIOENCODING=utf-8
