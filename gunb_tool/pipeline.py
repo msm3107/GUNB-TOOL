@@ -98,13 +98,15 @@ class LeadPipeline:
 
     # --- Pobieranie ------------------------------------------------------------------
 
-    def fetch(self, query: FetchQuery, *, page_size: int, limit: int | None = None) -> FetchReport:
+    def fetch(self, query: FetchQuery, *, page_size: int, limit: int | None = None,
+              historical: bool = False) -> FetchReport:
         """Pobiera sprawy stronami, filtruje, geokoduje i zapisuje (jedna transakcja na stronę).
 
         Args:
             query: zakres danych.
             page_size: liczba spraw na stronę.
             limit: maksymalna liczba przetworzonych spraw (np. do testów konfiguracji).
+            historical: import historyczny – nowe sprawy nie są „nowościami” (patrz ``LeadRepository.upsert``).
         """
         if self.scraper is None or self.lead_filter is None:
             raise RuntimeError("fetch() wymaga scrapera i filtra")
@@ -127,7 +129,7 @@ class LeadPipeline:
                 batch.append(investment)
 
             report.kept += len(batch)
-            for result in self.repo.upsert_many(batch):
+            for result in self.repo.upsert_many(batch, historical=historical):
                 if result.change is ChangeType.NEW:
                     report.new += 1
                 elif result.change is ChangeType.STATUS_CHANGED:

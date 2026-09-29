@@ -6,7 +6,8 @@ Bot działa jako jeden stale uruchomiony proces (``python main.py --bot``):
 * o ustalonych godzinach sam pobiera dane GUNB (``bot.fetch_times``); nieudane pobieranie
   (np. awaria serwera GUNB) ponawia co godzinę aż do skutku,
 * alerty 👀 watchlisty i tryb „⚡ od razu” obsługuje co ``instant_every_minutes`` minut,
-* raporty „🌅 rano” i „🌙 wieczorem” wysyła raz dziennie o ustawionych godzinach.
+* raporty „🌅 rano” i „🌙 wieczorem” wysyła raz dziennie o ustawionych godzinach,
+* codziennie rano przypomina „⏰ Kiedy dzwonić” – o budowach, które doszły do etapu branży klienta.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from .config import BotConfig
 from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
 from .models import Investment
 from .scoring import HOT
+from .stages import LONGEST_WINDOW_DAYS, get_trade, is_due
 from .storage import LeadRepository
 from .telegram_api import TelegramApiError
 
@@ -36,6 +38,7 @@ _PRIORITY_RANK = {"hot": 0, "normal": 1, "low": 2}
 FETCH_RETRY_JOB = "pobieranie_ponow"
 """Zadanie w ``bot_jobs`` z terminem ponowienia nieudanego pobierania (brak wpisu = nic do ponowienia)."""
 FETCH_RETRY_AFTER = timedelta(hours=1)
+STAGE_REMINDER_JOB = "przypomnienia_etap"
 
 MENU_ACTIONS: dict[str, str] = {
     "📊 Co nowego?": "_show_news",
@@ -51,6 +54,7 @@ COMMAND_ACTIONS: dict[str, str] = {
     "/nowe": "_show_news",
     "/filtry": "_show_filters",
     "/blisko": "_show_nearby",
+    "/branza": "_show_trade",
     "/zapisane": "_show_saved",
     "/obserwowane": "_show_watchlist",
     "/tryb": "_show_mode",
@@ -160,6 +164,10 @@ class LeadBot:
                 self.store.mark_job(name, _local_iso(now))
                 self.deliver_reports(mode)
                 ran.append(name)
+        if self._due(STAGE_REMINDER_JOB, now, self.settings.morning_time):
+            self.store.mark_job(STAGE_REMINDER_JOB, _local_iso(now))
+            self.deliver_stage_reminders()
+            ran.append(STAGE_REMINDER_JOB)
         last = self.store.job_last_run("natychmiast")
         interval = timedelta(minutes=self.settings.instant_every_minutes)
         if ran or last is None or datetime.fromisoformat(last) + interval <= now:
@@ -300,6 +308,9 @@ class LeadBot:
     def _cancel_input(self, user: BotUser) -> None:
         self._send(user.chat_id, "👌 Bez zmian.", ui.menu_keyboard())
 
+    def _show_trade(self, user: BotUser) -> None:
+        self._send(user.chat_id, *ui.trade_picker(user.branza))
+
     def _set_base(self, user: BotUser, location: dict[str, Any]) -> None:
         """Pinezka z Telegrama = baza firmy; promień (domyślnie 15 km) od razu zastępuje powiaty i miejscowości."""
         try:
@@ -401,6 +412,9 @@ class LeadBot:
         if arg == "go":
             self.send_report(user, on_demand=True)
             return None
+        if arg == "trade":
+            self.api.edit_message_text(user.chat_id, message_id, *ui.trade_picker(user.branza))
+            return None
         screens = {"place": lambda f: ui.place_picker(f, self.store.place_options(self.powiat_codes)),
                    "type": ui.type_picker, "vol": ui.volume_picker, "inv": ui.investor_picker,
                    "near": ui.nearby_screen}
@@ -419,6 +433,18 @@ class LeadBot:
             powiaty += (arg,)
         # wybór powiatów zastępuje promień „📍 Blisko mnie” (baza zostaje zapamiętana)
         return self._update_filters(user, replace(user.filtry, powiaty=powiaty, promien_km=None), message_id, "place")
+
+    def _cb_trade(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        trade = get_trade(arg)
+        if trade is None and arg != "none":
+            return None
+        self.store.set_trade(user.chat_id, trade.key if trade else None)
+        self.api.edit_message_text(user.chat_id, message_id, *ui.trade_picker(trade.key if trade else None))
+        if trade is None or trade.months is None:
+            self._send(user.chat_id, ui.trade_saved_text(trade))
+        else:  # od razu pokaż budowy, które już są na etapie tej branży
+            self.send_stage_reminder(self.store.get_user(user.chat_id), on_demand=True)  # type: ignore[arg-type]
+        return f"🧰 Branża: {trade.label}" if trade else "🔕 Przypomnienia wyłączone"
 
     def _cb_radius(self, user: BotUser, arg: str, message_id: int) -> str | None:
         if arg == "loc" or (arg.isdigit() and int(arg) > 0 and user.filtry.baza is None):
@@ -579,6 +605,48 @@ class LeadBot:
         self.store.mark_report(user.chat_id, now_iso)
         return True
 
+    def deliver_stage_reminders(self) -> int:
+        """Poranne przypomnienia „⏰ Kiedy dzwonić” dla osób z wybraną branżą; zwraca liczbę wiadomości."""
+        sent = 0
+        for user in self.store.users():
+            if user.branza is None:
+                continue
+            try:
+                sent += int(self.send_stage_reminder(user))
+            except TelegramApiError as exc:
+                self._delivery_failed(user, exc)
+        return sent
+
+    def send_stage_reminder(self, user: BotUser, *, on_demand: bool = False) -> bool:
+        """Budowy (zgodne z filtrami), które dziś są na etapie branży użytkownika – każda raz na branżę.
+
+        Pokazane pozycje są zapisywane z rewizją ``etap:<branża>``; reszta (ponad limit listy) przyjdzie
+        kolejnego ranka, bo okna etapów trwają tygodniami.
+        """
+        trade = get_trade(user.branza)
+        if trade is None or trade.months is None:
+            return False
+        today = self._clock().date()
+        rewizja = f"etap:{trade.key}"
+        since = (today - timedelta(days=LONGEST_WINDOW_DAYS)).isoformat()
+        due = [inv for inv in self.store.stage_candidates(user.chat_id, rewizja, since)
+               if is_due(trade, inv, today) and self._wanted(user, inv)]
+        if not due:
+            if on_demand:
+                self._send(user.chat_id, ui.stage_none_text(trade))
+            return False
+        filters = user.filtry
+        due = _ranked(due, filters.distance_km if filters.radius_active else None)
+        distance = filters.distance_km if filters.baza else None
+        shown = min(len(due), self.settings.max_leads_in_report)
+        text, markup = ui.stage_reminder(trade, due[:shown], len(due), distance)
+        while len(text) > TELEGRAM_LIMIT and shown > 1:
+            shown = max(1, shown - 3)
+            text, markup = ui.stage_reminder(trade, due[:shown], len(due), distance)
+        self._send(user.chat_id, text, markup)
+        self.store.record_delivery(user.chat_id, due[:shown], "etap", rewizja=rewizja)
+        return True
+
     def _deliver_instant_to(self, user: BotUser) -> int:
         candidates = self.store.candidates(user.chat_id, self._window_start(user))
         watch_items = self.store.watchlist(user.chat_id)
@@ -717,6 +785,7 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "fp": LeadBot._cb_place,
     "fpr": LeadBot._cb_place_remove,
     "fr": LeadBot._cb_radius,
+    "fb": LeadBot._cb_trade,
     "ft": LeadBot._cb_type,
     "fv": LeadBot._cb_volume,
     "fi": LeadBot._cb_investor,

@@ -23,7 +23,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
@@ -153,11 +153,16 @@ ALTER TABLE investments ADD COLUMN telefon TEXT;
 ALTER TABLE investments ADD COLUMN email TEXT;
 """
 
+_TRADE_COLUMN = """
+ALTER TABLE bot_users ADD COLUMN branza TEXT;
+"""
+
 _MIGRATIONS: tuple[str, ...] = (
     _SCHEMA,                                              # v1: schemat bazowy
     "ALTER TABLE investments ADD COLUMN segment TEXT;",   # v2: segment klientów
     _BOT_SCHEMA,                                          # v3: scoring, numer leada, bot Telegram
     _CONTACT_COLUMNS,                                     # v4: telefon/e-mail z surowych pól GUNB
+    _TRADE_COLUMN,                                        # v5: branża użytkownika („Kiedy dzwonić”)
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``."""
 
@@ -311,8 +316,13 @@ class LeadRepository:
 
     # --- Zapis i wykrywanie zmian ----------------------------------------------------
 
-    def upsert(self, investment: Investment) -> UpsertResult:
-        """Zapisuje lead i klasyfikuje zmianę względem stanu w bazie (patrz opis modułu)."""
+    def upsert(self, investment: Investment, *, historical: bool = False) -> UpsertResult:
+        """Zapisuje lead i klasyfikuje zmianę względem stanu w bazie (patrz opis modułu).
+
+        Args:
+            historical: import historyczny – nowa sprawa „pojawia się” z datą swojej decyzji, a nie teraz,
+                więc nie trafia do powiadomień o nowościach (służy przypomnieniom „Kiedy dzwonić”).
+        """
         now = self._now_iso()
         values = _content_values(investment)
         with self.transaction():
@@ -320,7 +330,7 @@ class LeadRepository:
                 "SELECT * FROM investments WHERE id_sprawy = ?", (investment.id_sprawy,)
             ).fetchone()
             if row is None:
-                self._insert(values, now)
+                self._insert(values, now, appeared=_event_iso(investment, now) if historical else now)
                 self._log_status(investment.id_sprawy, None, investment.status, now)
                 return UpsertResult(investment.id_sprawy, ChangeType.NEW, None, investment.status)
 
@@ -343,10 +353,10 @@ class LeadRepository:
             )
             return UpsertResult(investment.id_sprawy, ChangeType.UNCHANGED, old_status, investment.status)
 
-    def upsert_many(self, investments: Iterable[Investment]) -> list[UpsertResult]:
-        """Zapisuje wiele leadów w jednej transakcji."""
+    def upsert_many(self, investments: Iterable[Investment], *, historical: bool = False) -> list[UpsertResult]:
+        """Zapisuje wiele leadów w jednej transakcji (``historical`` – patrz :meth:`upsert`)."""
         with self.transaction():
-            return [self.upsert(investment) for investment in investments]
+            return [self.upsert(investment, historical=historical) for investment in investments]
 
     # --- Powiadomienia ----------------------------------------------------------------
 
@@ -461,7 +471,7 @@ class LeadRepository:
                 self._conn.executescript(script)
                 self._conn.execute(f"PRAGMA user_version = {number}")
 
-    def _insert(self, values: dict[str, Any], now: str) -> None:
+    def _insert(self, values: dict[str, Any], now: str, *, appeared: str) -> None:
         next_nr = self._conn.execute("SELECT coalesce(max(nr), 0) + 1 FROM investments").fetchone()[0]
         record = {
             **values,
@@ -470,7 +480,7 @@ class LeadRepository:
             "wyslano_kanaly": "",
             "utworzono": now,
             "zmieniono": now,
-            "status_zmieniony": now,
+            "status_zmieniony": appeared,
             "zsynchronizowano": None,
             "ostatnio_widziany": now,
         }
@@ -561,3 +571,13 @@ def _check_channel(channel: str) -> str:
 
 def _iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def _event_iso(investment: Investment, now: str) -> str:
+    """Moment „pojawienia się” sprawy z importu historycznego: data zdarzenia (decyzji), nie później niż teraz."""
+    day = (investment.data_aktualizacji or "")[:10]
+    try:
+        moment = datetime.fromisoformat(day).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return now
+    return min(_iso(moment), now)

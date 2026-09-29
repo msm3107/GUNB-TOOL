@@ -154,6 +154,7 @@ class BotUser:
     oczekuje_na: str | None = None
     nowe_od: str = ""
     ostatni_raport: str | None = None
+    branza: str | None = None
 
     @property
     def display_name(self) -> str:
@@ -250,6 +251,10 @@ class BotStore:
     def set_awaiting(self, chat_id: int, what: str | None) -> None:
         self._update(chat_id, oczekuje_na=what)
 
+    def set_trade(self, chat_id: int, branza: str | None) -> None:
+        """Branża użytkownika do przypomnień „Kiedy dzwonić” (``None`` – bez przypomnień)."""
+        self._update(chat_id, branza=branza)
+
     def mark_report(self, chat_id: int, when_iso: str) -> None:
         self._update(chat_id, ostatni_raport=when_iso)
 
@@ -345,11 +350,33 @@ class BotStore:
         ).fetchall()
         return [investment_from_row(row) for row in rows]
 
-    def record_delivery(self, chat_id: int, investments: Iterable[Investment], rodzaj: str) -> None:
+    def stage_candidates(self, chat_id: int, rewizja: str, decided_since: str) -> list[Investment]:
+        """Leady (bez szumu i ukrytych) z decyzją od ``decided_since``, o których nie było przypomnienia ``rewizja``.
+
+        Przypomnienia „Kiedy dzwonić” mają własną rewizję doręczenia (np. ``etap:dach``), więc nie mieszają
+        się z raportem nowości, a zmiana branży daje przypomnienia dla nowego etapu.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT i.* FROM investments i
+            WHERE i.is_noise = 0 AND coalesce(i.data_decyzji, i.data_wplywu) >= ?
+              AND NOT EXISTS (SELECT 1 FROM user_leads u
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.stan = 'ukryty')
+              AND NOT EXISTS (SELECT 1 FROM deliveries d
+                              WHERE d.chat_id = ? AND d.id_sprawy = i.id_sprawy AND d.rewizja = ?)
+            ORDER BY coalesce(i.data_decyzji, i.data_wplywu), i.nr
+            """,
+            (decided_since, chat_id, chat_id, rewizja),
+        ).fetchall()
+        return [investment_from_row(row) for row in rows]
+
+    def record_delivery(self, chat_id: int, investments: Iterable[Investment], rodzaj: str,
+                        rewizja: str | None = None) -> None:
+        """Zapisuje doręczenie; domyślna rewizja to bieżący stan leada (``status_zmieniony``)."""
         now = _iso(self.repo.now())
         self._conn.executemany(
             "INSERT OR IGNORE INTO deliveries (chat_id, id_sprawy, rewizja, rodzaj, doreczono) VALUES (?, ?, ?, ?, ?)",
-            [(chat_id, inv.id_sprawy, inv.status_zmieniony or "", rodzaj, now) for inv in investments],
+            [(chat_id, inv.id_sprawy, rewizja or inv.status_zmieniony or "", rodzaj, now) for inv in investments],
         )
 
     def deliveries_since(self, chat_id: int, since_iso: str, rodzaj: str) -> int:
@@ -408,6 +435,7 @@ def _user(row) -> BotUser:
         oczekuje_na=row["oczekuje_na"],
         nowe_od=row["nowe_od"],
         ostatni_raport=row["ostatni_raport"],
+        branza=row["branza"],
     )
 
 

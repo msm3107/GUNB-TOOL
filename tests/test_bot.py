@@ -662,3 +662,118 @@ def test_blisko_command_works_like_the_button(bot, api):
     activate(bot, api)
     bot.handle_update(message(MIETEK, "/blisko"))
     assert api.last_to(MIETEK)["markup"]["keyboard"][0][0]["request_location"] is True
+
+
+# --- „⏰ Kiedy dzwonić”: przypomnienia według etapu budowy -------------------------------------------
+
+def decided(months):
+    day = (datetime(2026, 9, 29).date() - timedelta(days=round(months * 30.44))).isoformat()
+    return dict(data_decyzji=day, data_aktualizacji=day)
+
+
+def seed_stages(repo):
+    repo.upsert(lead("DACH/1", nazwa_zamierzenia="Dom na etapie dachu", **decided(4.5)), )
+    repo.upsert(lead("WCZESNIE/1", nazwa_zamierzenia="Dom świeżo po pozwoleniu", **decided(1)))
+    repo.upsert(lead("POZNO/1", nazwa_zamierzenia="Dom już pod dachem", **decided(8)))
+
+
+def reminders_to(api, chat_id):
+    return [m for m in api.to(chat_id) if "Kiedy dzwonić" in m["text"]]
+
+
+def test_trade_is_chosen_from_filters_and_first_reminder_comes_at_once(bot, api, repo):
+    activate(bot, api)
+    seed_stages(repo)
+    bot.handle_update(click(MIETEK, "f:trade"))
+    assert ("🏠 Dach – 4–6 mies.", "fb:dach") in buttons(api.edits[-1]["markup"])
+
+    bot.handle_update(click(MIETEK, "fb:dach"))
+
+    assert BotStore(repo).get_user(MIETEK).branza == "dach"
+    reminder = reminders_to(api, MIETEK)[-1]["text"]
+    assert "Dom na etapie dachu" in reminder
+    assert "świeżo po pozwoleniu" not in reminder and "już pod dachem" not in reminder
+    assert f"decyzja {decided(4.5)['data_decyzji'][8:10]}." in reminder  # data pozwolenia przy budowie
+
+
+def test_reminders_come_every_morning_without_repeats(repo, api, clock):
+    bot = make_bot(repo, api, clock, morning_time="07:00")
+    activate(bot, api)
+    BotStore(repo).set_trade(MIETEK, "dach")
+    repo.upsert(lead("DACH/1", nazwa_zamierzenia="Dom na etapie dachu", **decided(4.5)))
+    repo.upsert(lead("JUTRO/1", nazwa_zamierzenia="Dom, który jutro wejdzie w dach", data_decyzji="2026-05-31",
+                     data_aktualizacji="2026-05-31"))
+    clock.utc = datetime(2026, 9, 29, 4, 59, tzinfo=timezone.utc)  # 06:59
+    bot.run_due_jobs()
+    assert reminders_to(api, MIETEK) == []
+
+    clock.advance(minutes=2)  # 07:01
+    bot.run_due_jobs()
+    first = reminders_to(api, MIETEK)
+    assert len(first) == 1 and "Dom na etapie dachu" in first[0]["text"]
+    assert "jutro wejdzie" not in first[0]["text"]
+
+    clock.advance(days=1)  # następny ranek: tylko budowa, która właśnie weszła w okno
+    bot.run_due_jobs()
+    second = reminders_to(api, MIETEK)[-1]["text"]
+    assert "jutro wejdzie" in second and "Dom na etapie dachu" not in second
+
+
+def test_reminders_respect_filters_and_hidden_leads(bot, api, repo):
+    activate(bot, api)
+    repo.upsert(lead("DACH/1", nazwa_zamierzenia="Dom blisko bazy", **decided(4.5), **NEAR))
+    repo.upsert(lead("DALEKO/1", nazwa_zamierzenia="Dom daleko", **decided(4.5), **FAR))
+    repo.upsert(lead("UKRYTY/1", nazwa_zamierzenia="Dom ukryty", **decided(4.5), **NEAREST))
+    BotStore(repo).set_lead_state(MIETEK, "UKRYTY/1", "ukryty")
+    bot.handle_update(pin(MIETEK, *BASE))
+
+    bot.handle_update(click(MIETEK, "fb:dach"))
+
+    reminder = reminders_to(api, MIETEK)[-1]["text"]
+    assert "Dom blisko bazy" in reminder and "🚗 6 km" in reminder
+    assert "Dom daleko" not in reminder and "Dom ukryty" not in reminder
+
+
+def test_foundation_trade_means_leads_at_once_without_reminders(bot, api, repo):
+    activate(bot, api)
+    seed_stages(repo)
+    bot.handle_update(click(MIETEK, "fb:stan_surowy"))
+    assert BotStore(repo).get_user(MIETEK).branza == "stan_surowy"
+    assert reminders_to(api, MIETEK) == []
+    assert "od razu" in api.last_to(MIETEK)["text"]
+
+
+def test_nothing_at_stage_right_now_is_said_plainly(bot, api, repo):
+    activate(bot, api)
+    repo.upsert(lead("WCZESNIE/1", **decided(1)))
+    bot.handle_update(click(MIETEK, "fb:elewacja"))
+    assert "Na razie żadna" in api.last_to(MIETEK)["text"]
+
+
+def test_reminders_can_be_switched_off(bot, api, repo):
+    activate(bot, api)
+    BotStore(repo).set_trade(MIETEK, "dach")
+    bot.handle_update(click(MIETEK, "fb:none"))
+    assert BotStore(repo).get_user(MIETEK).branza is None
+
+
+def test_filters_screen_shows_trade_and_timing(bot, api, repo):
+    activate(bot, api)
+    BotStore(repo).set_trade(MIETEK, "okna")
+    bot.handle_update(message(MIETEK, "🔎 Filtry"))
+    assert "Okna i drzwi – przypomnę 5–7 mies. po pozwoleniu" in api.last_to(MIETEK)["text"]
+
+
+def test_branza_command_opens_trade_picker(bot, api):
+    activate(bot, api)
+    bot.handle_update(message(MIETEK, "/branza"))
+    assert ("🏠 Dach – 4–6 mies.", "fb:dach") in buttons(api.last_to(MIETEK)["markup"])
+
+
+def test_reminded_lead_still_counts_as_new_in_normal_report(bot, api, repo):
+    """Przypomnienie o etapie nie „zjada” leada z raportu nowości (osobna rewizja doręczenia)."""
+    activate(bot, api)
+    repo.upsert(lead("DACH/1", nazwa_zamierzenia="Dom na etapie dachu", **decided(4.5)))
+    bot.handle_update(click(MIETEK, "fb:dach"))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    assert "Dom na etapie dachu" in api.last_to(MIETEK)["text"]

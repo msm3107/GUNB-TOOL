@@ -168,6 +168,7 @@ notifications:
 python main.py --fetch                              # pobierz i przetwórz (okno z config.yaml)
 python main.py --fetch --days 7 --limit 50          # szybki test konfiguracji
 python main.py --fetch --powiat 1206 --since 2026-09-01 --no-geocode
+python main.py --fetch --since 2025-03-29 --historical  # historia pod „⏰ Kiedy dzwonić” (bez zalewu nowości)
 python main.py --notify-telegram --dry-run          # podgląd wiadomości (nie wymaga tokenów)
 python main.py --fetch --notify-telegram --notify-discord --sync-sheets
 python main.py --stats
@@ -260,6 +261,7 @@ Obsługa wyłącznie przyciskami („proste jak drut”):
 | Funkcja | Jak działa |
 |---|---|
 | **📍 Blisko mnie** | Jedno kliknięcie „📍 Wyślij moją lokalizację” (albo dowolna pinezka 📎 → Lokalizacja) zapisuje bazę firmy i od razu włącza promień 15 km; przyciski 10 / 15 / 20 / 30 / 50 km. Raporty pokazują „🚗 6 km” przy każdej budowie, najpierw 🔥 HOT, a w każdej grupie od najbliższych. Odległość w linii prostej od bazy do działki (ULDK). Promień zastępuje powiaty i miejscowości; wybór powiatu go wyłącza, baza zostaje zapamiętana. |
+| **⏰ Kiedy dzwonić** | 🔎 Filtry → „🧰 Branża” (albo `/branza`): dach 4–6 mies. po pozwoleniu, okna i drzwi 5–7, instalacje 6–9, elewacja 8–12, wykończenia 9–14, ogrodzenie i kostka 10–18 (bloki i hale ×1,5; fundamenty – od razu). Codziennie o `morning_time` bot przypomina o budowach, które właśnie weszły w okno branży (zgodnych z filtrami i „Blisko mnie”, każda raz). Po wyborze branży od razu pokazuje te, które już są na tym etapie. Okna to szacunki do kalibracji – rejestr nie podaje daty rozpoczęcia budowy. |
 | **🔎 Filtry** | Miejsce (powiaty z listy albo wpisana miejscowość/gmina), rodzaj budynku (🏠 domy, 🏢 bloki, 🏭 hale…), minimalna kubatura (przyciski „od 10 000 m³”), inwestor (dowolny / tylko firmy / nazwa). Przykład: „Warszawa + bloki + od 10 000 m³”. |
 | **🔥 HOT / 🟡 NORMAL / ⚪ LOW** | Punkty bez AI: kubatura, rodzaj budynku, kilka budynków, nowa budowa, inwestor-firma; minus za garaże, wiaty, drobne roboty i zmiany starych pozwoleń. Każdy lead pokazuje punkty i powody. **🔥 Tylko HOT** włącza tylko najlepsze. |
 | **Przyciski pod leadem** | 📍 Mapa · 🏛️ Geoportal · ⭐ Zapisz · ✅ Przejrzane · 🗑️ Ukryj (z „↩️ Przywróć”) · 👀 Obserwuj inwestora · 📌 Obserwuj gminę |

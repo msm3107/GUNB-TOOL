@@ -13,6 +13,7 @@ from .config import BotConfig
 from .exporter import CATEGORY_ICONS, escape_html
 from .models import Investment
 from .scoring import HOT
+from .stages import TRADES, Trade, get_trade
 
 Markup = dict[str, Any]
 Distance = Callable[[Investment], float | None]
@@ -30,6 +31,7 @@ BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("nowe", "📊 Pokaż nowe leady"),
     ("filtry", "🔎 Ustaw, jakie inwestycje chcesz dostawać"),
     ("blisko", "📍 Budowy blisko Twojej bazy"),
+    ("branza", "🧰 Twoja branża – przypomnę, kiedy dzwonić"),
     ("zapisane", "⭐ Twoje zapisane leady"),
     ("obserwowane", "👀 Obserwowani inwestorzy i gminy"),
     ("tryb", "⏰ Kiedy wysyłać leady"),
@@ -81,6 +83,7 @@ def welcome_text(name: str | None) -> str:
         f"👷 Cześć{who}! Będę Ci wysyłał <b>nowe pozwolenia na budowę</b> z Twojej okolicy.\n\n"
         "Wszystko ustawisz przyciskami na dole ekranu 👇\n"
         "• <b>📍 Blisko mnie</b> – wyślij pinezkę bazy, a dostaniesz budowy w promieniu, np. 15 km\n"
+        "• <b>🧰 Branża</b> (w 🔎 Filtry) – przypomnę o budowie, gdy dojdzie do Twojego etapu, np. dachu\n"
         "• <b>🔎 Filtry</b> – gdzie i jakie inwestycje chcesz dostawać\n"
         "• <b>⏰ Kiedy wysyłać</b> – od razu, raport rano albo wieczorem\n"
         "• <b>🔥 Tylko HOT</b> – tylko najlepsze, duże roboty\n\n"
@@ -94,6 +97,7 @@ def help_text(settings: BotConfig) -> str:
         "Codziennie sprawdzam rejestr pozwoleń na budowę (GUNB) i wysyłam Ci to, co pasuje do filtrów.\n\n"
         "📊 <b>Co nowego?</b> – pokaż nowe leady teraz\n"
         "📍 <b>Blisko mnie</b> – budowy w promieniu od Twojej bazy (pinezka w Telegramie)\n"
+        "🧰 <b>Branża</b> – ⏰ „Kiedy dzwonić”: przypomnę o budowie, gdy dojdzie do Twojego etapu\n"
         "🔎 <b>Filtry</b> – miejsce, rodzaj budynku, kubatura, inwestor\n"
         "⭐ <b>Zapisane</b> – Twoja lista ciekawych inwestycji\n"
         "👀 <b>Obserwowane</b> – inwestorzy i gminy, o których dostajesz alert od razu\n"
@@ -144,16 +148,67 @@ def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConf
         f"💼 Inwestor: {_investor_label(f.inwestor)}",
         f"🔥 Tylko HOT: {'tak' if user.tylko_hot else 'nie'}",
         f"⏰ Wysyłka: {_mode_label(user.tryb, settings)}",
+        f"🧰 Branża: {_trade_label(get_trade(user.branza))}",
         "",
         "Kliknij, co chcesz zmienić 👇",
     ]
     markup = inline([
         [("📍 Miejsce", "f:place"), ("🏗️ Rodzaj", "f:type")],
         [("📦 Kubatura", "f:vol"), ("💼 Inwestor", "f:inv")],
+        [("🧰 Branża – kiedy dzwonić", "f:trade")],
         [("🧹 Wyczyść filtry", "f:clear")],
         [("📊 Pokaż pasujące", "f:go")],
     ])
     return "\n".join(lines), markup
+
+
+# --- „⏰ Kiedy dzwonić” ------------------------------------------------------------------------------
+
+def trade_picker(current: str | None) -> tuple[str, Markup]:
+    """Wybór branży: przypomnienie przychodzi, gdy budowa dochodzi do etapu tej branży."""
+    rows = [[(("✅ " if trade.key == current else "") + f"{trade.label} – {trade_window_label(trade)}",
+              f"fb:{trade.key}")] for trade in TRADES]
+    rows.append([(("✅ " if current is None else "") + "🚫 Bez przypomnień", "fb:none")])
+    rows.append([("◀️ Filtry", "f:show")])
+    text = ("🧰 <b>Twoja branża – kiedy dzwonić?</b>\n"
+            "Dekarz nie potrzebuje budowy w dniu pozwolenia – wtedy jest za wcześnie. Wybierz branżę, "
+            "a przypomnę o budowie, gdy dojdzie do Twojego etapu (liczę od daty pozwolenia; "
+            "bloki i hale budują się ok. półtora raza dłużej).")
+    return text, inline(rows)
+
+
+def trade_window_label(trade: Trade) -> str:
+    if trade.months is None:
+        return "od razu"
+    start, end = trade.months
+    return f"{start:g}–{end:g} mies."
+
+
+def trade_saved_text(trade: Trade | None) -> str:
+    if trade is None:
+        return "🔕 Przypomnienia o etapach budowy wyłączone."
+    return (f"✅ Branża: {trade.label}. Jesteś potrzebny od razu – nowe budowy dostajesz jak dotąd, "
+            "bez dodatkowych przypomnień.")
+
+
+def stage_none_text(trade: Trade) -> str:
+    return (f"✅ Branża: {trade.label}.\n⏰ Na razie żadna budowa z Twoich filtrów nie jest na etapie "
+            f"{trade.stage}. Przypomnę rano, gdy któraś do niego dojdzie.")
+
+
+def stage_reminder(trade: Trade, leads: Sequence[Investment], total: int,
+                   distance: Distance | None = None) -> tuple[str, Markup]:
+    """Przypomnienie „Kiedy dzwonić”: budowy, które właśnie są na etapie branży klienta."""
+    count = _count(total, "budowa", "budowy", "budów")
+    verb = _plural(total, "jest", "są", "jest")
+    lines = [f"⏰ <b>Kiedy dzwonić – {escape_html(trade.label)}</b>",
+             f"{count} z Twoich filtrów {verb} teraz na etapie {trade.stage} – "
+             "to dobry moment na telefon albo wizytę na budowie.", ""]
+    lines += [_stage_entry(position, inv, distance) for position, inv in enumerate(leads, start=1)]
+    if total > len(leads):
+        lines.append(f"\n…i {total - len(leads)} więcej – kolejne jutro rano.")
+    lines.append("\n👇 Kliknij numer: mapa, nawigacja i szczegóły.")
+    return "\n".join(lines), inline(number_buttons([(p, inv.nr) for p, inv in enumerate(leads, start=1)]))
 
 
 def place_picker(filters: UserFilters, options: Sequence[tuple[str, str]]) -> tuple[str, Markup]:
@@ -391,6 +446,29 @@ def _report_entry(position: int, inv: Investment, distance: Distance | None = No
     ) if p]
     title = escape_html(_short(inv.nazwa_zamierzenia or "(brak opisu)", 90))
     return f"{position}. {icon} <b>{title}</b>\n    {escape_html(' · '.join(facts))}"
+
+
+def _stage_entry(position: int, inv: Investment, distance: Distance | None = None) -> str:
+    """Pozycja przypomnienia – z pełną datą pozwolenia (bywa sprzed roku)."""
+    icon = ("🔥" if inv.priorytet == HOT else "") + CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+    km = distance(inv) if distance else None
+    decided = inv.data_decyzji or inv.data_wplywu
+    facts = [p for p in (
+        f"🚗 {distance_label(km)}" if km is not None else None,
+        inv.adres_opisowy or inv.miejscowosc,
+        f"{_thousands(inv.kubatura)} m³" if inv.kubatura else None,
+        f"decyzja {decided[8:10]}.{decided[5:7]}.{decided[:4]}" if decided and len(decided) >= 10 else None,
+    ) if p]
+    title = escape_html(_short(inv.nazwa_zamierzenia or "(brak opisu)", 90))
+    return f"{position}. {icon} <b>{title}</b>\n    {escape_html(' · '.join(facts))}"
+
+
+def _trade_label(trade: Trade | None) -> str:
+    if trade is None:
+        return "nie wybrano (bez przypomnień)"
+    if trade.months is None:
+        return f"{trade.label} – nowe budowy od razu"
+    return f"{trade.label} – przypomnę {trade_window_label(trade)} po pozwoleniu"
 
 
 def _mode_label(mode: str, settings: BotConfig) -> str:

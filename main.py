@@ -93,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="rejestr do przetworzenia; można powtarzać")
     fetch.add_argument("--no-geocode", action="store_true", help="pomiń geokodowanie ULDK")
     fetch.add_argument("--limit", type=int, metavar="N", help="przetwórz najwyżej N spraw")
+    fetch.add_argument("--historical", action="store_true",
+                       help="import historyczny (np. z --since): stare sprawy nie trafią do raportów nowości, "
+                            "posłużą przypomnieniom „Kiedy dzwonić”")
 
     notify = parser.add_argument_group("opcje powiadomień")
     notify.add_argument("--dry-run", action="store_true", help="wypisz wiadomości zamiast je wysyłać")
@@ -191,7 +194,7 @@ def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespa
         f" do {query.date_to}" if query.date_to else "",
     )
     try:
-        report = fetch_with_maintenance(pipeline, config, query, limit=args.limit)
+        report = fetch_with_maintenance(pipeline, config, query, limit=args.limit, historical=args.historical)
     except (HttpError, GunbFormatError) as exc:
         log.error("Pobieranie danych GUNB nie powiodło się: %s", exc)
         return EXIT_PARTIAL_FAILURE
@@ -200,13 +203,14 @@ def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespa
 
 
 def fetch_with_maintenance(
-    pipeline: LeadPipeline, config: AppConfig, query: FetchQuery, *, limit: int | None = None
+    pipeline: LeadPipeline, config: AppConfig, query: FetchQuery, *, limit: int | None = None,
+    historical: bool = False,
 ) -> FetchReport:
     """Pobieranie z higieną bazy: cotygodniowa kopia przed importem, ``VACUUM`` po dużym imporcie."""
     storage = config.storage
     weekly_backup(pipeline.repo, storage.backup_dir or storage.db_path.parent / "backups", today=date.today(),
                   every_days=storage.backup_every_days, keep=storage.backup_keep)
-    report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=limit)
+    report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=limit, historical=historical)
     vacuum_after_import(pipeline.repo, changed=report.new + report.status_changed + report.updated,
                         threshold=storage.vacuum_threshold)
     return report

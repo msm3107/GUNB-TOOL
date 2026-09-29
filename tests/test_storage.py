@@ -321,11 +321,32 @@ def test_version_3_database_gets_contact_columns(tmp_path, clock):
     legacy.close()
 
     with LeadRepository(path, now=clock) as repo:
-        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 4
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         old = repo.get("OLD/1")
         assert (old.telefon, old.email) == (None, None)
         repo.upsert(lead("NEW/1", telefon="+48600123456", email="biuro@test.pl"))
         assert (repo.get("NEW/1").telefon, repo.get("NEW/1").email) == ("+48600123456", "biuro@test.pl")
+
+
+def test_historical_import_dates_new_leads_by_their_decision(repo):
+    """Import 18 miesięcy wstecz nie może zalać klientów „nowościami” – liczy się data decyzji."""
+    repo.upsert_many([lead("OLD/1", data_aktualizacji="2025-06-01")], historical=True)
+
+    assert repo.get("OLD/1").status_zmieniony.startswith("2025-06-01")
+    assert repo.pending_notifications("telegram", limit=10, max_age_days=14) == []
+
+
+def test_historical_import_keeps_leads_already_known(repo, clock):
+    repo.upsert(lead("A/1"))
+    appeared = repo.get("A/1").status_zmieniony
+    clock.advance(days=3)
+    repo.upsert_many([lead("A/1", data_aktualizacji="2025-06-01")], historical=True)
+    assert repo.get("A/1").status_zmieniony == appeared
+
+
+def test_historical_import_of_lead_without_date_uses_now(repo, clock):
+    repo.upsert_many([lead("X/1", data_aktualizacji=None)], historical=True)
+    assert repo.get("X/1").status_zmieniony == clock().isoformat(timespec="seconds")
 
 
 def test_found_contact_updates_lead_without_sending_it_again(repo):
