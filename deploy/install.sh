@@ -405,8 +405,9 @@ rollback() {
     local current previous db db_schema old_schema was_active=0
     current=$(readlink -e "$APP_ROOT/current" 2>/dev/null || true)
     previous=$(readlink -e "$APP_ROOT/previous" 2>/dev/null || true)
-    [ -n "$previous" ] && [ -d "$previous" ] \
-        || die "Brak zapisanej poprzedniej wersji. Wybraną wersję zainstalujesz: sudo gunb-admin aktualizuj <wersja>"
+    if [ -z "$previous" ] || [ ! -d "$previous" ]; then
+        die "Brak zapisanej poprzedniej wersji. Wybraną wersję zainstalujesz: sudo gunb-admin aktualizuj <wersja>"
+    fi
     [ "$previous" != "$current" ] || die "Poprzednia wersja jest już tą działającą."
     say "Powrót: $(basename "$current") → $(basename "$previous")"
     old_schema=$(schema_of_release "$previous")

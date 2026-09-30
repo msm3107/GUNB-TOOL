@@ -79,7 +79,9 @@ running() { systemctl is-active --quiet "$SERVICE"; }
 
 download_copy() {  # świeża kopia do katalogu domowego osoby, która wywołała sudo (kopie w data/ są tylko dla gunb)
     local user=${SUDO_USER:-} home source name
-    [ -n "$user" ] && [ "$user" != root ] || die "uruchom ze swojego konta przez sudo: sudo gunb-admin kopia-do-pobrania"
+    if [ -z "$user" ] || [ "$user" = root ]; then
+        die "uruchom ze swojego konta przez sudo: sudo gunb-admin kopia-do-pobrania"
+    fi
     home=$(getent passwd "$user" | cut -d: -f6)
     app -m gunb_tool.migration kopia --config "$CONFIG" --etykieta do-pobrania >/dev/null
     source=$(find "$(backup_dir)" -maxdepth 1 -name '*-do-pobrania-*.sqlite' -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
