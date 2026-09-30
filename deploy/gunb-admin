@@ -33,6 +33,7 @@ Praca bota
 Kopie i przenoszenie danych
   kopia [ETYKIETA]          spójna kopia bazy teraz (działa także przy pracującym bocie)
   kopie                     lista kopii bazy
+  kopia-do-pobrania         świeża kopia w ~/gunb-kopie (tylko dla Ciebie) – do pobrania scp poza serwer
   odtworz KOPIA             zastąp bazę kopią (bot zatrzymany; obecna baza trafi najpierw do kopii)
   eksport [--config PLIK]   pakiet do przeniesienia bota (bot zatrzymany; bez sekretów)
   sprawdz PAKIET            sprawdź pakiet (sumy, wersja, spójność bazy) – niczego nie zmienia
@@ -75,6 +76,22 @@ print(s.backup_dir or s.db_path.parent / "backups")' "$CONFIG"
 }
 
 running() { systemctl is-active --quiet "$SERVICE"; }
+
+download_copy() {  # świeża kopia do katalogu domowego osoby, która wywołała sudo (kopie w data/ są tylko dla gunb)
+    local user=${SUDO_USER:-} home source name
+    [ -n "$user" ] && [ "$user" != root ] || die "uruchom ze swojego konta przez sudo: sudo gunb-admin kopia-do-pobrania"
+    home=$(getent passwd "$user" | cut -d: -f6)
+    app -m gunb_tool.migration kopia --config "$CONFIG" --etykieta do-pobrania >/dev/null
+    source=$(find "$(backup_dir)" -maxdepth 1 -name '*-do-pobrania-*.sqlite' -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
+    [ -n "$source" ] || die "kopia nie powstała"
+    name=$(basename -- "$source")
+    install -d -o "$user" -g "$user" -m 700 "$home/gunb-kopie"
+    install -o "$user" -g "$user" -m 600 -- "$source" "$home/gunb-kopie/$name"
+    rm -f -- "$source"
+    echo "✔ $home/gunb-kopie/$name ($(du -h "$home/gunb-kopie/$name" | cut -f1); dane osobowe – tylko dla Ciebie)"
+    echo "Na komputerze (PowerShell):  scp $user@<adres-serwera>:gunb-kopie/$name ."
+    echo "Po pobraniu na serwerze:     rm ~/gunb-kopie/$name"
+}
 
 start() {
     [ ! -e "$MARKER" ] || die "serwer czeka na dane bota z komputera – najpierw: sudo gunb-admin importuj <pakiet>
@@ -131,6 +148,7 @@ main() {
         restart) need_root; systemctl restart "$SERVICE"; sleep 5; running || die "bot nie wystartował: sudo gunb-admin logi" ;;
         kopia) need_root; need_install; app -m gunb_tool.migration kopia --config "$CONFIG" ${1:+--etykieta "$1"} ;;
         kopie) need_root; need_install; ls -lh --time-style=long-iso "$(backup_dir)" ;;
+        kopia-do-pobrania) need_root; need_install; download_copy ;;
         odtworz)
             need_root; need_install
             [ $# -ge 1 ] || die "podaj kopię: sudo gunb-admin odtworz <plik .sqlite> (lista: sudo gunb-admin kopie)"
