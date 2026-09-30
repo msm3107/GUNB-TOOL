@@ -1,4 +1,4 @@
-"""Higiena bazy SQLite: cotygodniowa kopia przed pobieraniem danych i ``VACUUM`` po dużym imporcie.
+"""Higiena bazy SQLite: okresowa kopia (nocne porządki bota, przed pobieraniem danych) i ``VACUUM`` po imporcie.
 
 Kopia powstaje przez API kopii zapasowych SQLite (``Connection.backup``), a nie przez skopiowanie
 pliku – w trybie WAL część danych bywa jeszcze w pliku ``-wal``, więc zwykła kopia pliku mogłaby
@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 _DATED_NAME = re.compile(r"-(\d{4}-\d{2}-\d{2})\.sqlite$")
 
 
-def weekly_backup(
+def backup_if_due(
     repo: LeadRepository,
     backup_dir: Path,
     *,

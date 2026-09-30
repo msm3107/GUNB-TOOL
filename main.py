@@ -43,7 +43,7 @@ from gunb_tool.exporter import (
 from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError
 from gunb_tool.http_client import HttpError, ResilientHttpClient, redact_url
 from gunb_tool.instance import AlreadyRunning, bot_lock_path, instance_lock
-from gunb_tool.maintenance import vacuum_after_import, weekly_backup
+from gunb_tool.maintenance import backup_if_due, vacuum_after_import
 from gunb_tool.models import Source
 from gunb_tool.pipeline import (
     EmptyImport,
@@ -283,7 +283,7 @@ def fetch_with_maintenance(
     historical: bool = False, should_stop: Callable[[], bool] = lambda: False,
     wait_for_other_import: timedelta = timedelta(0),
 ) -> FetchReport:
-    """Pobieranie z higieną bazy: cotygodniowa kopia przed importem, ``VACUUM`` po dużym imporcie.
+    """Pobieranie z higieną bazy: kopia przed importem (gdy jest pora), ``VACUUM`` po dużym imporcie.
 
     Naraz działa jeden import (blokada w bazie – bot, harmonogram systemu i import historii); import
     przerywa się między stronami, gdy ``should_stop()`` zwróci ``True`` albo blokada zostanie utracona.
@@ -298,9 +298,7 @@ def fetch_with_maintenance(
     with import_lease(pipeline.repo, wait=wait_for_other_import) as renew_lease:
         status.job_started(IMPORT_JOB)
         try:
-            weekly_backup(pipeline.repo, storage.backup_dir or storage.db_path.parent / "backups",
-                          today=local(utc_now()).date(), every_days=storage.backup_every_days,
-                          keep=storage.backup_keep)
+            scheduled_backup(pipeline.repo, config)
             report = pipeline.fetch(query, page_size=config.gunb.page_size, limit=limit, historical=historical,
                                     should_continue=lambda: renew_lease() and not should_stop())
             vacuum_after_import(pipeline.repo, changed=report.new + report.status_changed + report.updated,
@@ -428,8 +426,7 @@ def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> in
     stop = threading.Event()
     ui_bot = _make_bot(config, repo, interactive=True)
     if once:
-        jobs_bot = _make_bot(config, repo, interactive=False)
-        jobs_bot.fetcher = bot_fetcher(create_pipeline(config, repo), config, should_stop=stop.is_set)
+        jobs_bot = _make_jobs_bot(config, repo, stop)
         ui_bot.setup()
         received = ui_bot.poll_once(timeout=0)
         jobs_bot.recover_interrupted_import()
@@ -440,9 +437,7 @@ def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> in
     def make_jobs_bot() -> tuple[LeadBot, Callable[[], None]]:  # wywoływane w wątku zadań
         jobs_repo = LeadRepository(config.storage.db_path, negative_cache_days=config.geocoding.negative_cache_days,
                                    backup_dir=config.storage.backup_dir)
-        jobs_bot = _make_bot(config, jobs_repo, interactive=False)
-        jobs_bot.fetcher = bot_fetcher(create_pipeline(config, jobs_repo), config, should_stop=stop.is_set)
-        return jobs_bot, jobs_repo.close
+        return _make_jobs_bot(config, jobs_repo, stop), jobs_repo.close
 
     worker = JobsWorker(make_jobs_bot, stop)
     _stop_on_sigterm(stop)
@@ -464,6 +459,21 @@ def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> in
         return EXIT_PARTIAL_FAILURE
     log.info("Bot zatrzymany")
     return EXIT_OK
+
+
+def _make_jobs_bot(config: AppConfig, repo: LeadRepository, stop: threading.Event) -> LeadBot:
+    """Bot wątku zadań: import GUNB o ``bot.fetch_times`` i nocna kopia bazy (``storage.backup_*``)."""
+    jobs_bot = _make_bot(config, repo, interactive=False)
+    jobs_bot.fetcher = bot_fetcher(create_pipeline(config, repo), config, should_stop=stop.is_set)
+    jobs_bot.maintenance = lambda: scheduled_backup(repo, config)
+    return jobs_bot
+
+
+def scheduled_backup(repo: LeadRepository, config: AppConfig) -> Path | None:
+    """Kopia bazy, jeśli od ostatniej minęło ``storage.backup_every_days`` dni (data w czasie polskim)."""
+    storage = config.storage
+    return backup_if_due(repo, storage.backup_dir or storage.db_path.parent / "backups",
+                         today=local(utc_now()).date(), every_days=storage.backup_every_days, keep=storage.backup_keep)
 
 
 def _make_bot(config: AppConfig, repo: LeadRepository, *, interactive: bool) -> LeadBot:

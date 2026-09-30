@@ -490,3 +490,29 @@ def test_long_send_queue_keeps_the_jobs_thread_heartbeat_fresh(bot, api, repo, c
     bot.run_due_jobs()
     assert len(reports_to(api, MIETEK)) == 1 and len(reports_to(api, OBCY)) == 1
     assert BotStore(repo).job_time("watek_zadan") >= TODAY_0701 + timedelta(minutes=4)
+
+
+# --- Nocne porządki: kopia bazy raz dziennie --------------------------------------------------------------
+
+def test_nightly_backup_runs_once_a_day_and_its_failure_does_not_stop_reports(bot, api, clock, caplog):
+    calls = []
+
+    def failing_backup():
+        calls.append(clock.utc)
+        raise OSError("No space left on device")
+
+    bot.maintenance = failing_backup
+    clock.utc = datetime(2026, 9, 29, 1, 31, tzinfo=timezone.utc)  # 03:31 czasu polskiego
+    with caplog.at_level(logging.ERROR):
+        bot.run_due_jobs()
+        bot.run_due_jobs()
+    assert len(calls) == 1
+    assert "kopia bazy" in caplog.text.lower()  # błąd trafia do logu (i alertem do admina)
+
+    clock.utc = TODAY_0701
+    bot.run_due_jobs()
+    assert len(reports_to(api, MIETEK)) == 1  # awaria kopii nie zatrzymała raportów
+
+    clock.advance(days=1)
+    bot.run_due_jobs()
+    assert len(calls) == 2  # następnego dnia kolejna próba

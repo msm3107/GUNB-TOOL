@@ -137,7 +137,7 @@ class StorageConfig:
 
     Attributes:
         backup_dir: katalog kopii bazy (domyślnie ``backups`` obok pliku bazy).
-        backup_every_days: co ile dni robić kopię (przed pobieraniem danych).
+        backup_every_days: co ile dni robić kopię (nocne porządki bota albo przed pobieraniem danych).
         backup_keep: ile najnowszych kopii zachować.
         vacuum_threshold: od tylu nowych/zmienionych leadów w jednym pobieraniu import jest „duży”
             i po nim wykonywany jest ``VACUUM``.
@@ -145,8 +145,8 @@ class StorageConfig:
 
     db_path: Path = Path("data/gunb_leads.sqlite")
     backup_dir: Path | None = None
-    backup_every_days: int = 7
-    backup_keep: int = 8
+    backup_every_days: int = 1
+    backup_keep: int = 14
     vacuum_threshold: int = 500
 
 

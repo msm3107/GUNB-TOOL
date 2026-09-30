@@ -373,3 +373,22 @@ def test_health_check_does_not_write_the_log_file(workdir):
         (workdir / "config.yaml").read_text(encoding="utf-8") + "  file: logs/bot.log\n", encoding="utf-8")
     run(workdir, "--zdrowie")
     assert not (workdir / "logs").exists()  # uruchomiona z innego konta nie przejmie pliku logu bota
+
+
+# --- Nocna kopia bazy w bocie -----------------------------------------------------------------------------
+
+def test_jobs_bot_backs_up_the_database_every_night(workdir, monkeypatch):
+    from gunb_tool.config import load_config
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    seed(workdir)
+    config = load_config(workdir / "config.yaml")
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        jobs_bot = main._make_jobs_bot(config, repo, threading.Event())
+        first = jobs_bot.maintenance()
+        assert jobs_bot.maintenance() is None  # tego dnia kopia już jest
+        assert jobs_bot.fetcher is not None
+
+    assert first is not None and first.parent == workdir / "data" / "backups"
+    with LeadRepository(first) as copy:
+        assert copy.get("A/1") is not None

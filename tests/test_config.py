@@ -169,7 +169,8 @@ def test_hardening_defaults(tmp_path):
     assert (cfg.http.circuit_breaker_failures, cfg.http.circuit_breaker_cooldown) == (3, 600.0)
     assert cfg.telegram.admin_chat_id == ""
     assert cfg.storage.backup_dir == tmp_path / "data" / "backups"  # obok bazy
-    assert (cfg.storage.backup_every_days, cfg.storage.backup_keep, cfg.storage.vacuum_threshold) == (7, 8, 500)
+    # codzienna kopia, dwa tygodnie wstecz
+    assert (cfg.storage.backup_every_days, cfg.storage.backup_keep, cfg.storage.vacuum_threshold) == (1, 14, 500)
 
 
 def test_hardening_settings_are_read_from_file(tmp_path):
@@ -212,3 +213,8 @@ def test_without_admin_chat_id_the_owner_chat_is_admin(tmp_path):
 def test_admin_contact_is_normalised_to_telegram_nick(tmp_path, value, expected):
     cfg = load_config(write_config(tmp_path, PAYWALL_YAML), env={"ADMIN_CONTACT": value})
     assert cfg.bot.admin_contact == expected
+
+
+def test_repository_config_backs_up_daily_for_two_weeks():
+    storage = load_config(REPO_ROOT / "config.yaml", env={}).storage
+    assert (storage.backup_every_days, storage.backup_keep) == (1, 14)

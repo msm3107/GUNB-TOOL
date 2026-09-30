@@ -152,6 +152,8 @@ class LeadBot:
         fetcher: funkcja pobierająca dane GUNB (wywoływana o ``fetch_times``). Zwraca opis wyniku
             (``str``) albo ``True``/``None`` przy sukcesie; ``False`` lub wyjątek = nieudane pobieranie
             (bot ponowi je za godzinę), :class:`ImportSkipped` = import się nie odbył (np. trwa inny).
+        maintenance: nocna konserwacja (kopia bazy), raz dziennie od ``CLEANUP_TIME``; jej błąd trafia
+            do logu i nie zatrzymuje wysyłek.
         clock: bieżący czas UTC (domyślnie zegar bazy); godziny harmonogramu liczone są w czasie polskim.
     """
 
@@ -166,6 +168,7 @@ class LeadBot:
         digest_threshold: int = 10,
         max_age_days: int = 14,
         fetcher: Callable[[], bool | str | None] | None = None,
+        maintenance: Callable[[], object] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.repo = repo
@@ -177,6 +180,7 @@ class LeadBot:
         self.digest_threshold = digest_threshold
         self.max_age_days = max_age_days
         self.fetcher = fetcher
+        self.maintenance = maintenance
         self._now = clock or repo.now
         self._offset: int | None = None
         self._db_busy: dict[int, int] = {}
@@ -306,9 +310,10 @@ class LeadBot:
                 else:
                     self._start_sends(name, now)
                 ran.append(name)
-        if self._due(CLEANUP_JOB, now, CLEANUP_TIME):  # raz dziennie: kolejka wysyłek nie rośnie bez końca
+        if self._due(CLEANUP_JOB, now, CLEANUP_TIME):  # raz dziennie: kopia bazy, kolejka wysyłek nie rośnie
             self.store.set_job_time(CLEANUP_JOB, now)
             self.store.prune_sends(now - SENDS_KEPT)
+            self._run_maintenance()
         self.process_sends()
         self.deliver_personal_reminders()
         last = self.store.job_time("natychmiast")
@@ -337,6 +342,14 @@ class LeadBot:
         key = f"{_utc_iso(now)}#{uuid.uuid4().hex[:8]}" if manual else local(now).date().isoformat()
         self.store.enqueue_sends(f"{job}:{key}", recipients)
         log.info("Harmonogram: %s – odbiorców %d", job, len(recipients))
+
+    def _run_maintenance(self) -> None:
+        if self.maintenance is None:
+            return
+        try:
+            self.maintenance()
+        except Exception:  # np. pełny dysk – admin dostaje alert z logu, a raporty idą dalej
+            log.exception("Nocna kopia bazy nie powiodła się")
 
     def process_sends(self) -> int:
         """Obsługuje zaległe wysyłki z kolejki – każdą osobę osobno; zwraca liczbę wysłanych wiadomości."""
