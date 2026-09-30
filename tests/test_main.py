@@ -1,3 +1,4 @@
+import logging
 import threading
 from dataclasses import replace
 from datetime import timedelta
@@ -6,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import main
-from gunb_tool.config import FilterConfig
+from gunb_tool.config import FilterConfig, LoggingConfig
 from gunb_tool.data_filter import LeadFilter
 from gunb_tool.models import Investment
 from gunb_tool.bot_store import BotStore
@@ -14,6 +15,30 @@ from gunb_tool.http_client import HttpError
 from gunb_tool.pipeline import IMPORT_LEASE, ImportSkipped, LeadPipeline
 from gunb_tool.storage import LeadRepository
 from tests.test_pipeline import FakeScraper, gunb_case
+
+
+def test_log_output_never_contains_the_token_even_in_tracebacks(tmp_path):
+    token = "123456:SECRET-token_x"
+    log_file = tmp_path / "bot.log"
+    main.setup_logging(LoggingConfig(level="INFO", file=log_file), secrets=(token,))
+    try:
+        try:
+            try:
+                raise ConnectionError("Max retries exceeded with url: /bot123456:SECRET-token_x/sendMessage")
+            except ConnectionError as exc:
+                raise RuntimeError(f"wysyłka nie powiodła się (token {token})") from exc
+        except RuntimeError:
+            logging.getLogger("gunb_tool.test").exception("Błąd wysyłki")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        text = log_file.read_text(encoding="utf-8")
+    finally:
+        for handler in [h for h in logging.getLogger().handlers if getattr(h, "_gunb_tool", False)]:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
+    assert "Błąd wysyłki" in text and "Traceback" in text
+    assert "SECRET" not in text and "<token>" in text
 
 
 @pytest.fixture

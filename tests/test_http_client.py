@@ -97,6 +97,23 @@ def test_secrets_in_urls_are_redacted_from_logs_and_errors(caplog):
     assert "api.telegram.org/bot<token>/sendMessage" in caplog.text
 
 
+def test_network_errors_do_not_leak_the_token_from_their_own_message(caplog):
+    """requests wkłada ścieżkę z tokenem do treści wyjątku (np. brak sieci) – ona też musi być zamaskowana."""
+    url = "https://api.telegram.org/bot123456:SECRET-token_x/getUpdates"
+    leak = requests.ConnectionError(
+        "HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded with url: "
+        "/bot123456:SECRET-token_x/getUpdates (Caused by NewConnectionError('Failed to establish'))")
+    client, _, _ = make_client([leak] * 4, max_retries=3)
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(HttpError) as excinfo:
+            client.post(url, json={})
+
+    assert "SECRET" not in str(excinfo.value)
+    assert "SECRET" not in caplog.text
+    assert "/bot<token>/getUpdates" in str(excinfo.value)
+
+
 # --- User-Agent i uprzejme opóźnienia ----------------------------------------
 
 def test_rotates_user_agent_from_pool_without_immediate_repeats():

@@ -39,7 +39,7 @@ from gunb_tool.exporter import (
     TelegramNotifier,
 )
 from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError
-from gunb_tool.http_client import HttpError, ResilientHttpClient
+from gunb_tool.http_client import HttpError, ResilientHttpClient, redact_url
 from gunb_tool.maintenance import vacuum_after_import, weekly_backup
 from gunb_tool.models import Source
 from gunb_tool.pipeline import (
@@ -133,7 +133,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"Błąd konfiguracji: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    setup_logging(config.logging, verbose=args.verbose)
+    setup_logging(config.logging, verbose=args.verbose,
+                  secrets=(config.telegram.bot_token, config.discord.webhook_url))
 
     telegram = config.telegram
     alerts = None
@@ -174,13 +175,34 @@ def _run_actions(args: argparse.Namespace, config: AppConfig) -> int:
     return exit_code
 
 
-def setup_logging(config: LoggingConfig, *, verbose: bool = False) -> None:
-    """Konfiguruje logi na stderr i (opcjonalnie) do pliku rotowanego; podmienia tylko własne handlery."""
+class RedactingFormatter(logging.Formatter):
+    """Formatter maskujący sekrety w całym wpisie – także w tracebackach łańcucha wyjątków.
+
+    Adresy ``/bot<token>/`` i webhooków maskuje :func:`redact_url`; dodatkowo podane wartości (np. token
+    z konfiguracji) są zamieniane na ``<token>`` wszędzie, gdzie wystąpią.
+    """
+
+    def __init__(self, fmt: str, *, secrets: Sequence[str] = ()) -> None:
+        super().__init__(fmt)
+        self._secrets = tuple(s for s in secrets if s and len(s) >= 8)
+
+    def format(self, record: logging.LogRecord) -> str:
+        text = redact_url(super().format(record))
+        for secret in self._secrets:
+            text = text.replace(secret, "<token>")
+        return text
+
+
+def setup_logging(config: LoggingConfig, *, verbose: bool = False, secrets: Sequence[str] = ()) -> None:
+    """Konfiguruje logi na stderr i (opcjonalnie) do pliku rotowanego; podmienia tylko własne handlery.
+
+    Plik ma ograniczony rozmiar (3 × 5 MB); każdy wpis przechodzi przez :class:`RedactingFormatter`.
+    """
     root = logging.getLogger()
     for handler in [h for h in root.handlers if getattr(h, "_gunb_tool", False)]:
         root.removeHandler(handler)
         handler.close()
-    formatter = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    formatter = RedactingFormatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", secrets=secrets)
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     if config.file is not None:
         config.file.parent.mkdir(parents=True, exist_ok=True)
