@@ -331,61 +331,45 @@ Tryb bota zastępuje `--notify-telegram` (nie uruchamiaj obu dla tego samego cza
 ## Serwer 24/7 (VPS lub Raspberry Pi)
 
 Bot tylko **wychodzi** do internetu (Telegram long polling, GUNB, ULDK) – nie potrzebuje publicznego
-IP, domeny ani otwartych portów. Wystarczy najmniejszy VPS z Debianem/Ubuntu (np. Hetzner, OVHcloud,
-Mikrus) albo Raspberry Pi w domu: 1 rdzeń, 512 MB RAM, 2 GB dysku.
+IP, domeny ani otwartych portów. Wystarczy najmniejszy VPS z Ubuntu 24.04 (także Debian 12+, Ubuntu
+22.04+, Raspberry Pi OS Bookworm+): 1 rdzeń, 512 MB RAM, 5 GB dysku.
 
-Instalacja jednym poleceniem (Debian 12+, Ubuntu 22.04+, Raspberry Pi OS Bookworm+):
+**Krok po kroku – nowy bot, przeniesienie bota z komputera, aktualizacja, wycofanie, kopie i monitor:
+[docs/WDROZENIE.md](docs/WDROZENIE.md).** Nowy bot jednym poleceniem:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/msm3107/GUNB-TOOL/main/deploy/install.sh | sudo bash
 ```
 
-[`deploy/install.sh`](deploy/install.sh):
-
-1. instaluje Pythona i gita, zakłada konto systemowe `gunb` i pobiera kod do `/opt/gunb-tool`,
-2. pyta o token bota (od razu sprawdza go w Telegramie) i Twój ID czatu → `/opt/gunb-tool/.env`
-   (uprawnienia 600, plik nigdy nie trafia do repozytorium),
-3. uruchamia test połączeń (`sanity_check.py`) i pierwsze pobieranie danych GUNB,
-4. instaluje usługę systemd [`gunb-bot`](deploy/gunb-bot.service): start razem z serwerem, restart po
-   awarii, zapis wyłącznie do `/opt/gunb-tool`; godziny z konfiguracji bot liczy w strefie Europe/Warsaw
-   niezależnie od strefy serwera (VPS-y zwykle działają w UTC),
-5. przy pierwszej instalacji dociąga w tle historię z ok. 27 miesięcy (`--fetch --historical` – najdłuższe
-   okno przypomnień o etapie budowy, tylko dla regionu z `config.yaml`).
-
-**Aktualizacja** to to samo polecenie – kod się odświeży, a baza, filtry i zapisane leady zostaną.
-Region (`gunb.voivodeships` / `gunb.powiats`) zmieniaj w `config.yaml` w repozytorium, potem aktualizuj.
+[`deploy/install.sh`](deploy/install.sh) instaluje każdą wersję kodu osobno (`/opt/gunb-tool/releases/`,
+dokładne wersje zależności z `requirements.lock`, właściciel root) i przełącza `current` dopiero po
+zatrzymaniu bota i kopii bazy. Stan trzyma w `/var/lib/gunb-tool` (config, `.env` z prawami 600, baza,
+kopie). Usługa systemd [`gunb-bot`](deploy/gunb-bot.service) działa na koncie bez uprawnień: startuje
+z serwerem, wstaje po awarii, a przy błędzie konfiguracji albo bazie nowszej niż kod zatrzymuje się
+bez pętli restartów. `--przygotuj` przygotowuje serwer pod przeniesienie bota i niczego nie uruchamia.
 
 | Co | Polecenie na serwerze |
 |---|---|
-| logi na żywo | `journalctl -u gunb-bot -f` |
-| stan / restart / stop | `systemctl status gunb-bot` · `sudo systemctl restart gunb-bot` · `sudo systemctl stop gunb-bot` |
-| kopia bazy | `/opt/gunb-tool/data/gunb_leads.sqlite` (np. `scp` na komputer) |
+| stan i kontrola zdrowia | `sudo gunb-admin status` · `sudo gunb-admin zdrowie` |
+| dziennik | `sudo gunb-admin logi -f` |
+| aktualizacja / wycofanie | `sudo gunb-admin aktualizuj <wersja>` · `sudo gunb-admin wycofaj` |
+| kopia bazy / kopia do pobrania poza serwer | `sudo gunb-admin kopia` · `sudo gunb-admin kopia-do-pobrania` |
+
+Kontrola zdrowia działa też bez serwera: `python main.py --zdrowie` (kod 0 / 1 / 2, tylko odczyt, bez
+migracji). `--ping <adres>` albo `HEALTHCHECK_PING_URL` zgłasza wynik do monitora typu healthchecks.io.
 
 > **Jeden token = jeden działający bot.** Dwa procesy odbierające aktualizacje tym samym tokenem
-> dostają od Telegrama błąd 409 (bot loguje ostrzeżenie i czeka) – po instalacji na serwerze wyłącz
-> bota na komputerze.
+> dostają od Telegrama błąd 409 – bot wstrzymuje wtedy wysyłki i alarmuje admina. Drugi proces na tych
+> samych danych kończy się od razu (blokada obok bazy, kod 3).
 
-### Aktualizacja i wycofanie (schemat v11)
+### Zmiany schematu bazy
 
-**Aktualizacja** (np. z wersji z abonamentami, schemat v6):
-
-1. `sudo systemctl stop gunb-bot` – bot kończy import między stronami.
-2. Kopia bazy: `cp /opt/gunb-tool/data/gunb_leads.sqlite ~/gunb_przed_aktualizacja.sqlite`.
-3. To samo polecenie instalacyjne (kod + `pip install -r requirements.txt`, w tym `tzdata`).
-4. Przy starcie migracje v7–v11 wykonują się same, każda w osobnej transakcji (tylko dodają tabele
-   i kolumny). Użytkownicy zaakceptowani przed abonamentami (baza < v6) dostają dostęp bez terminu –
-   przełączasz ich świadomie: `/nowymodel wszyscy 30` albo `/nowymodel <chat_id> 2026-12-31`.
-   Abonamenty z v6 zostają bez zmian; dotychczasowi użytkownicy nie przechodzą ponownie konfiguracji.
-5. Sprawdź `/status` (wątek zadań, import) i `journalctl -u gunb-bot -f`.
-
-**Wycofanie:** zatrzymaj bota i przywróć poprzedni kod (`git checkout <poprzedni commit>` w
-`/opt/gunb-tool`, potem `systemctl start gunb-bot`). Schemat jest tylko rozszerzany, więc stary kod
-działa na nowej bazie: nowe tabele i kolumny ignoruje, pole `stan` przy oznaczeniach jest dalej
-uzupełniane, a `bot_jobs` (offset Telegrama) zostaje. Skutki uboczne: stary kod nie zna 7-dniowego testu
-(osoby na teście mają okno dostępu w `is_active`/`subscription_ends`, więc działa im dalej do końca testu),
-dostępu bez terminu, pauzy, przypomnień ani notatek; w dniu wycofania może raz powtórzyć informację
-o wygaśnięciu abonamentu. Pełny powrót do stanu sprzed aktualizacji = przywrócenie kopii z punktu 2
-(tracisz zmiany z czasu po aktualizacji).
+Przy starcie nowej wersji migracje wykonują się same, każda w osobnej transakcji, a przed pierwszą
+z nich powstaje kopia bazy (`backups/<baza>-przed-v<N>-<czas>.sqlite`). Użytkownicy zaakceptowani przed
+abonamentami (baza < v6) dostają dostęp bez terminu – przełączasz ich świadomie: `/nowymodel wszyscy 30`
+albo `/nowymodel <chat_id> 2026-12-31`. Starsza wersja programu **nie uruchomi się** na bazie z nowszym
+schematem (kod wyjścia 2) – powrót do niej wymaga odtworzenia kopii sprzed aktualizacji, a zmiany
+z czasu po tej kopii przepadają ([docs/WDROZENIE.md](docs/WDROZENIE.md), sekcja E).
 
 ## Google Sheets
 
@@ -539,8 +523,9 @@ podmiotów innych niż osoby fizyczne.
 | **Ponowienia** | Każde zapytanie do GUNB i ULDK: 3 ponowienia z backoffem 2 → 4 → 8 s (`http.max_retries`). |
 | **Bezpiecznik** | 3 nieudane zapytania z rzędu do jednego serwera → przez 10 min kolejne są od razu odrzucane, potem jedno próbne (`http.circuit_breaker_*`). Awaria ULDK nie blokuje bota na godziny, a geokodowanie wraca samo. |
 | **Ponowienie pobierania** | Nieudane poranne pobieranie w trybie `--bot` jest ponawiane co godzinę aż do skutku. |
-| **Alerty admina** | Błędy z logów trafiają na osobny czat `TELEGRAM_ADMIN_CHAT_ID` z czytelnym nagłówkiem, np. „🚨 BŁĄD: ULDK zwraca HTTP 500”, „GUNB zablokował dostęp (HTTP 403)”, „Baza SQLite zablokowana”, a po awarii „✅ … znów odpowiada”. Ta sama awaria najwyżej raz na 3 h. Klienci niczego nie widzą. Test: `python main.py --test-alert`. |
-| **Kopia bazy** | Raz w tygodniu przed pobieraniem: `data/backups/gunb_leads-RRRR-MM-DD.sqlite`, spójna kopia przez API SQLite (także w trybie WAL), 8 ostatnich. |
+| **Alerty admina** | Błędy z logów trafiają na osobny czat `TELEGRAM_ADMIN_CHAT_ID` z czytelnym nagłówkiem, np. „🚨 BŁĄD: ULDK zwraca HTTP 500”, „GUNB zablokował dostęp (HTTP 403)”, „Baza SQLite zablokowana”, a po awarii „✅ … znów odpowiada”. Ta sama awaria (także u wielu osób naraz) najwyżej raz na 3 h, łącznie najwyżej 20 alertów na godzinę. Klienci niczego nie widzą. Test: `python main.py --test-alert`. |
+| **Kopia bazy** | Codziennie (nocne porządki bota o 03:30 albo przed pobieraniem): `data/backups/gunb_leads-RRRR-MM-DD.sqlite`, spójna kopia przez API SQLite (także w trybie WAL), 14 ostatnich; osobno kopia przed każdą zmianą schematu i wersji. |
+| **Kontrola zdrowia** | `python main.py --zdrowie`: proces, odbieranie wiadomości, wątek zadań, ostatni import, zaległe i nieudane wysyłki, baza, dysk, konflikt tokenu – tylko odczyt, niczego nie restartuje. |
 | **VACUUM** | Po dużym imporcie (≥ 500 nowych/zmienionych leadów, `storage.vacuum_threshold`). |
 
 Z pól inwestora i projektanta wyciągany jest też telefon (`+48…`) i e-mail do kolumn `telefon` i

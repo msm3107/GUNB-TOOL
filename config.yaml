@@ -161,7 +161,7 @@ storage:
   db_path: data/gunb_leads.sqlite
   # Kopia bazy raz dziennie: w nocnych porządkach bota (03:30) albo przed pobieraniem danych, jeśli
   # tego dnia jeszcze jej nie było (data w nazwie pliku; zostaje 14 najnowszych). Kopie leżą na tym
-  # samym dysku – przechowuj je też gdzie indziej (docs/WDROZENIE.md, „Kopie poza serwerem”).
+  # samym dysku – przechowuj je też gdzie indziej (docs/WDROZENIE.md, sekcja F).
   backup_dir: data/backups
   backup_every_days: 1
   backup_keep: 14

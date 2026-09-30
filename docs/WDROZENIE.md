@@ -1,0 +1,233 @@
+# Wdrożenie bota „Żółta Tablica” na serwer (VPS)
+
+Serwer: **Ubuntu 24.04 LTS**, 1 vCPU, 1 GB RAM (wystarczy 512 MB), 5 GB dysku, logowanie przez SSH na
+konto z `sudo` (niżej: `ubuntu@ADRES`). Bot tylko **wychodzi** do internetu (Telegram long polling, GUNB,
+ULDK), więc nie potrzebuje domeny ani otwartych portów. Z zewnątrz wystarczy SSH.
+
+Polecenia z `PS>` wpisujesz w PowerShellu na komputerze z Windows, a z `$` na serwerze. W miejsce
+`WERSJA` wstaw wdrażaną wersję (tag, gałąź albo commit; po scaleniu tej pracy: `main`).
+
+> **Jeden token = jeden działający bot.** Dwa boty na jednym tokenie dublowałyby raporty. Nowy bot
+> wykrywa taki konflikt (Telegram 409) i wstrzymuje wysyłki, ale stary bot na komputerze tego nie robi.
+
+## Układ na serwerze
+
+| Ścieżka | Zawartość |
+|---|---|
+| `/opt/gunb-tool/releases/<data>-<commit>/` | kod jednej wersji z własnym `.venv` (właściciel `root`) |
+| `/opt/gunb-tool/current` → wersja | działająca wersja; `previous` → poprzednia |
+| `/var/lib/gunb-tool/config.yaml` | konfiguracja (zostaje przy aktualizacjach) |
+| `/var/lib/gunb-tool/.env` | token i ID czatów (prawa 600, tylko konto `gunb`) |
+| `/var/lib/gunb-tool/data/` | baza `gunb_leads.sqlite`, `backups/` (kopie), `eksport/` (pakiety) |
+
+Bot działa jako usługa systemd `gunb-bot` na koncie `gunb`, które nie ma powłoki ani uprawnień
+administratora. Do obsługi służy `sudo gunb-admin` (lista poleceń: `sudo gunb-admin pomoc`).
+
+---
+
+## A. Przeniesienie działającego bota z komputera
+
+Kolejność: przygotowanie serwera, zatrzymanie bota na komputerze, eksport, przesłanie i sprawdzenie
+pakietu, import i sekrety, start jednej instancji, sprawdzenie. Bot na komputerze działa aż do kroku A3.
+
+### A1. Przygotuj serwer (niczego nie uruchamia, nie pobiera danych GUNB i nie wysyła wiadomości)
+
+```bash
+$ curl -fsSL https://raw.githubusercontent.com/msm3107/GUNB-TOOL/WERSJA/deploy/install.sh | sudo bash -s -- --przygotuj --wersja WERSJA
+$ sudo gunb-admin wersja
+```
+
+Usługa jest zainstalowana, ale wyłączona. Dopóki nie zaimportujesz danych, `gunb-admin start` i zwykła
+instalacja odmawiają startu, bo pusty bot na tym samym tokenie „zgubiłby” wszystkich użytkowników.
+
+### A2. Narzędzie eksportu na komputerze (obok obecnej instalacji, której nie zmienia)
+
+```powershell
+PS> git clone --branch WERSJA https://github.com/msm3107/GUNB-TOOL.git C:\GUNB-przeniesienie
+PS> cd C:\GUNB-przeniesienie
+PS> py -3.12 -m venv .venv
+PS> .venv\Scripts\python -m pip install -r requirements.txt
+```
+
+**Próba generalna (zalecana, bot na komputerze dalej działa).** Zrób spójną migawkę na żywo, a potem
+wykonaj kroki A4–A5 bez `sekrety` i bez `start`:
+
+```powershell
+PS> .venv\Scripts\python -m gunb_tool.migration eksport --config C:\Users\SLC\Documents\GUNB\config.yaml --do C:\GUNB-przeniesienie\pakiet --na-zywo
+```
+
+### A3. Zatrzymaj bota na komputerze i wszystko, co zapisuje do bazy
+
+Zamknij okno bota albo zatrzymaj zadanie lub usługę, którą go uruchamiasz, i wyłącz jej autostart
+(np. `Disable-ScheduledTask -TaskName "<nazwa zadania>"` albo `nssm stop <usługa>` i `nssm set <usługa> Start SERVICE_DISABLED`).
+Wyłącz też zaplanowane `--fetch` i `--notify-*`, jeśli je masz. Sprawdź, czy nic nie zostało:
+
+```powershell
+PS> Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" | Where-Object CommandLine -Match 'main.py' | Select-Object ProcessId, CommandLine
+```
+
+Wynik ma być pusty. Stara wersja bota nie zakłada blokady instancji, więc eksport nie zawsze sam wykryje,
+że bot pracuje. Dlatego to sprawdzenie jest obowiązkowe.
+
+### A4. Eksport końcowy i przesłanie
+
+```powershell
+PS> .venv\Scripts\python -m gunb_tool.migration eksport --config C:\Users\SLC\Documents\GUNB\config.yaml --do C:\GUNB-przeniesienie\pakiet
+PS> Get-FileHash C:\GUNB-przeniesienie\pakiet\gunb-migracja-*.zip -Algorithm SHA256
+PS> scp C:\GUNB-przeniesienie\pakiet\gunb-migracja-<czas>.zip ubuntu@ADRES:~/
+```
+
+Pakiet zawiera bazę (wszystkie inwestycje z historią, użytkownicy, filtry, testy i abonamenty,
+zapisane i ukryte leady, notatki, obserwowane, przypomnienia, stan doręczeń i harmonogramu),
+`config.yaml` i `.env` **bez sekretów**, a także `manifest.json` z wersjami i sumami SHA-256.
+Zawiera dane osobowe, więc przesyłaj go tylko przez `scp` i usuń po imporcie.
+
+### A5. Sprawdzenie, import i sekrety na serwerze
+
+```bash
+$ sha256sum ~/gunb-migracja-<czas>.zip          # ta sama suma co Get-FileHash
+$ sudo gunb-admin sprawdz ~/gunb-migracja-<czas>.zip
+$ sudo gunb-admin importuj ~/gunb-migracja-<czas>.zip
+$ sudo gunb-admin sekrety                        # ten sam token co na komputerze (TELEGRAM_BOT_TOKEN z .env)
+```
+
+`sprawdz` odrzuca uszkodzony, niekompletny albo obcy pakiet i niczego nie zmienia. `importuj` wymaga
+zatrzymanego bota i robi kopię istniejącej bazy. Po próbie generalnej dodaj `--zastap`, żeby zastąpić
+bazę z próby. Starsza baza (np. schemat v6) podniesie się przy pierwszym starcie, a przed zmianą
+schematu powstanie kopia. ID czatów i kontakt admina przychodzą z pakietu.
+
+Konfiguracja zostaje serwerowa, czyli z nowej wersji. Jeśli `config.yaml` na komputerze był zmieniany
+względem repozytorium (region, godziny), dodaj `--konfiguracja-z-pakietu`, a potem sprawdź w
+`/var/lib/gunb-tool/config.yaml` wartości `backup_every_days: 1` i `backup_keep: 14`. Starsze pliki
+mają kopię raz w tygodniu.
+
+### A6. Start jednej instancji
+
+```bash
+$ sudo gunb-admin start
+$ sudo gunb-admin zdrowie        # po minucie; ✘ przy „odbieraniu” = sprawdź token i sieć
+```
+
+Bot po przeniesieniu nie wysyła historii od nowa. Doręczenia, oznaczenia i dzisiejsze zadania są w
+bazie, więc wyjdzie tylko to, co nowe albo zaległe z przerwy (w ciszy nocnej 22–6 nic nie wychodzi).
+
+### A7. Sprawdzenie
+
+1. Napisz do bota `/status` z konta administratora: wątek zadań, ostatni import, wysyłki.
+2. Kliknij „📊 Inwestycje” i „⭐ Zapisane”. Zapisane leady i notatki powinny być na miejscu.
+3. `sudo gunb-admin logi 200` – bez błędów i bez serii wysyłek po starcie.
+4. Restart serwera: `sudo reboot`, po 2 minutach `sudo gunb-admin status` (bot działa sam).
+5. Po pierwszym raporcie o zwykłej godzinie usuń pakiety: `rm ~/gunb-migracja-*.zip` na serwerze
+   i `C:\GUNB-przeniesienie\pakiet\*` na komputerze.
+
+**Powrót na komputer w pierwszych dniach:** `sudo gunb-admin stop && sudo systemctl disable gunb-bot`,
+potem włącz bota na komputerze. Jego baza jest z chwili eksportu, więc zmiany z serwera przepadną,
+chyba że najpierw przeniesiesz je z powrotem (`gunb-admin eksport` na serwerze, `importuj --zastap`
+na komputerze).
+
+---
+
+## B. Nowy bot na czystym serwerze
+
+```bash
+$ curl -fsSL https://raw.githubusercontent.com/msm3107/GUNB-TOOL/WERSJA/deploy/install.sh | sudo bash -s -- --wersja WERSJA
+```
+
+Instalator pyta o token i Twój ID (podaje go @userinfobot), sprawdza połączenia, pobiera dane GUNB,
+uruchamia bota, wysyła wiadomość testową na czat admina i w tle dociąga historię (do godziny).
+
+## C. Codzienna obsługa
+
+| Co | Polecenie |
+|---|---|
+| stan i kontrola zdrowia (0 OK, 1 ostrzeżenie, 2 awaria) | `sudo gunb-admin status` · `sudo gunb-admin zdrowie` |
+| dziennik (na żywo / ostatnie N linii) | `sudo gunb-admin logi -f` · `sudo gunb-admin logi 300` |
+| start / stop / restart | `sudo gunb-admin start` · `stop` · `restart` |
+| zmiana tokenu lub ID admina | `sudo gunb-admin sekrety` |
+| konfiguracja | `sudoedit /var/lib/gunb-tool/config.yaml`, potem `sudo gunb-admin restart` |
+
+Dziennik systemd ma ograniczony rozmiar, a plik `data/gunb_tool.log` ma najwyżej 3 × 5 MB. Tokeny są
+w logach zamaskowane. Awarie (np. GUNB, ULDK, baza) trafiają na czat admina, najwyżej 20 alertów na
+godzinę.
+
+## D. Aktualizacja
+
+```bash
+$ sudo gunb-admin aktualizuj WERSJA
+$ sudo gunb-admin zdrowie
+```
+
+Nowa wersja powstaje obok działającej z dokładnymi wersjami zależności (`requirements.lock`). Bot
+kończy bieżący krok, powstaje kopia bazy `…-przed-<wersja>-…`, przełącza się `current` i bot rusza.
+Jeśli zależności się nie zainstalują albo nowa wersja nie przyjmie konfiguracji, nic się nie zmienia
+i dalej działa stara wersja. Bot celowo zatrzymany zostaje zatrzymany.
+
+## E. Wycofanie wersji
+
+```bash
+$ sudo gunb-admin wycofaj
+```
+
+Wraca do poprzedniej wersji kodu, jeśli zna ona schemat bazy. Gdy nowa wersja zmieniła schemat,
+polecenie odmawia i wypisuje dokładne kroki. Starszy kod celowo nie startuje na nowszej bazie (kod 2,
+bez pętli restartów):
+
+```bash
+$ sudo gunb-admin kopie                               # kopia …-przed-<wersja>-… albo …-przed-v<N>-…
+$ sudo gunb-admin stop
+$ sudo gunb-admin odtworz /var/lib/gunb-tool/data/backups/<kopia>.sqlite
+$ sudo gunb-admin wycofaj
+$ sudo gunb-admin start
+```
+
+**Uwaga:** odtworzenie kopii cofa bazę do chwili jej wykonania. Nowe osoby, abonamenty, notatki,
+zapisane leady i stan wysyłek z czasu po kopii przepadają. Zostają tylko w kopii
+`…-przed-odtworzeniem-…`, którą `odtworz` robi automatycznie.
+
+## F. Kopie zapasowe
+
+- **Automatycznie:** codziennie o 03:30 (także przed importem, jeśli tego dnia jeszcze nie było), 14 ostatnich.
+  Dodatkowo kopia przed każdą zmianą wersji i przed każdą zmianą schematu.
+- **Ręcznie:** `sudo gunb-admin kopia` (spójna, także przy pracującym bocie).
+- **Poza serwerem (co tydzień):** kopie na tym samym dysku nie chronią przed utratą serwera.
+
+```bash
+$ sudo gunb-admin kopia-do-pobrania                    # świeża kopia w ~/gunb-kopie, prawa 600
+```
+```powershell
+PS> scp ubuntu@ADRES:gunb-kopie/<plik>.sqlite C:\GUNB-kopie\
+```
+```bash
+$ rm ~/gunb-kopie/<plik>.sqlite
+```
+
+Kopie trzymaj w folderze dostępnym tylko dla Ciebie (dane osobowe).
+
+**Próba odtworzenia (raz w miesiącu, na osobnej bazie, bez wpływu na bota):**
+
+```powershell
+PS> mkdir C:\GUNB-test-kopii; Copy-Item C:\GUNB-przeniesienie\config.yaml C:\GUNB-test-kopii\
+PS> cd C:\GUNB-przeniesienie
+PS> .venv\Scripts\python -m gunb_tool.migration odtworz C:\GUNB-kopie\<plik>.sqlite --config C:\GUNB-test-kopii\config.yaml
+PS> .venv\Scripts\python main.py --config C:\GUNB-test-kopii\config.yaml --stats
+```
+
+## G. Monitor zewnętrzny (alarm, gdy stanie cały serwer albo proces)
+
+Alert z samego bota nie przyjdzie, gdy bot albo serwer nie działa. Najprostszy „dead man's switch”:
+
+1. Na healthchecks.io (plan darmowy) utwórz kontrolę: okres 5 min, tolerancja 10 min, powiadomienie
+   e-mailem lub przez Telegram.
+2. `sudo gunb-admin monitor https://hc-ping.com/<uuid>`: timer co 5 minut uruchamia kontrolę zdrowia
+   i zgłasza wynik. Awaria idzie na `/fail`, a brak zgłoszeń (serwer lub proces stoi) wywołuje alarm
+   po stronie monitora. Kontrola niczego nie restartuje.
+
+## H. Gdy coś nie działa
+
+| Objaw | Co zrobić |
+|---|---|
+| `zdrowie`: ✘ odbieranie wiadomości | `sudo gunb-admin logi 50`: `401` = zły token (`sekrety`), `409` = działa drugi bot na tym tokenie (wyłącz go), brak połączenia = sieć lub Telegram (bot ponawia sam) |
+| usługa `failed`, kod 2 | błąd konfiguracji albo baza nowsza niż kod (`logi`), potem popraw config lub `aktualizuj` / `odtworz` |
+| usługa `failed`, kod 3 | na tych danych działa już inny proces bota |
+| ⚠ stary import GUNB | GUNB niedostępny albo zmienił format; bot ponawia co godzinę, szczegóły w `/status` i `logi` |
+| mało miejsca na dysku | `sudo gunb-admin kopie` i usuń stare kopie `…-przed-…` (dzienne rotują się same) |
