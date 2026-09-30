@@ -555,3 +555,19 @@ def test_telegram_unreachable_at_start_does_not_stop_the_bot(repo, clock):
 
     assert api.sent  # bot odpowiada mimo nieudanego startu menu
     assert api.attempts == 2 and api.commands  # menu komend ustawione, gdy Telegram odpowiedział
+
+
+def test_long_telegram_outage_is_retried_less_and_less_often(repo, clock):
+    """Przy długiej awarii przerwy rosną do minuty (mniej prób i wpisów w logu); udany odbiór je zeruje."""
+    outcomes = ["x"] * 6 + ["ok"] + ["x"]
+
+    class FlakyApi(FakeApi):
+        def get_updates(self, offset, timeout):
+            if outcomes.pop(0) == "x":
+                raise TelegramApiError("getUpdates", None, "Connection refused")
+            return []
+
+    bot = make_bot(repo, FlakyApi(), clock)
+    delays = []
+    bot.run_forever(should_stop=lambda: not outcomes, sleep=delays.append)
+    assert delays == [5, 10, 20, 40, 60, 60, 5]

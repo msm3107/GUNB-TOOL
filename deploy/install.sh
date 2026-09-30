@@ -147,6 +147,7 @@ fetch_release() {  # pobiera wersję REF do /opt/gunb-tool/releases/<data>-<comm
         || git -C "$STAGE/kod" rev-parse --verify --quiet "$REF^{commit}") \
         || die "Nie ma wersji '$REF' w $REPO_URL (podaj tag, gałąź albo commit)"
     git -C "$STAGE/kod" checkout --quiet --detach "$commit"
+    printf '%s\n' "$commit" > "$STAGE/kod/WERSJA"  # numer wersji w pakietach migracji (git z konta usługi go nie poda)
     [ -f "$STAGE/kod/deploy/gunb-admin" ] \
         || die "Wersja '$REF' jest starsza niż układ z /opt/gunb-tool/releases – tym instalatorem jej nie zainstalujesz"
     RELEASE_ID="$(date -u +%Y%m%d-%H%M%S)-$(git -C "$STAGE/kod" rev-parse --short=10 HEAD)"

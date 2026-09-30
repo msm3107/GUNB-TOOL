@@ -13,6 +13,9 @@ MARKER=$STATE_DIR/PRZENIESIENIE-W-TOKU
 SERVICE=gunb-bot
 HEALTH_TIMER=gunb-zdrowie.timer
 DEFAULT_REPO=https://github.com/msm3107/GUNB-TOOL.git
+WORK_DIR=""
+cleanup() { if [ -n "$WORK_DIR" ]; then rm -rf -- "$WORK_DIR"; fi; }
+trap cleanup EXIT
 
 usage() {
     cat <<'EOF'
@@ -85,16 +88,15 @@ start() {
 }
 
 update() {  # update [wersja]: instalator z TEJ wersji (zna jej wymagania), pobrany z tego samego repozytorium
-    local ref=${1:-main} repo tmp commit git_opts=()
+    local ref=${1:-main} repo commit git_opts=()
     repo=$(cat "$APP_ROOT/repo" 2>/dev/null || echo "$DEFAULT_REPO")
     if [ -d "$repo" ]; then git_opts=(-c "safe.directory=*"); fi
-    tmp=$(mktemp -d)
-    trap 'rm -rf -- "$tmp"' EXIT
-    git "${git_opts[@]}" clone --quiet "$repo" "$tmp/kod"
-    commit=$(git -C "$tmp/kod" rev-parse --verify --quiet "origin/$ref^{commit}" \
-        || git -C "$tmp/kod" rev-parse --verify --quiet "$ref^{commit}") || die "nie ma wersji '$ref' w $repo"
-    git -C "$tmp/kod" checkout --quiet --detach "$commit"
-    bash "$tmp/kod/deploy/install.sh" --wersja "$ref" --repo "$repo"
+    WORK_DIR=$(mktemp -d)
+    git "${git_opts[@]}" clone --quiet "$repo" "$WORK_DIR/kod"
+    commit=$(git -C "$WORK_DIR/kod" rev-parse --verify --quiet "origin/$ref^{commit}" \
+        || git -C "$WORK_DIR/kod" rev-parse --verify --quiet "$ref^{commit}") || die "nie ma wersji '$ref' w $repo"
+    git -C "$WORK_DIR/kod" checkout --quiet --detach "$commit"
+    bash "$WORK_DIR/kod/deploy/install.sh" --wersja "$ref" --repo "$repo"
 }
 
 monitor() {

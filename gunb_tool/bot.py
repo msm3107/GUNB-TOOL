@@ -58,6 +58,8 @@ HEARTBEAT_JOB = "watek_zadan"
 """Ostatni cykl wątku zadań – po nim widać, że zadania w tle żyją."""
 RECEIVE_HEARTBEAT_JOB = "petla_odbioru"
 """Ostatni udany odbiór aktualizacji z Telegrama – brak świeżego znaczy: bot głuchy (kontrola zdrowia)."""
+RECEIVE_RETRY_MAX = 60
+"""Najdłuższa przerwa (s) między próbami odbioru, gdy Telegram długo nie odpowiada (5, 10, 20, 40, 60…)."""
 REPORT_JOBS: dict[str, str] = {"raport_rano": "rano", "raport_wieczor": "wieczor"}
 """Zadanie raportu → tryb użytkowników, którzy go dostają."""
 CLEANUP_JOB, CLEANUP_TIME = "porzadki", "03:30"
@@ -203,18 +205,22 @@ class LeadBot:
         """
         menu_ready = self._try_setup()
         log.info("Bot uruchomiony – czekam na wiadomości (Ctrl+C kończy)")
+        failures = 0
         while not should_stop():
             try:
                 self.poll_once(self.settings.poll_timeout)
                 self.store.set_job_time(RECEIVE_HEARTBEAT_JOB, self._now())
+                failures = 0
                 menu_ready = menu_ready or self._try_setup()
             except TelegramApiError as exc:
                 if exc.code == 409:  # drugi proces odbiera aktualizacje tym samym tokenem
                     self._note_conflict(exc)
                     sleep(30)
-                else:
-                    log.warning("Telegram: %s", exc)
-                    sleep(5)
+                else:  # przy długiej awarii rzadziej – mniej prób i mniej wpisów w logu
+                    failures += 1
+                    delay = min(RECEIVE_RETRY_MAX, 5 * 2 ** min(failures - 1, 4))
+                    log.warning("Telegram: %s – ponowię za %d s", exc, delay)
+                    sleep(delay)
             except sqlite3.Error as exc:  # np. baza chwilowo zajęta przez VACUUM w wątku zadań
                 log.warning("Baza chwilowo niedostępna: %s – ponawiam", exc)
                 sleep(1)
