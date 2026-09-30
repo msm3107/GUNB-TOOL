@@ -122,8 +122,8 @@ main() {
                 journalctl -u "$SERVICE" -n "${1:-100}" --no-pager
             fi ;;
         wersja)
-            printf 'działająca: %s\n' "$(readlink -f "$CURRENT" 2>/dev/null || echo brak)"
-            printf 'poprzednia: %s\n' "$(readlink -f "$APP_ROOT/previous" 2>/dev/null || echo brak)" ;;
+            printf 'działająca: %s\n' "$(readlink -e "$CURRENT" 2>/dev/null || echo brak)"
+            printf 'poprzednia: %s\n' "$(readlink -e "$APP_ROOT/previous" 2>/dev/null || echo brak)" ;;
         start) need_root; need_install; start ;;
         stop) need_root; systemctl stop "$SERVICE"; echo "✔ bot zatrzymany (po restarcie serwera wstanie – chyba że: sudo systemctl disable $SERVICE)" ;;
         restart) need_root; systemctl restart "$SERVICE"; sleep 5; running || die "bot nie wystartował: sudo gunb-admin logi" ;;

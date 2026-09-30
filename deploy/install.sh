@@ -198,7 +198,7 @@ install_system_files() {  # install_system_files <katalog wersji>: jednostki sys
 
 switch_to_release() {  # zatrzymuje bota, robi kopię bazy i przełącza „current”; ustawia WAS_ACTIVE
     local previous db
-    previous=$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)
+    previous=$(readlink -e "$APP_ROOT/current" 2>/dev/null || true)
     WAS_ACTIVE=0
     if systemctl is-active --quiet "$SERVICE"; then
         WAS_ACTIVE=1
@@ -246,8 +246,8 @@ start_bot() {
 
 prune_releases() {  # zostają: działająca, poprzednia i KEEP_RELEASES najnowszych
     local current previous release count=0
-    current=$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)
-    previous=$(readlink -f "$APP_ROOT/previous" 2>/dev/null || true)
+    current=$(readlink -e "$APP_ROOT/current" 2>/dev/null || true)
+    previous=$(readlink -e "$APP_ROOT/previous" 2>/dev/null || true)
     while IFS= read -r release; do
         count=$((count + 1))
         if [ "$count" -gt "$KEEP_RELEASES" ] && [ "$release" != "$current" ] && [ "$release" != "$previous" ]; then
@@ -402,8 +402,8 @@ EOF
 
 rollback() {
     local current previous db db_schema old_schema was_active=0
-    current=$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)
-    previous=$(readlink -f "$APP_ROOT/previous" 2>/dev/null || true)
+    current=$(readlink -e "$APP_ROOT/current" 2>/dev/null || true)
+    previous=$(readlink -e "$APP_ROOT/previous" 2>/dev/null || true)
     [ -n "$previous" ] && [ -d "$previous" ] \
         || die "Brak zapisanej poprzedniej wersji. Wybraną wersję zainstalujesz: sudo gunb-admin aktualizuj <wersja>"
     [ "$previous" != "$current" ] || die "Poprzednia wersja jest już tą działającą."
@@ -445,7 +445,7 @@ main() {
         rollback) rollback ;;
         secrets)
             [ -x "$APP_ROOT/current/.venv/bin/python" ] || die "Najpierw zainstaluj bota (install.sh)."
-            RELEASE=$(readlink -f "$APP_ROOT/current")
+            RELEASE=$(readlink -e "$APP_ROOT/current")
             setup_secrets "$RELEASE"
             if systemctl is-active --quiet "$SERVICE"; then
                 systemctl restart "$SERVICE"

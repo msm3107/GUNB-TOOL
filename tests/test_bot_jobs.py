@@ -532,3 +532,26 @@ def test_expired_click_confirmation_neither_undoes_the_action_nor_alerts_the_adm
 
     assert BotStore(repo).lead_flags(MIETEK, "A/1").saved  # zapis się odbył
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]  # to nie awaria – bez alertu
+
+
+# --- Telegram niedostępny przy starcie (np. serwer wstaje bez sieci) – bez pętli restartów ------------------
+
+def test_telegram_unreachable_at_start_does_not_stop_the_bot(repo, clock):
+    class LateNetworkApi(PollingApi):
+        def __init__(self, updates):
+            super().__init__(updates)
+            self.attempts = 0
+
+        def set_my_commands(self, commands):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise TelegramApiError("setMyCommands", None, "Connection refused")
+            super().set_my_commands(commands)
+
+    api = LateNetworkApi([numbered(1, MIETEK, "/start")])
+    bot = make_bot(repo, api, clock)
+    polls = []
+    bot.run_forever(should_stop=lambda: len(polls) >= 2 or bool(polls.append(1)), sleep=lambda s: None)
+
+    assert api.sent  # bot odpowiada mimo nieudanego startu menu
+    assert api.attempts == 2 and api.commands  # menu komend ustawione, gdy Telegram odpowiedział

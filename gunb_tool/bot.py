@@ -198,14 +198,16 @@ class LeadBot:
                     sleep: Callable[[float], None] = time.sleep) -> None:
         """Odbieranie wiadomości i kliknięć; zadania w tle wykonuje osobny wątek (:class:`JobsWorker`).
 
-        Kończy się po bieżącym long pollingu, gdy ``should_stop()`` zwróci ``True``.
+        Kończy się po bieżącym long pollingu, gdy ``should_stop()`` zwróci ``True``. Telegram niedostępny
+        przy starcie nie kończy programu (to byłaby pętla restartów) – menu komend ustawi się później.
         """
-        self.setup()
+        menu_ready = self._try_setup()
         log.info("Bot uruchomiony – czekam na wiadomości (Ctrl+C kończy)")
         while not should_stop():
             try:
                 self.poll_once(self.settings.poll_timeout)
                 self.store.set_job_time(RECEIVE_HEARTBEAT_JOB, self._now())
+                menu_ready = menu_ready or self._try_setup()
             except TelegramApiError as exc:
                 if exc.code == 409:  # drugi proces odbiera aktualizacje tym samym tokenem
                     self._note_conflict(exc)
@@ -219,6 +221,14 @@ class LeadBot:
             except Exception:  # pętla odbierania nie może paść – bez niej bot jest głuchy
                 log.exception("Nieoczekiwany błąd pętli odbierania wiadomości")
                 sleep(5)
+
+    def _try_setup(self) -> bool:
+        try:
+            self.setup()
+        except TelegramApiError as exc:
+            log.warning("Menu komend nieustawione (%s) – ponowię, gdy Telegram odpowie", exc)
+            return False
+        return True
 
     def _note_conflict(self, exc: TelegramApiError) -> None:
         """Telegram 409: ten sam token odbiera inny proces (np. zapomniany bot na drugim komputerze).
