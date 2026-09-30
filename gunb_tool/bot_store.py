@@ -10,7 +10,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence, TypeGuard
 
 from .models import Investment
@@ -18,8 +18,29 @@ from .storage import LeadRepository, investment_from_row
 from .text import normalize_text
 
 MODES: tuple[str, ...] = ("natychmiast", "rano", "wieczor")
+SETUP_STEPS: tuple[str, ...] = ("branza", "obszar")
+SETUP_DONE = "gotowe"
 LEAD_STATES: tuple[str, ...] = ("zapisany", "przejrzany", "ukryty")
+_STATE_FLAG = {"zapisany": "saved", "przejrzany": "reviewed", "ukryty": "hidden"}
 WATCH_KINDS: tuple[str, ...] = ("inwestor", "gmina")
+
+
+@dataclass(frozen=True)
+class LeadFlags:
+    """Oznaczenia inwestycji przez użytkownika – niezależne: zapisana, przejrzana, ukryta."""
+
+    saved: bool = False
+    reviewed: bool = False
+    hidden: bool = False
+
+    @property
+    def legacy_state(self) -> str | None:
+        """Jedno pole ``stan`` sprzed v7 (dla starszego kodu): ukryty > zapisany > przejrzany."""
+        if self.hidden:
+            return "ukryty"
+        if self.saved:
+            return "zapisany"
+        return "przejrzany" if self.reviewed else None
 
 _LEGAL_FORM_RE = re.compile(
     r"(?<![\w])(spolka z ograniczona odpowiedzialnoscia|spolka komandytowo-akcyjna|spolka komandytowa"
@@ -157,6 +178,18 @@ class BotUser:
     branza: str | None = None
     is_active: bool = False
     subscription_ends: str | None = None
+    bez_limitu: bool = False
+    rodzaj_dostepu: str | None = None
+    test_dozwolony: bool = False
+    test_start: str | None = None
+    test_koniec: str | None = None
+    konfiguracja: str | None = None
+    wstrzymane: bool = False
+
+    @property
+    def setup_done(self) -> bool:
+        """Czy pierwsza konfiguracja (branża, obszar) jest za nim."""
+        return self.konfiguracja == SETUP_DONE
 
     @property
     def display_name(self) -> str:
@@ -164,8 +197,54 @@ class BotUser:
         return self.imie or (f"@{self.username}" if self.username else str(self.chat_id))
 
     def has_subscription(self, now_iso: str) -> bool:
-        """Czy abonament jest aktywny i nie wygasł (daty w UTC, format ISO)."""
+        """Czy okno dostępu (test albo abonament) jest otwarte i nie minęło (daty w UTC, format ISO)."""
         return self.is_active and bool(self.subscription_ends) and (self.subscription_ends or "") > now_iso
+
+    @property
+    def trial_used(self) -> bool:
+        """Test już wystartował (raz na osobę – nawet po odebraniu dostępu drugiego nie ma)."""
+        return self.test_start is not None
+
+    @property
+    def trial_available(self) -> bool:
+        """Admin pozwolił na test, a osoba jeszcze go nie zaczęła."""
+        return self.test_dozwolony and not self.trial_used
+
+    @property
+    def on_trial(self) -> bool:
+        """Obecne (albo ostatnie) okno dostępu to darmowy test."""
+        return self.rodzaj_dostepu == "test"
+
+
+@dataclass(frozen=True)
+class Send:
+    """Wysyłka zadania (np. ``raport_rano:2026-09-29``) do jednej osoby – wiersz kolejki ``wysylki``.
+
+    Stany: ``oczekuje`` (także przed ponowieniem), ``wysylanie`` (próba w toku), ``wyslano``, ``pusto``
+    (nic nowego – bez wiadomości), ``pominieto`` (np. brak dostępu, cisza nocna), ``zablokowany``, ``blad``
+    (wyczerpane próby).
+    """
+
+    zadanie: str
+    chat_id: int
+    stan: str
+    proby: int
+    nastepna_proba: str
+    ostatni_blad: str | None
+    utworzono: str
+    zmieniono: str
+
+
+@dataclass(frozen=True)
+class JobStatus:
+    """Stan zadania w tle (np. importu) dla admina; czasy w UTC."""
+
+    nazwa: str
+    ostatnio: str | None
+    stan: str | None
+    start: str | None
+    koniec: str | None
+    opis: str | None
 
 
 @dataclass(frozen=True)
@@ -241,26 +320,76 @@ class BotStore:
         return [_user(row) for row in self._conn.execute(sql + " ORDER BY chat_id", params).fetchall()]
 
     def subscribers(self, now_iso: str, *, admins: Sequence[int], tryb: str | None = None) -> list[BotUser]:
-        """Odbiorcy leadów: tylko osoby z aktywnym, niewygasłym abonamentem (plus administratorzy)."""
+        """Odbiorcy automatycznych wysyłek – ta sama reguła co ``LeadBot._receives_automatic`` (test to
+        pilnuje): status ``aktywny``, bez pauzy i z dostępem (bez limitu, otwarte okno testu/abonamentu, admin)."""
         marks = ",".join("?" for _ in admins) or "NULL"
-        sql = (f"SELECT * FROM bot_users WHERE status = 'aktywny'"
-               f" AND ((is_active = 1 AND subscription_ends > ?) OR chat_id IN ({marks}))")
+        sql = (f"SELECT * FROM bot_users WHERE status = 'aktywny' AND wstrzymane = 0 AND (dostep_bez_limitu = 1"
+               f" OR (is_active = 1 AND subscription_ends > ?) OR chat_id IN ({marks}))")
         params: list[object] = [now_iso, *admins]
         if tryb is not None:
             sql += " AND tryb = ?"
             params.append(tryb)
         return [_user(row) for row in self._conn.execute(sql + " ORDER BY chat_id", params).fetchall()]
 
-    def expired_subscriptions(self, now_iso: str) -> list[BotUser]:
-        """Abonamenty oznaczone jako aktywne, których termin już minął (do wyłączenia i powiadomienia)."""
-        rows = self._conn.execute(
-            "SELECT * FROM bot_users WHERE is_active = 1 AND subscription_ends <= ? ORDER BY chat_id", (now_iso,)
-        ).fetchall()
+    def set_subscription(self, chat_id: int, ends_iso: str | None, *, active: bool) -> None:
+        """Ustawia okno dostępu wprost: ``active`` i termin (UTC, ISO)."""
+        self._update(chat_id, is_active=int(active), subscription_ends=ends_iso)
+
+    # Dostęp: test i abonament --------------------------------------------------------------------
+
+    def set_access(self, chat_id: int, ends_iso: str, *, kind: str = "platny") -> None:
+        """Dostęp nadany przez admina do ``ends_iso`` – zastępuje też dostęp bez limitu (nowy model)."""
+        self._update(chat_id, is_active=1, subscription_ends=ends_iso, rodzaj_dostepu=kind, dostep_bez_limitu=0)
+
+    def revoke_access(self, chat_id: int) -> None:
+        """Admin odbiera dostęp od razu; zapisane inwestycje, ustawienia i historia testu zostają."""
+        self._update(chat_id, is_active=0, dostep_bez_limitu=0, test_dozwolony=0)
+
+    def allow_trial(self, chat_id: int) -> bool:
+        """Admin pozwala na test; ``False`` – ta osoba już go wykorzystała."""
+        cursor = self._conn.execute(
+            "UPDATE bot_users SET test_dozwolony = 1, zmieniono = ? WHERE chat_id = ? AND test_start IS NULL",
+            (_iso(self.repo.now()), chat_id),
+        )
+        return cursor.rowcount == 1
+
+    def start_trial(self, chat_id: int, start: datetime, end: datetime) -> bool:
+        """Start testu kliknięty przez osobę – raz na zawsze; ``False``, gdy nie był dozwolony albo już ruszył."""
+        cursor = self._conn.execute(
+            "UPDATE bot_users SET test_start = ?, test_koniec = ?, is_active = 1, subscription_ends = ?,"
+            " rodzaj_dostepu = 'test', zmieniono = ? WHERE chat_id = ? AND test_dozwolony = 1 AND test_start IS NULL",
+            (_iso(start), _iso(end), _iso(end), _iso(start), chat_id),
+        )
+        return cursor.rowcount == 1
+
+    def unlimited_users(self) -> list[BotUser]:
+        """Dotychczasowi użytkownicy z dostępem bez terminu (sprzed abonamentów)."""
+        rows = self._conn.execute("SELECT * FROM bot_users WHERE dostep_bez_limitu = 1 ORDER BY chat_id").fetchall()
         return [_user(row) for row in rows]
 
-    def set_subscription(self, chat_id: int, ends_iso: str | None, *, active: bool) -> None:
-        """Ustawia abonament: ``active`` i termin wygaśnięcia (UTC, ISO)."""
-        self._update(chat_id, is_active=int(active), subscription_ends=ends_iso)
+    def access_ending(self, now: datetime, until: datetime, *, admins: Sequence[int]) -> list[BotUser]:
+        """Okna dostępu kończące się w ``(now, until]``, o których jeszcze nie przypomnieliśmy."""
+        return self._access_query("subscription_ends > ? AND subscription_ends <= ?"
+                                  " AND przypomniano_koniec IS NOT subscription_ends", [_iso(now), _iso(until)], admins)
+
+    def access_ended(self, now: datetime, *, admins: Sequence[int]) -> list[BotUser]:
+        """Okna dostępu, które minęły, a informacja o końcu jeszcze nie wyszła."""
+        return self._access_query("subscription_ends <= ? AND zgloszono_koniec IS NOT subscription_ends",
+                                  [_iso(now)], admins)
+
+    def mark_access_reminded(self, chat_id: int, ends_iso: str) -> None:
+        self._conn.execute("UPDATE bot_users SET przypomniano_koniec = ? WHERE chat_id = ?", (ends_iso, chat_id))
+
+    def mark_access_end_reported(self, chat_id: int, ends_iso: str) -> None:
+        self._conn.execute("UPDATE bot_users SET zgloszono_koniec = ? WHERE chat_id = ?", (ends_iso, chat_id))
+
+    def _access_query(self, condition: str, params: list[object], admins: Sequence[int]) -> list[BotUser]:
+        marks = ",".join("?" for _ in admins) or "NULL"
+        rows = self._conn.execute(
+            f"SELECT * FROM bot_users WHERE status = 'aktywny' AND is_active = 1 AND dostep_bez_limitu = 0"
+            f" AND chat_id NOT IN ({marks}) AND {condition} ORDER BY chat_id", [*admins, *params]
+        ).fetchall()
+        return [_user(row) for row in rows]
 
     def set_status(self, chat_id: int, status: str) -> None:
         self._update(chat_id, status=status)
@@ -282,6 +411,33 @@ class BotStore:
     def set_trade(self, chat_id: int, branza: str | None) -> None:
         """Branża użytkownika do przypomnień „Kiedy dzwonić” (``None`` – bez przypomnień)."""
         self._update(chat_id, branza=branza)
+
+    def set_paused(self, chat_id: int, value: bool) -> None:
+        """Pauza wszystkich automatycznych wiadomości (raporty, alerty, przypomnienia); dostęp się nie zmienia."""
+        self._update(chat_id, wstrzymane=int(value))
+
+    def set_setup_step(self, chat_id: int, step: str) -> None:
+        """Krok pierwszej konfiguracji: ``branza``, ``obszar`` albo ``gotowe``."""
+        self._update(chat_id, konfiguracja=step)
+
+    def has_investments(self) -> bool:
+        """Czy w bazie są już jakiekolwiek dane (świeża instalacja przed pierwszym importem – nie)."""
+        return self._conn.execute("SELECT 1 FROM investments WHERE is_noise = 0 LIMIT 1").fetchone() is not None
+
+    def place_is_known(self, name: str) -> bool:
+        """Czy w danych (monitorowany obszar) jest inwestycja z tej miejscowości lub gminy."""
+        wanted = normalize_text(name)
+        if not wanted:
+            return False
+        rows = self._conn.execute(
+            "SELECT DISTINCT gmina, miejscowosc, adres_opisowy, powiat FROM investments WHERE is_noise = 0"
+        ).fetchall()
+        return any(wanted in normalize_text(" ".join(value for value in row if value)) for row in rows)
+
+    def nearest_investment_km(self, point: tuple[float, float]) -> float | None:
+        """Odległość (w linii prostej) od punktu do najbliższej inwestycji w danych; ``None`` – brak danych."""
+        rows = self._conn.execute("SELECT lat, lon FROM investments WHERE lat IS NOT NULL AND lon IS NOT NULL")
+        return min((haversine_km(point, (row["lat"], row["lon"])) for row in rows), default=None)
 
     def mark_report(self, chat_id: int, when_iso: str) -> None:
         self._update(chat_id, ostatni_raport=when_iso)
@@ -308,39 +464,139 @@ class BotStore:
         ).fetchall()
         return [WatchItem(**dict(row)) for row in rows]
 
-    # Stany leadów (⭐ / ✅ / 🗑️) -----------------------------------------------------------------
+    # Oznaczenia inwestycji (⭐ zapisana / ✅ przejrzana / 🗑️ ukryta) – niezależne od siebie ------------
+
+    def lead_flags(self, chat_id: int, id_sprawy: str) -> LeadFlags:
+        row = self._conn.execute(
+            "SELECT zapisany, przejrzany, ukryty FROM user_leads WHERE chat_id = ? AND id_sprawy = ?",
+            (chat_id, id_sprawy),
+        ).fetchone()
+        return LeadFlags(bool(row["zapisany"]), bool(row["przejrzany"]), bool(row["ukryty"])) if row else LeadFlags()
+
+    def set_lead_flags(self, chat_id: int, id_sprawy: str, *, saved: bool | None = None,
+                       reviewed: bool | None = None, hidden: bool | None = None) -> LeadFlags:
+        """Ustawia wskazane oznaczenia (pozostałe bez zmian); ponowienie tego samego jest bez skutków.
+
+        Kolumna ``stan`` dostaje wartość pochodną – kod sprzed rozdzielenia oznaczeń (v7) nadal ją czyta.
+        """
+        current = self.lead_flags(chat_id, id_sprawy)
+        flags = LeadFlags(current.saved if saved is None else saved,
+                          current.reviewed if reviewed is None else reviewed,
+                          current.hidden if hidden is None else hidden)
+        if flags == current:
+            return flags
+        self._conn.execute(
+            "INSERT INTO user_leads (chat_id, id_sprawy, stan, zmieniono, zapisany, przejrzany, ukryty)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET stan = excluded.stan,"
+            " zmieniono = excluded.zmieniono, zapisany = excluded.zapisany, przejrzany = excluded.przejrzany,"
+            " ukryty = excluded.ukryty",
+            (chat_id, id_sprawy, flags.legacy_state or "przejrzany", _iso(self.repo.now()),
+             int(flags.saved), int(flags.reviewed), int(flags.hidden)),
+        )
+        return flags
 
     def set_lead_state(self, chat_id: int, id_sprawy: str, stan: str) -> None:
+        """Zgodność ze starszym API: włącza jedno oznaczenie (``zapisany`` / ``przejrzany`` / ``ukryty``)."""
         if stan not in LEAD_STATES:
             raise ValueError(f"Nieznany stan leada: {stan!r}")
-        self._conn.execute(
-            "INSERT INTO user_leads (chat_id, id_sprawy, stan, zmieniono) VALUES (?, ?, ?, ?)"
-            " ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET stan = excluded.stan, zmieniono = excluded.zmieniono",
-            (chat_id, id_sprawy, stan, _iso(self.repo.now())),
-        )
+        self.set_lead_flags(chat_id, id_sprawy, **{_STATE_FLAG[stan]: True})
 
     def clear_lead_state(self, chat_id: int, id_sprawy: str) -> None:
-        """Usuwa oznaczenie leada (np. „↩️ Przywróć” po ukryciu)."""
-        self._conn.execute("DELETE FROM user_leads WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy))
+        """„↩️ Przywróć” – zdejmuje tylko ukrycie; zapisanie i przejrzenie zostają."""
+        self.set_lead_flags(chat_id, id_sprawy, hidden=False)
 
     def lead_state(self, chat_id: int, id_sprawy: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT stan FROM user_leads WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy)
-        ).fetchone()
-        return row["stan"] if row else None
+        """Zgodność ze starszym API: najważniejsze oznaczenie (ukryty > zapisany > przejrzany)."""
+        return self.lead_flags(chat_id, id_sprawy).legacy_state
 
     def saved(self, chat_id: int, *, limit: int, offset: int = 0) -> list[Investment]:
-        """Zapisane leady użytkownika – ostatnio zapisane pierwsze."""
+        """Zapisane (i nieukryte) inwestycje użytkownika – ostatnio zmienione pierwsze."""
         rows = self._conn.execute(
             "SELECT i.* FROM user_leads u JOIN investments i ON i.id_sprawy = u.id_sprawy"
-            " WHERE u.chat_id = ? AND u.stan = 'zapisany' ORDER BY u.zmieniono DESC, u.rowid DESC LIMIT ? OFFSET ?",
+            " WHERE u.chat_id = ? AND u.zapisany = 1 AND u.ukryty = 0"
+            " ORDER BY u.zmieniono DESC, u.rowid DESC LIMIT ? OFFSET ?",
             (chat_id, limit, offset),
         ).fetchall()
         return [investment_from_row(row) for row in rows]
 
+    # Osobiste przypomnienia („⏰ Przypomnij”) i prywatne notatki ----------------------------------
+
+    def set_reminder(self, chat_id: int, id_sprawy: str, termin: datetime, dni: int) -> None:
+        """Jedno przypomnienie na osobę i inwestycję – ponowny wybór przesuwa termin."""
+        self._conn.execute(
+            "INSERT INTO przypomnienia (chat_id, id_sprawy, termin, dni, utworzono) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET termin = excluded.termin, dni = excluded.dni",
+            (chat_id, id_sprawy, _iso(termin), dni, _iso(self.repo.now())),
+        )
+
+    def clear_reminder(self, chat_id: int, id_sprawy: str) -> None:
+        self._conn.execute("DELETE FROM przypomnienia WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy))
+
+    def reminder(self, chat_id: int, id_sprawy: str) -> datetime | None:
+        row = self._conn.execute(
+            "SELECT termin FROM przypomnienia WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy)
+        ).fetchone()
+        return datetime.fromisoformat(row["termin"]) if row else None
+
+    def due_reminders(self, now: datetime) -> dict[int, list[Investment]]:
+        """Przypomnienia po terminie: ``{chat_id: [inwestycje]}`` (najstarsze terminy najpierw)."""
+        rows = self._conn.execute(
+            "SELECT r.chat_id AS przypomnienie_dla, i.* FROM przypomnienia r"
+            " JOIN investments i ON i.id_sprawy = r.id_sprawy WHERE r.termin <= ? ORDER BY r.chat_id, r.termin",
+            (_iso(now),),
+        ).fetchall()
+        due: dict[int, list[Investment]] = {}
+        for row in rows:
+            due.setdefault(row["przypomnienie_dla"], []).append(investment_from_row(row))
+        return due
+
+    def note(self, chat_id: int, id_sprawy: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT tekst FROM notatki WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy)
+        ).fetchone()
+        return row["tekst"] if row else None
+
+    def set_note(self, chat_id: int, id_sprawy: str, tekst: str) -> None:
+        """Prywatna notatka do inwestycji (widzi ją tylko ta osoba)."""
+        self._conn.execute(
+            "INSERT INTO notatki (chat_id, id_sprawy, tekst, zmieniono) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET tekst = excluded.tekst, zmieniono = excluded.zmieniono",
+            (chat_id, id_sprawy, tekst, _iso(self.repo.now())),
+        )
+
+    def delete_note(self, chat_id: int, id_sprawy: str) -> None:
+        self._conn.execute("DELETE FROM notatki WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy))
+
+    # Zdarzenia pilotażu (tylko te, których nie ma w ``deliveries``) --------------------------------
+
+    def record_event(self, chat_id: int, rodzaj: str, id_sprawy: str | None = None) -> None:
+        self._conn.execute(
+            "INSERT INTO zdarzenia (chat_id, rodzaj, id_sprawy, kiedy) VALUES (?, ?, ?, ?)",
+            (chat_id, rodzaj, id_sprawy, _iso(self.repo.now())),
+        )
+
+    def event_counts(self, since: datetime) -> dict[str, tuple[int, int]]:
+        """``{rodzaj: (unikalne osoby, unikalne inwestycje)}`` od ``since``."""
+        rows = self._conn.execute(
+            "SELECT rodzaj, COUNT(DISTINCT chat_id) AS osoby, COUNT(DISTINCT id_sprawy) AS inwestycje"
+            " FROM zdarzenia WHERE kiedy >= ? GROUP BY rodzaj", (_iso(since),)
+        ).fetchall()
+        return {row["rodzaj"]: (row["osoby"], row["inwestycje"]) for row in rows}
+
+    def delivery_counts(self, since: datetime) -> tuple[int, int]:
+        """Wysłane w raportach i alertach od ``since``: (unikalne inwestycje, unikalne osoby).
+
+        Wysłanie to nie przeczytanie – Telegram nie mówi, czy ktoś wiadomość obejrzał.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT id_sprawy) AS inwestycje, COUNT(DISTINCT chat_id) AS osoby FROM deliveries"
+            " WHERE doreczono >= ? AND rodzaj IN ('raport', 'natychmiast', 'watchlista', 'etap')", (_iso(since),)
+        ).fetchone()
+        return row["inwestycje"], row["osoby"]
+
     def saved_count(self, chat_id: int) -> int:
         return self._conn.execute(
-            "SELECT COUNT(*) FROM user_leads WHERE chat_id = ? AND stan = 'zapisany'", (chat_id,)
+            "SELECT COUNT(*) FROM user_leads WHERE chat_id = ? AND zapisany = 1 AND ukryty = 0", (chat_id,)
         ).fetchone()[0]
 
     # Doręczenia --------------------------------------------------------------------------------
@@ -352,7 +608,7 @@ class BotStore:
             SELECT i.* FROM investments i
             WHERE i.is_noise = 0 AND i.status_zmieniony > ?
               AND NOT EXISTS (SELECT 1 FROM user_leads u
-                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.stan = 'ukryty')
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
               AND NOT EXISTS (SELECT 1 FROM deliveries d
                               WHERE d.chat_id = ? AND d.id_sprawy = i.id_sprawy AND d.rewizja = i.status_zmieniony)
             ORDER BY i.status_zmieniony, i.data_aktualizacji, i.nr
@@ -361,21 +617,23 @@ class BotStore:
         ).fetchall()
         return [investment_from_row(row) for row in rows]
 
-    def recent_leads(self, chat_id: int, date_from: str, limit: int = 1000) -> list[Investment]:
-        """Leady (bez szumu i ukrytych) z datą zdarzenia od ``date_from`` (RRRR-MM-DD), także już widziane.
+    def recent_leads(self, chat_id: int, date_from: str) -> list[Investment]:
+        """Wszystkie inwestycje (bez szumu i ukrytych) z datą zdarzenia od ``date_from``, także już widziane.
 
-        Służy do „pasujących z ostatnich dni” – np. zaraz po zmianie filtrów.
+        Bez limitu: filtry użytkownika (promień, rodzaj, kubatura, inwestor) stosuje wywołujący, a limit
+        przed filtrowaniem dawał fałszywe „brak pasujących”, gdy pasująca była starsza niż tysiąc innych.
+        Kolejność jest stała (data, numer), więc strony „Dalej/Wstecz” się nie przesuwają.
         """
         rows = self._conn.execute(
             """
             SELECT i.* FROM investments i
             WHERE i.is_noise = 0 AND i.data_aktualizacji >= ?
               AND NOT EXISTS (SELECT 1 FROM user_leads u
-                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.stan = 'ukryty')
-            ORDER BY i.data_aktualizacji DESC, i.nr DESC LIMIT ?
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
+            ORDER BY i.data_aktualizacji DESC, i.nr DESC
             """,
-            (date_from, chat_id, limit),
-        ).fetchall()
+            (date_from, chat_id),
+        )
         return [investment_from_row(row) for row in rows]
 
     def stage_candidates(self, chat_id: int, rewizja: str, decided_since: str) -> list[Investment]:
@@ -389,7 +647,7 @@ class BotStore:
             SELECT i.* FROM investments i
             WHERE i.is_noise = 0 AND coalesce(i.data_decyzji, i.data_wplywu) >= ?
               AND NOT EXISTS (SELECT 1 FROM user_leads u
-                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.stan = 'ukryty')
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
               AND NOT EXISTS (SELECT 1 FROM deliveries d
                               WHERE d.chat_id = ? AND d.id_sprawy = i.id_sprawy AND d.rewizja = ?)
             ORDER BY coalesce(i.data_decyzji, i.data_wplywu), i.nr
@@ -429,6 +687,116 @@ class BotStore:
     def clear_job(self, nazwa: str) -> None:
         self._conn.execute("DELETE FROM bot_jobs WHERE nazwa = ?", (nazwa,))
 
+    # Harmonogram i stan zadań (UTC) ------------------------------------------------------------
+
+    def job_time(self, nazwa: str) -> datetime | None:
+        """Ostatnie uruchomienie zadania (albo termin, np. ponowienia importu); ``None`` – brak."""
+        row = self._conn.execute("SELECT ostatnio FROM zadania WHERE nazwa = ?", (nazwa,)).fetchone()
+        return datetime.fromisoformat(row["ostatnio"]) if row and row["ostatnio"] else None
+
+    def set_job_time(self, nazwa: str, moment: datetime | None) -> None:
+        self._conn.execute(
+            "INSERT INTO zadania (nazwa, ostatnio) VALUES (?, ?)"
+            " ON CONFLICT (nazwa) DO UPDATE SET ostatnio = excluded.ostatnio",
+            (nazwa, _iso(moment) if moment else None),
+        )
+
+    def job_started(self, nazwa: str) -> None:
+        """Początek zadania (np. importu) – widoczny dla admina, zanim się skończy."""
+        self._conn.execute(
+            "INSERT INTO zadania (nazwa, stan, start) VALUES (?, 'trwa', ?) ON CONFLICT (nazwa) DO UPDATE"
+            " SET stan = 'trwa', start = excluded.start, koniec = NULL, opis = NULL",
+            (nazwa, _iso(self.repo.now())),
+        )
+
+    def job_finished(self, nazwa: str, stan: str, opis: str | None = None) -> None:
+        """Koniec zadania: ``ok`` / ``blad`` / ``pominieto`` z krótkim opisem (wynik albo treść błędu)."""
+        self._conn.execute(
+            "INSERT INTO zadania (nazwa, stan, koniec, opis) VALUES (?, ?, ?, ?) ON CONFLICT (nazwa) DO UPDATE"
+            " SET stan = excluded.stan, koniec = excluded.koniec, opis = excluded.opis",
+            (nazwa, stan, _iso(self.repo.now()), (opis or "")[:300] or None),
+        )
+
+    def job_status(self, nazwa: str) -> JobStatus | None:
+        row = self._conn.execute("SELECT * FROM zadania WHERE nazwa = ?", (nazwa,)).fetchone()
+        return JobStatus(**dict(row)) if row else None
+
+    # Kolejka wysyłek (raporty, przypomnienia) – każda osoba osobno, z ponowieniami ---------------
+
+    def enqueue_sends(self, zadanie: str, chat_ids: Iterable[int]) -> None:
+        """Zadanie wystartowało: po jednej wysyłce na osobę; powtórne dodanie tego samego nic nie zmienia."""
+        now = _iso(self.repo.now())
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO wysylki (zadanie, chat_id, nastepna_proba, utworzono, zmieniono)"
+            " VALUES (?, ?, ?, ?, ?)",
+            [(zadanie, chat_id, now, now, now) for chat_id in chat_ids],
+        )
+
+    def due_sends(self) -> list[Send]:
+        """Wysyłki czekające na próbę, których termin już minął – w kolejności dodania."""
+        rows = self._conn.execute(
+            "SELECT * FROM wysylki WHERE stan = 'oczekuje' AND nastepna_proba <= ? ORDER BY nastepna_proba, rowid",
+            (_iso(self.repo.now()),),
+        ).fetchall()
+        return [Send(**dict(row)) for row in rows]
+
+    def claim_send(self, zadanie: str, chat_id: int) -> bool:
+        """Początek próby (``wysylanie``, licznik prób +1); ``False`` – wysyłkę wziął już ktoś inny."""
+        cursor = self._conn.execute(
+            "UPDATE wysylki SET stan = 'wysylanie', proby = proby + 1, zmieniono = ?"
+            " WHERE zadanie = ? AND chat_id = ? AND stan = 'oczekuje'",
+            (_iso(self.repo.now()), zadanie, chat_id),
+        )
+        return cursor.rowcount == 1
+
+    def finish_send(self, zadanie: str, chat_id: int, stan: str, *, blad: str | None = None,
+                    retry_at: datetime | None = None) -> None:
+        """Wynik próby; z ``retry_at`` wysyłka wraca do kolejki (``oczekuje``) na ten termin."""
+        now = _iso(self.repo.now())
+        self._conn.execute(
+            "UPDATE wysylki SET stan = ?, nastepna_proba = coalesce(?, nastepna_proba),"
+            " ostatni_blad = coalesce(?, ostatni_blad), zmieniono = ? WHERE zadanie = ? AND chat_id = ?",
+            ("oczekuje" if retry_at else stan, _iso(retry_at) if retry_at else None, (blad or "")[:300] or None,
+             now, zadanie, chat_id),
+        )
+
+    def requeue_stuck_sends(self, older_than: datetime) -> int:
+        """Próby przerwane w trakcie (proces padł) wracają do kolejki – wiadomość mogła już dojść."""
+        cursor = self._conn.execute(
+            "UPDATE wysylki SET stan = 'oczekuje', ostatni_blad = 'próba przerwana (restart w trakcie wysyłki)',"
+            " zmieniono = ? WHERE stan = 'wysylanie' AND zmieniono <= ?",
+            (_iso(self.repo.now()), _iso(older_than)),
+        )
+        return cursor.rowcount
+
+    def send_row(self, zadanie: str, chat_id: int) -> Send | None:
+        row = self._conn.execute(
+            "SELECT * FROM wysylki WHERE zadanie = ? AND chat_id = ?", (zadanie, chat_id)
+        ).fetchone()
+        return Send(**dict(row)) if row else None
+
+    def send_counts(self, since: datetime) -> dict[str, dict[str, int]]:
+        """Zadania wysyłek od ``since``: ``{zadanie: {stan: liczba osób}}`` – do podglądu admina."""
+        counts: dict[str, dict[str, int]] = {}
+        for row in self._conn.execute(
+            "SELECT zadanie, stan, COUNT(*) AS n FROM wysylki WHERE utworzono >= ? GROUP BY zadanie, stan"
+            " ORDER BY min(rowid)", (_iso(since),)
+        ):
+            counts.setdefault(row["zadanie"], {})[row["stan"]] = row["n"]
+        return counts
+
+    def failed_sends(self, since: datetime) -> list[Send]:
+        rows = self._conn.execute(
+            "SELECT * FROM wysylki WHERE stan = 'blad' AND utworzono >= ? ORDER BY rowid", (_iso(since),)
+        ).fetchall()
+        return [Send(**dict(row)) for row in rows]
+
+    def prune_sends(self, before: datetime) -> None:
+        """Usuwa zakończone wysyłki starsze niż ``before`` (tabela nie rośnie bez końca)."""
+        self._conn.execute(
+            "DELETE FROM wysylki WHERE utworzono < ? AND stan NOT IN ('oczekuje', 'wysylanie')", (_iso(before),)
+        )
+
     def place_options(self, powiat_codes: Sequence[str], limit: int = 30) -> list[tuple[str, str]]:
         """Powiaty do wyboru w filtrach: ``(kod, nazwa)`` – nazwa z danych ULDK, gdy już jest w bazie.
 
@@ -466,6 +834,13 @@ def _user(row) -> BotUser:
         branza=row["branza"],
         is_active=bool(row["is_active"]),
         subscription_ends=row["subscription_ends"],
+        bez_limitu=bool(row["dostep_bez_limitu"]),
+        rodzaj_dostepu=row["rodzaj_dostepu"],
+        test_dozwolony=bool(row["test_dozwolony"]),
+        test_start=row["test_start"],
+        test_koniec=row["test_koniec"],
+        konfiguracja=row["konfiguracja"],
+        wstrzymane=bool(row["wstrzymane"]),
     )
 
 

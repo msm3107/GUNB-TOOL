@@ -74,6 +74,9 @@ class HttpConfig:
         circuit_breaker_failures: po tylu kolejnych nieudanych zapytaniach (każde już po ponowieniach)
             do jednego serwera kolejne są od razu odrzucane; 0 wyłącza bezpiecznik.
         circuit_breaker_cooldown: po ilu sekundach przepuścić zapytanie próbne do niedostępnego serwera.
+        max_retry_after: gdy serwer każe czekać (``Retry-After``, np. limit Telegrama) dłużej niż tyle
+            sekund, zapytanie od razu kończy się błędem; ``None`` – czekaj (najwyżej ``MAX_RETRY_AFTER``).
+            Dla odpowiedzi na kliknięcia, które nie mogą wisieć minutami.
     """
 
     timeout: float = 60.0
@@ -85,6 +88,7 @@ class HttpConfig:
     user_agents: tuple[str, ...] = DEFAULT_USER_AGENTS
     circuit_breaker_failures: int = 3
     circuit_breaker_cooldown: float = 600.0
+    max_retry_after: float | None = None
 
 
 @dataclass(frozen=True)
@@ -133,7 +137,7 @@ class StorageConfig:
 
     Attributes:
         backup_dir: katalog kopii bazy (domyślnie ``backups`` obok pliku bazy).
-        backup_every_days: co ile dni robić kopię (przed pobieraniem danych).
+        backup_every_days: co ile dni robić kopię (nocne porządki bota albo przed pobieraniem danych).
         backup_keep: ile najnowszych kopii zachować.
         vacuum_threshold: od tylu nowych/zmienionych leadów w jednym pobieraniu import jest „duży”
             i po nim wykonywany jest ``VACUUM``.
@@ -141,8 +145,8 @@ class StorageConfig:
 
     db_path: Path = Path("data/gunb_leads.sqlite")
     backup_dir: Path | None = None
-    backup_every_days: int = 7
-    backup_keep: int = 8
+    backup_every_days: int = 1
+    backup_keep: int = 14
     vacuum_threshold: int = 500
 
 

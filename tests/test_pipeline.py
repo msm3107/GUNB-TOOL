@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -8,7 +8,7 @@ from gunb_tool.exporter import NotificationError, SheetsSyncResult
 from gunb_tool.geocoding_uldk import GeocodeResult, GeoPrecision
 from gunb_tool.gunb_scraper import FetchQuery, Page
 from gunb_tool.models import GunbCase, Investment, Parcel, Source, Status
-from gunb_tool.pipeline import LeadPipeline, build_query
+from gunb_tool.pipeline import IMPORT_LEASE, ImportSkipped, LeadPipeline, build_query, import_lease
 from gunb_tool.storage import LeadRepository
 
 
@@ -165,6 +165,29 @@ def test_contacts_in_project_description_are_not_used(repo):
     assert (repo.get("A/1").telefon, repo.get("A/1").email) == (None, None)
 
 
+def test_fetch_stops_between_pages_when_asked(repo):
+    pipeline = make_pipeline(repo, [gunb_case(f"PL/{n}") for n in range(5)])
+    checks = []
+
+    report = pipeline.fetch(QUERY, page_size=2, should_continue=lambda: checks.append(1) or len(checks) < 2)
+
+    assert report.interrupted and (report.pages, report.cases) == (2, 4)
+    assert repo.get("PL/3") is not None and repo.get("PL/4") is None  # zapisane strony zostają
+
+
+def test_only_one_import_runs_at_a_time(repo):
+    waits = []
+    with import_lease(repo, owner="bot"):
+        with pytest.raises(ImportSkipped, match="trwa inny import"):
+            with import_lease(repo, owner="cron", wait=timedelta(minutes=1), sleep=waits.append):
+                pass
+    assert waits == [15.0] * 4  # czekał minutę, sprawdzając co 15 s
+
+    with import_lease(repo, owner="cron"):  # pierwszy skończył – blokada wolna
+        assert repo.lease_holder(IMPORT_LEASE) == "cron"
+    assert repo.lease_holder(IMPORT_LEASE) is None
+
+
 def test_limit_stops_processing(repo):
     report = make_pipeline(repo, [gunb_case(f"X/{i}") for i in range(5)]).fetch(QUERY, page_size=2, limit=3)
     assert report.cases == 3
@@ -187,7 +210,7 @@ def test_notify_sends_individual_messages_with_buttons_and_marks_leads(repo):
     report = make_pipeline(repo, []).notify(notifier, limit=50, max_age_days=14, digest_threshold=10)
 
     assert (report.messages, report.leads, report.digests, report.failed) == (3, 3, 0, 0)
-    assert all(msg.text.startswith("🏗️ <b>NOWY LEAD</b>") for _, msg in notifier.sent)
+    assert all(msg.text.startswith("🏗️ <b>NOWA INWESTYCJA</b>") for _, msg in notifier.sent)
     assert all(msg.buttons[0][0] == "📍 Otwórz w Google Maps" for _, msg in notifier.sent)
     assert repo.pending_notifications("telegram", limit=10) == []
     assert repo.get("L/x/0").czy_wyslano is True
@@ -201,7 +224,7 @@ def test_notify_sends_digest_instead_of_spam_above_threshold(repo):
     assert report.digests == 1
     assert report.leads == 12
     assert report.messages == len(notifier.sent) < 12
-    assert notifier.sent[0][1].text.startswith("📊 <b>Raport GUNB</b> · 12 leadów")
+    assert notifier.sent[0][1].text.startswith("📊 <b>Raport GUNB</b> · 12 inwestycji")
     assert repo.pending_notifications("telegram", limit=50) == []
 
 
@@ -214,7 +237,7 @@ def test_notify_routes_segments_to_their_destinations(repo):
 
     destinations = [destination for destination, _ in notifier.sent]
     assert destinations == ["czat-domki", "czat-domyslny"]      # domki: raport (2 > 1), duze: pojedyncza
-    assert notifier.sent[0][1].text.startswith("📊 <b>Raport GUNB</b> · 2 leady")
+    assert notifier.sent[0][1].text.startswith("📊 <b>Raport GUNB</b> · 2 inwestycje")
     assert report.digests == 1 and report.leads == 3
 
 
@@ -225,7 +248,7 @@ def test_notify_dry_run_prints_without_marking(repo):
         FakeNotifier("discord"), limit=10, max_age_days=14, dry_run=True, output=printed.append
     )
     assert report.messages == 1 and report.dry_run
-    assert any(line.startswith("🏗️ **NOWY LEAD**") for line in printed)
+    assert any(line.startswith("🏗️ **NOWA INWESTYCJA**") for line in printed)
     assert len(repo.pending_notifications("discord", limit=10)) == 1
 
 

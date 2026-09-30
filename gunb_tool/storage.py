@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import enum
 import json
+import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
@@ -23,7 +25,8 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 
-SCHEMA_VERSION = 6
+log = logging.getLogger(__name__)
+
 BUSY_TIMEOUT_MS = 5000
 
 _SCHEMA = """
@@ -162,15 +165,170 @@ ALTER TABLE bot_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE bot_users ADD COLUMN subscription_ends TEXT;
 """
 
-_MIGRATIONS: tuple[str, ...] = (
+def _independent_lead_flags(conn: sqlite3.Connection, from_version: int) -> None:
+    """v7: zapisanie, przejrzenie i ukrycie jako niezależne flagi (dotąd jedno pole ``stan`` – nadpisywało się).
+
+    Odtwarza tylko to, co da się odczytać ze starego pola; nadpisanych wcześniej stanów nie zgadujemy.
+    Kolumna ``stan`` zostaje (kod sprzed v7 nadal ją czyta) i jest dalej uzupełniana wartością pochodną.
+    """
+    _run_script(conn, """
+        ALTER TABLE user_leads ADD COLUMN zapisany INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE user_leads ADD COLUMN przejrzany INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE user_leads ADD COLUMN ukryty INTEGER NOT NULL DEFAULT 0;
+        UPDATE user_leads SET zapisany = (stan = 'zapisany'), przejrzany = (stan = 'przejrzany'),
+                              ukryty = (stan = 'ukryty');
+    """)
+
+
+_JOBS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS zadania (
+    nazwa    TEXT PRIMARY KEY,
+    ostatnio TEXT,
+    stan     TEXT,
+    start    TEXT,
+    koniec   TEXT,
+    opis     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS wysylki (
+    zadanie        TEXT NOT NULL,
+    chat_id        INTEGER NOT NULL,
+    stan           TEXT NOT NULL DEFAULT 'oczekuje',
+    proby          INTEGER NOT NULL DEFAULT 0,
+    nastepna_proba TEXT NOT NULL,
+    ostatni_blad   TEXT,
+    utworzono      TEXT NOT NULL,
+    zmieniono      TEXT NOT NULL,
+    PRIMARY KEY (zadanie, chat_id)
+);
+CREATE INDEX IF NOT EXISTS ix_wysylki_stan ON wysylki (stan, nastepna_proba);
+
+CREATE TABLE IF NOT EXISTS blokady (
+    nazwa      TEXT PRIMARY KEY,
+    wlasciciel TEXT NOT NULL,
+    wygasa     TEXT NOT NULL
+);
+"""
+
+
+def _jobs_in_utc(conn: sqlite3.Connection, from_version: int) -> None:
+    """v8: stan zadań w UTC (``zadania``), kolejka wysyłek z ponowieniami (``wysylki``), blokady importu.
+
+    Terminy z ``bot_jobs`` (czas lokalny serwera, bez strefy) trafiają do ``zadania`` w UTC, więc po
+    aktualizacji bot nie powtarza dzisiejszych zadań. ``bot_jobs`` zostaje: offset Telegrama i starszy kod.
+    """
+    _run_script(conn, _JOBS_SCHEMA)
+    for nazwa, ostatnio in conn.execute("SELECT nazwa, ostatnio FROM bot_jobs WHERE nazwa != 'telegram_offset'"):
+        try:
+            moment = datetime.fromisoformat(ostatnio)
+        except (TypeError, ValueError):
+            continue
+        if moment.tzinfo is None:
+            moment = moment.astimezone()  # stary zapis: czas lokalny serwera, na którym działał bot
+        conn.execute("INSERT OR REPLACE INTO zadania (nazwa, ostatnio) VALUES (?, ?)", (nazwa, _iso(moment)))
+
+
+def _trial_and_access(conn: sqlite3.Connection, from_version: int) -> None:
+    """v9: 7-dniowy test (raz na osobę) i dostęp bez limitu dla użytkowników sprzed abonamentów.
+
+    Okno dostępu (test albo abonament) zostaje w ``is_active`` + ``subscription_ends`` – kod z v6 nadal je
+    rozumie. Bazy sprzed v6 nie znały abonamentów: każdy zaakceptowany (także ten, który zablokował bota)
+    miał dostęp – zachowuje go bez terminu, aż admin świadomie przełączy go na nowy model (``/nowymodel``).
+    """
+    _run_script(conn, """
+        ALTER TABLE bot_users ADD COLUMN dostep_bez_limitu INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE bot_users ADD COLUMN rodzaj_dostepu TEXT;
+        ALTER TABLE bot_users ADD COLUMN test_dozwolony INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE bot_users ADD COLUMN test_start TEXT;
+        ALTER TABLE bot_users ADD COLUMN test_koniec TEXT;
+        ALTER TABLE bot_users ADD COLUMN przypomniano_koniec TEXT;
+        ALTER TABLE bot_users ADD COLUMN zgloszono_koniec TEXT;
+        UPDATE bot_users SET rodzaj_dostepu = 'platny' WHERE subscription_ends IS NOT NULL;
+        UPDATE bot_users SET zgloszono_koniec = subscription_ends
+            WHERE is_active = 0 AND subscription_ends IS NOT NULL;
+    """)
+    if from_version < 6:
+        conn.execute("UPDATE bot_users SET dostep_bez_limitu = 1 WHERE status IN ('aktywny', 'zablokowany')")
+
+
+_SETUP_STEP = """
+ALTER TABLE bot_users ADD COLUMN konfiguracja TEXT;
+UPDATE bot_users SET konfiguracja = 'gotowe';
+"""
+"""v10: krok pierwszej konfiguracji (branża → obszar → gotowe); dotychczasowi użytkownicy jej nie powtarzają."""
+
+
+_PERSONAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS przypomnienia (
+    chat_id   INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    id_sprawy TEXT NOT NULL REFERENCES investments (id_sprawy) ON DELETE CASCADE,
+    termin    TEXT NOT NULL,
+    dni       INTEGER NOT NULL,
+    utworzono TEXT NOT NULL,
+    PRIMARY KEY (chat_id, id_sprawy)
+);
+CREATE INDEX IF NOT EXISTS ix_przypomnienia_termin ON przypomnienia (termin);
+
+CREATE TABLE IF NOT EXISTS notatki (
+    chat_id   INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    id_sprawy TEXT NOT NULL REFERENCES investments (id_sprawy) ON DELETE CASCADE,
+    tekst     TEXT NOT NULL,
+    zmieniono TEXT NOT NULL,
+    PRIMARY KEY (chat_id, id_sprawy)
+);
+
+ALTER TABLE bot_users ADD COLUMN wstrzymane INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS zdarzenia (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id   INTEGER NOT NULL,
+    rodzaj    TEXT NOT NULL,
+    id_sprawy TEXT,
+    kiedy     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_zdarzenia_kiedy ON zdarzenia (kiedy);
+"""
+"""v11: osobiste przypomnienia (jedno na osobę i inwestycję) i prywatne notatki – w osobnych tabelach,
+bez ruszania oznaczeń; pauza powiadomień; zdarzenia pilotażu, których nie ma w ``deliveries``."""
+
+
+Migration = str | Callable[[sqlite3.Connection, int], None]
+
+_MIGRATIONS: tuple[Migration, ...] = (
     _SCHEMA,                                              # v1: schemat bazowy
     "ALTER TABLE investments ADD COLUMN segment TEXT;",   # v2: segment klientów
     _BOT_SCHEMA,                                          # v3: scoring, numer leada, bot Telegram
     _CONTACT_COLUMNS,                                     # v4: telefon/e-mail z surowych pól GUNB
     _TRADE_COLUMN,                                        # v5: branża użytkownika („Kiedy dzwonić”)
     _SUBSCRIPTION_COLUMNS,                                # v6: abonament (paywall) – is_active, subscription_ends
+    _independent_lead_flags,                              # v7: zapisany / przejrzany / ukryty niezależnie
+    _jobs_in_utc,                                         # v8: zadania w UTC, kolejka wysyłek, blokady
+    _trial_and_access,                                    # v9: 7-dniowy test, dostęp dotychczasowych
+    _SETUP_STEP,                                          # v10: krok pierwszej konfiguracji
+    _PERSONAL_SCHEMA,                                     # v11: przypomnienia, notatki, pauza, zdarzenia
 )
-"""Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``."""
+"""Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
+
+Krok może być skryptem SQL albo funkcją ``(połączenie, wersja_startowa)`` – gdy konwersja danych
+zależy od tego, z jakiej wersji baza jest podnoszona. Każdy krok wykonuje się w osobnej transakcji
+razem z podbiciem wersji: przerwana migracja nie zostawia bazy w połowie.
+"""
+SCHEMA_VERSION = len(_MIGRATIONS)
+
+
+class SchemaTooNew(RuntimeError):
+    """Baza ma schemat nowszy niż ten kod (np. po wycofaniu samej aplikacji) – praca na niej byłaby ryzykowna."""
+
+
+def _run_script(conn: sqlite3.Connection, script: str) -> None:
+    """Wykonuje skrypt SQL instrukcja po instrukcji w bieżącej transakcji (``executescript`` by ją zatwierdził)."""
+    statement = ""
+    for piece in script.split(";"):
+        statement += piece + ";"
+        if sqlite3.complete_statement(statement):
+            if statement.strip(" \t\r\n;"):
+                conn.execute(statement)
+            statement = ""
 
 GEO_FIELDS: tuple[str, ...] = (
     "lat", "lon", "precyzja_geo", "google_maps_url", "geoportal_url", "powiat", "gmina", "teryt_dzialki",
@@ -217,6 +375,8 @@ class LeadRepository:
         db_path: ścieżka do pliku bazy (katalog zostanie utworzony) lub ``":memory:"``.
         now: źródło bieżącego czasu (UTC) – wstrzykiwane w testach.
         negative_cache_days: czas życia negatywnych wpisów cache geokodowania.
+        backup_dir: katalog kopii zapasowych (domyślnie ``backups`` obok bazy) – tu trafia kopia
+            robiona przed każdą zmianą schematu istniejącej bazy.
     """
 
     def __init__(
@@ -225,9 +385,12 @@ class LeadRepository:
         *,
         now: Callable[[], datetime] | None = None,
         negative_cache_days: int = 30,
+        backup_dir: str | Path | None = None,
     ) -> None:
-        if str(db_path) != ":memory:":
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._file = None if str(db_path) == ":memory:" else Path(db_path)
+        if self._file is not None:
+            self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._backup_dir = Path(backup_dir) if backup_dir else (self._file.parent / "backups" if self._file else None)
         self._conn = sqlite3.connect(str(db_path), isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -240,7 +403,11 @@ class LeadRepository:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.negative_cache_days = negative_cache_days
         self._depth = 0
-        self._migrate()
+        try:
+            self._migrate()
+        except BaseException:
+            self._conn.close()  # nieudana kopia albo migracja – nie zostawiamy otwartego pliku
+            raise
 
     # --- Cykl życia ---------------------------------------------------------------
 
@@ -471,11 +638,94 @@ class LeadRepository:
     # --- Wewnętrzne -------------------------------------------------------------------
 
     def _migrate(self) -> None:
-        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        for number, script in enumerate(_MIGRATIONS, start=1):
-            if version < number:
-                self._conn.executescript(script)
-                self._conn.execute(f"PRAGMA user_version = {number}")
+        """Podnosi schemat krok po kroku; każdy krok w transakcji ``IMMEDIATE`` razem z numerem wersji.
+
+        Dwa procesy startujące naraz (bot i ``--fetch`` z harmonogramu) nie wykonają kroku dwa razy:
+        drugi czeka na blokadę zapisu i po niej widzi już nową wersję.
+        """
+        start = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if start > len(_MIGRATIONS):
+            raise SchemaTooNew(
+                f"Baza {self._file or ':memory:'} ma schemat v{start}, nowszy niż zna ta wersja programu "
+                f"(v{len(_MIGRATIONS)}) – uruchom nowszą wersję albo odtwórz kopię bazy sprzed aktualizacji "
+                "(docs/WDROZENIE.md, „Wycofanie wersji”)"
+            )
+        if start == len(_MIGRATIONS):
+            return  # schemat aktualny – bez blokady zapisu (inny proces może właśnie importować)
+        if start > 0:  # istniejąca baza: najpierw kopia; bez kopii nie zmieniamy schematu
+            self._backup_before_migration()
+        while True:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+                if version < len(_MIGRATIONS):
+                    step = _MIGRATIONS[version]
+                    if callable(step):
+                        step(self._conn, start)
+                    else:
+                        _run_script(self._conn, step)
+                    self._conn.execute(f"PRAGMA user_version = {version + 1}")
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            if version + 1 >= len(_MIGRATIONS):
+                return
+
+    def _backup_before_migration(self) -> Path | None:
+        """Spójna kopia (API kopii SQLite, także z danymi w pliku ``-wal``) przed zmianą schematu.
+
+        Nazwa mówi, przed którą wersją powstała (``baza-przed-v11-20260930T060000Z.sqlite``); takich kopii
+        nic nie usuwa automatycznie. Błąd (np. brak miejsca) przerywa start – migracja bez kopii nie rusza.
+        """
+        if self._file is None or self._backup_dir is None:
+            return None
+        self._backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = self._now().astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = self._backup_dir / f"{self._file.stem}-przed-v{len(_MIGRATIONS)}-{stamp}.sqlite"
+        partial = target.with_name(target.name + ".part")
+        destination = sqlite3.connect(partial)
+        try:
+            self._conn.backup(destination)
+        finally:
+            destination.close()
+        os.replace(partial, target)
+        log.warning("Zmiana schematu bazy – kopia sprzed migracji: %s", target)
+        return target
+
+    # --- Blokady (np. jeden import naraz) ---------------------------------------------
+
+    def acquire_lease(self, name: str, owner: str, ttl: timedelta) -> bool:
+        """Zajmuje blokadę ``name`` na ``ttl``; ``False``, gdy trzyma ją ktoś inny i jeszcze nie wygasła.
+
+        Blokada w bazie działa między procesami (bot, ``--fetch`` z harmonogramu systemu, import historii),
+        a po awarii procesu wygasa sama. Właściciel może ją odnowić tym samym wywołaniem.
+        """
+        now = self.now()
+        cursor = self._conn.execute(
+            "INSERT INTO blokady (nazwa, wlasciciel, wygasa) VALUES (?, ?, ?)"
+            " ON CONFLICT (nazwa) DO UPDATE SET wlasciciel = excluded.wlasciciel, wygasa = excluded.wygasa"
+            " WHERE blokady.wygasa <= ? OR blokady.wlasciciel = excluded.wlasciciel",
+            (name, owner, _iso(now + ttl), _iso(now)),
+        )
+        return cursor.rowcount == 1
+
+    def renew_lease(self, name: str, owner: str, ttl: timedelta) -> bool:
+        """Przedłuża własną blokadę; ``False``, gdy już jej nie mamy (wygasła i przejął ją ktoś inny)."""
+        cursor = self._conn.execute(
+            "UPDATE blokady SET wygasa = ? WHERE nazwa = ? AND wlasciciel = ?", (_iso(self.now() + ttl), name, owner)
+        )
+        return cursor.rowcount == 1
+
+    def release_lease(self, name: str, owner: str) -> None:
+        self._conn.execute("DELETE FROM blokady WHERE nazwa = ? AND wlasciciel = ?", (name, owner))
+
+    def lease_holder(self, name: str) -> str | None:
+        """Kto trzyma ważną blokadę ``name`` (``None`` – wolna)."""
+        row = self._conn.execute(
+            "SELECT wlasciciel FROM blokady WHERE nazwa = ? AND wygasa > ?", (name, _iso(self.now()))
+        ).fetchone()
+        return row[0] if row else None
 
     def _insert(self, values: dict[str, Any], now: str, *, appeared: str) -> None:
         next_nr = self._conn.execute("SELECT coalesce(max(nr), 0) + 1 FROM investments").fetchone()[0]

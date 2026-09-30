@@ -4,130 +4,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from gunb_tool.bot import MENU_BUTTONS, LeadBot
+from gunb_tool.bot import MENU_BUTTONS
 from gunb_tool.bot_store import BotStore, UserFilters
-from gunb_tool.config import BotConfig
-from gunb_tool.exporter import MessageFormatter
-from gunb_tool.models import Investment
-from gunb_tool.storage import LeadRepository
-from gunb_tool.telegram_api import TelegramApiError
-
-ADMIN, MIETEK, OBCY = 1001, 2002, 3003
-
-
-class Clock:
-    """Wspólny zegar: UTC dla bazy, czas lokalny (naiwny) dla harmonogramu bota."""
-
-    def __init__(self) -> None:
-        self.utc = datetime(2026, 9, 29, 5, 0, tzinfo=timezone.utc)
-
-    def now_utc(self) -> datetime:
-        return self.utc
-
-    def now_local(self) -> datetime:
-        return (self.utc + timedelta(hours=2)).replace(tzinfo=None)
-
-    def advance(self, **delta) -> None:
-        self.utc += timedelta(**delta)
-
-
-class FakeApi:
-    """Rejestruje wywołania API Telegrama; ``blocked`` = czaty, które zablokowały bota."""
-
-    def __init__(self) -> None:
-        self.sent, self.edits, self.answers, self.commands = [], [], [], []
-        self.blocked: set[int] = set()
-        self._message_id = 500
-
-    def send_message(self, chat_id, text, reply_markup=None):
-        if chat_id in self.blocked:
-            raise TelegramApiError("sendMessage", 403, "Forbidden: bot was blocked by the user")
-        self._message_id += 1
-        self.sent.append({"chat_id": chat_id, "text": text, "markup": reply_markup, "message_id": self._message_id})
-        return {"message_id": self._message_id}
-
-    def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
-        self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text, "markup": reply_markup})
-
-    def edit_message_reply_markup(self, chat_id, message_id, reply_markup):
-        self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": None, "markup": reply_markup})
-
-    def answer_callback_query(self, callback_query_id, text=None):
-        self.answers.append(text)
-
-    def set_my_commands(self, commands):
-        self.commands = commands
-
-    # pomocnicze dla testów
-    def last_to(self, chat_id):
-        return [m for m in self.sent if m["chat_id"] == chat_id][-1]
-
-    def to(self, chat_id):
-        return [m for m in self.sent if m["chat_id"] == chat_id]
-
-
-def buttons(markup):
-    """Płaska lista (tekst, callback_data | url) z klawiatury inline."""
-    return [(b["text"], b.get("callback_data") or b.get("url")) for row in (markup or {}).get("inline_keyboard", [])
-            for b in row]
-
-
-def callback_for(markup, text_fragment):
-    return next(data for text, data in buttons(markup) if text_fragment in text)
-
-
-@pytest.fixture
-def clock():
-    return Clock()
-
-
-@pytest.fixture
-def repo(clock):
-    repository = LeadRepository(":memory:", now=clock.now_utc)
-    yield repository
-    repository.close()
-
-
-@pytest.fixture
-def api():
-    return FakeApi()
-
-
-def make_bot(repo, api, clock, **settings):
-    params = dict(admins=(ADMIN,), access="approval", fetch_times=(), morning_time="07:00", evening_time="19:00",
-                  instant_every_minutes=10, welcome_backlog_days=7, max_leads_in_report=20,
-                  admin_contact="@admin_gunb")
-    params.update(settings)
-    return LeadBot(repo, api, settings=BotConfig(**params), powiat_codes=("1465", "3021"),
-                   formatter=MessageFormatter(), clock=clock.now_local)
+from tests.bot_helpers import (ADMIN, MIETEK, OBCY, activate, buttons, callback_for, click, configured, lead,
+                               make_bot, message)
 
 
 @pytest.fixture
 def bot(repo, api, clock):
     return make_bot(repo, api, clock)
-
-
-def message(chat_id, text, first_name="Mietek"):
-    return {"update_id": 1, "message": {"message_id": 1, "text": text,
-                                        "chat": {"id": chat_id, "type": "private"},
-                                        "from": {"id": chat_id, "first_name": first_name, "username": None}}}
-
-
-def click(chat_id, data, message_id=777):
-    return {"update_id": 2, "callback_query": {"id": "cb", "data": data, "from": {"id": chat_id},
-                                               "message": {"message_id": message_id, "chat": {"id": chat_id}}}}
-
-
-def lead(id_sprawy, **overrides) -> Investment:
-    base = dict(
-        id_sprawy=id_sprawy, zrodlo="pozwolenia", status="decyzja", kategoria="mieszkaniowa-jednorodzinna",
-        nazwa_zamierzenia="Budowa budynku mieszkalnego jednorodzinnego", kubatura=878.0, priorytet="normal",
-        punkty=3, adres_opisowy="Wróblewo", miejscowosc="Wróblewo", gmina="Kostrzyn", powiat="powiat poznański",
-        powiat_teryt="3021", gmina_teryt="3021085", data_aktualizacji="2026-09-28",
-        google_maps_url="https://www.google.com/maps?q=52.379110,17.211380",
-    )
-    base.update(overrides)
-    return Investment(**base)
 
 
 BIG_WARSAW = dict(kategoria="mieszkaniowa-wielorodzinna", kubatura=26265.0, priorytet="hot", punkty=10,
@@ -137,27 +22,18 @@ BIG_WARSAW = dict(kategoria="mieszkaniowa-wielorodzinna", kubatura=26265.0, prio
                   inwestor="Napollo 3 Sp. z o.o.")
 
 
-def activate(bot, api, chat_id=MIETEK):
-    bot.handle_update(message(chat_id, "/start"))
-    if chat_id != ADMIN:
-        bot.handle_update(click(ADMIN, f"adm:ok:{chat_id}"))
-    api.sent.clear()
-    api.edits.clear()
-    api.answers.clear()
-
-
 # --- Rejestracja i menu ------------------------------------------------------------------------
 
 def test_admin_is_active_at_once_and_gets_big_menu_buttons(bot, api):
     bot.handle_update(message(ADMIN, "/start"))
-    welcome = api.last_to(ADMIN)
+    welcome = next(m for m in api.to(ADMIN) if "keyboard" in (m["markup"] or {}))
     keyboard = [button["text"] for row in welcome["markup"]["keyboard"] for button in row]
     assert keyboard == list(MENU_BUTTONS)
     assert welcome["markup"]["resize_keyboard"] is True
 
 
 GATE = "⛔ Twój dostęp jest nieaktywny. Skontaktuj się z administratorem @admin_gunb, aby opłacić abonament."
-TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 3 dni! Zobacz, jak szybciej docierać do klientów. "
+TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 7 dni! Zobacz, jak szybciej docierać do klientów. "
               "Po tym czasie bot zostanie wstrzymany.")
 
 
@@ -169,7 +45,7 @@ def test_new_user_is_saved_inactive_and_told_to_contact_admin(bot, api):
     assert api.last_to(MIETEK)["text"] == GATE
     card = api.last_to(ADMIN)  # admin od razu wie, kogo aktywować
     assert "Mietek" in card["text"] and f"/trial {MIETEK}" in card["text"] and f"/aktywuj {MIETEK} 30" in card["text"]
-    assert buttons(card["markup"]) == [("🎁 Trial 3 dni", f"adm:trial:{MIETEK}"), ("✅ 30 dni", f"adm:ok:{MIETEK}"),
+    assert buttons(card["markup"]) == [("🎁 Test 7 dni", f"adm:trial:{MIETEK}"), ("✅ 30 dni", f"adm:ok:{MIETEK}"),
                                        ("⛔ Odrzuć", f"adm:no:{MIETEK}")]
 
 
@@ -198,7 +74,7 @@ def test_admin_activates_subscription_with_command(bot, api):
     user = BotStore(bot.repo).get_user(MIETEK)
     assert user.is_active is True
     assert user.subscription_ends == "2026-10-29T05:00:00+00:00"  # teraz + 30 dni
-    welcome = api.last_to(MIETEK)
+    welcome = next(m for m in api.to(MIETEK) if m["text"].startswith("✅ Twój abonament"))
     assert welcome["text"].startswith("✅ Twój abonament został aktywowany na 30 dni!")
     assert welcome["markup"]["keyboard"]  # od razu dostaje menu
     assert "29.10.2026" in api.last_to(ADMIN)["text"]
@@ -213,23 +89,17 @@ def test_activation_extends_a_running_subscription(bot, api):
     assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-11-28T05:00:00+00:00"
 
 
-def test_admin_grants_three_day_trial(bot, api):
+def test_trial_command_works_like_the_card_button(bot, api):
+    """Szczegóły 7-dniowego testu: tests/test_bot_access.py."""
     bot.handle_update(message(MIETEK, "/start"))
+    configured(bot)
 
     bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    bot.handle_update(click(MIETEK, "ts"))
 
-    user = BotStore(bot.repo).get_user(MIETEK)
-    assert user.is_active is True
-    assert user.subscription_ends == "2026-10-02T05:00:00+00:00"  # równo 3 dni od teraz
-    assert api.last_to(MIETEK)["text"].startswith(TRIAL_TEXT)
-    assert "Trial" in api.last_to(ADMIN)["text"]
-
-
-def test_trial_button_in_new_user_card_works_like_command(bot, api):
-    bot.handle_update(message(MIETEK, "/start"))
-    bot.handle_update(click(ADMIN, f"adm:trial:{MIETEK}"))
-    assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-10-02T05:00:00+00:00"
-    assert api.last_to(MIETEK)["text"].startswith(TRIAL_TEXT)
+    assert BotStore(bot.repo).get_user(MIETEK).subscription_ends == "2026-10-06T05:00:00+00:00"
+    started, review = api.to(MIETEK)[-2:]  # start testu, a po nim przegląd ostatnich 30 dni
+    assert started["text"].startswith(TRIAL_TEXT) and "ostatnich 30 dni" in review["text"]
 
 
 def test_trial_does_not_shorten_a_paid_subscription(bot, api):
@@ -266,7 +136,7 @@ def test_only_admin_can_activate(bot, api):
 
 def test_expired_subscription_blocks_the_bot_again(bot, api, clock):
     bot.handle_update(message(MIETEK, "/start"))
-    bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 3"))
     clock.advance(days=3, minutes=1)
 
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
@@ -289,7 +159,7 @@ def test_lead_rounds_reach_only_paying_users(bot, api, repo):
 
 def test_expiry_is_announced_once_to_user_and_admin(bot, api, clock):
     bot.handle_update(message(MIETEK, "/start"))
-    bot.handle_update(message(ADMIN, f"/trial {MIETEK}"))
+    bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 3"))
     clock.advance(days=3, minutes=11)
     api.sent.clear()
 
@@ -298,7 +168,6 @@ def test_expiry_is_announced_once_to_user_and_admin(bot, api, clock):
     bot.run_due_jobs()
 
     assert [m["text"][:30] for m in api.to(MIETEK)] == ["⛔ Twój abonament wygasł 02.10."]
-    assert BotStore(bot.repo).get_user(MIETEK).is_active is False
     assert f"/aktywuj {MIETEK} 30" in api.to(ADMIN)[-1]["text"]
 
 
@@ -341,6 +210,7 @@ def test_unknown_text_shows_help_with_menu(bot, api):
 
 def test_filters_are_set_with_buttons_and_one_typed_place(bot, api):
     activate(bot, api)
+    bot.repo.upsert(lead("WAW/1", **BIG_WARSAW))  # wpisana miejscowość musi być w monitorowanych danych
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
     screen = api.last_to(MIETEK)
     assert "Twoje filtry" in screen["text"]
@@ -399,7 +269,7 @@ def test_report_summarises_and_numbers_matching_leads(bot, api, repo):
     report = api.last_to(MIETEK)
     assert "📊 <b>Raport 29.09</b>" in report["text"]
     assert "Znaleziono 3 nowe inwestycje. 1 spełnia Twoje filtry." in report["text"]
-    assert "1 to 🔥 HOT LEAD." in report["text"]
+    assert "1 to 🔥 HOT (duża skala)." in report["text"]
     assert "Budowa zespołu dwóch budynków wielorodzinnych" in report["text"]
     nr = repo.get("WAW/1").nr
     assert buttons(report["markup"]) == [("1", f"o:{nr}")]
@@ -417,10 +287,12 @@ def test_lead_card_has_action_buttons_and_save_updates_them(bot, api, repo):
     bot.handle_update(click(MIETEK, f"o:{nr}"))
 
     card = api.last_to(MIETEK)
-    assert card["text"].startswith("🔥 <b>HOT LEAD</b>")
+    assert card["text"].startswith("🔥 <b>HOT</b>")
     labels = [t for t, _ in buttons(card["markup"])]
     assert labels[:2] == ["📍 Mapa", "🏛️ Geoportal"] or labels[0] == "📍 Mapa"
-    assert {"⭐ Zapisz", "✅ Przejrzane", "🗑️ Ukryj", "👀 Obserwuj inwestora", "📌 Obserwuj gminę"} <= set(labels)
+    assert {"⭐ Zapisz", "✅ Przejrzane", "🗑️ Ukryj", "⏰ Przypomnij", "📝 Notatka", "⋯ Więcej"} <= set(labels)
+    bot.handle_update(click(MIETEK, f"mx:{nr}", message_id=card["message_id"]))  # obserwowanie – pod „⋯ Więcej”
+    assert {"👀 Obserwuj inwestora", "📌 Obserwuj gminę"} <= {t for t, _ in buttons(api.edits[-1]["markup"])}
 
     bot.handle_update(click(MIETEK, f"s:{nr}", message_id=card["message_id"]))
     assert api.answers[-1].startswith("⭐ Zapisano")
@@ -429,7 +301,7 @@ def test_lead_card_has_action_buttons_and_save_updates_them(bot, api, repo):
     bot.handle_update(message(MIETEK, "⭐ Zapisane"))
     saved = api.last_to(MIETEK)
     assert "Budowa zespołu dwóch budynków wielorodzinnych" in saved["text"]
-    assert (f"1", f"o:{nr}") in buttons(saved["markup"])
+    assert ("1", f"o:{nr}") in buttons(saved["markup"])
 
 
 def test_hide_collapses_card_and_undo_restores_it(bot, api, repo):
@@ -531,7 +403,7 @@ def test_blocked_user_is_marked_and_skipped(bot, api, repo):
 
 def test_bot_commands_are_registered_on_setup(bot, api):
     bot.setup()
-    assert ("filtry", "🔎 Ustaw, jakie inwestycje chcesz dostawać") in api.commands
+    assert [command for command, _ in api.commands] == ["nowe", "zapisane", "ustawienia", "konto", "pomoc"]
 
 
 def test_long_report_is_shortened_to_fit_telegram_limit(bot, api, repo):
@@ -689,6 +561,7 @@ def test_nearby_button_asks_for_a_location_pin(bot, api):
 
 def test_pin_sets_base_with_default_radius_and_brings_menu_back(bot, api, repo):
     activate(bot, api)
+    seed_olsztyn(repo)
     BotStore(repo).set_filters(MIETEK, UserFilters(powiaty=("2862",)))
 
     bot.handle_update(pin(MIETEK, *BASE))
@@ -711,7 +584,7 @@ def test_report_lists_only_leads_within_radius_nearest_first_with_distance(bot, 
     text = api.last_to(MIETEK)["text"]
     assert "Dom C daleko" not in text
     assert text.index("Dom A tuż obok") < text.index("Dom B blisko")
-    assert "🚗 &lt;1 km" in text and "🚗 6 km" in text
+    assert "📏 &lt;1 km" in text and "📏 6 km" in text
 
 
 def test_hot_leads_stay_on_top_within_radius(bot, api, repo):
@@ -758,7 +631,7 @@ def test_lead_card_shows_distance_from_base(bot, api, repo):
     seed_olsztyn(repo)
     bot.handle_update(pin(MIETEK, *BASE))
     bot.handle_update(click(MIETEK, f"o:{repo.get('BLISKO/1').nr}"))
-    assert "🚗 6 km od Twojej bazy" in api.last_to(MIETEK)["text"]
+    assert "📏 6 km w linii prostej od Twojej bazy" in api.last_to(MIETEK)["text"]
 
 
 def test_filters_screen_shows_radius(bot, api, repo):
@@ -819,7 +692,7 @@ def seed_stages(repo):
 
 
 def reminders_to(api, chat_id):
-    return [m for m in api.to(chat_id) if "Kiedy dzwonić" in m["text"]]
+    return [m for m in api.to(chat_id) if "Warto sprawdzić" in m["text"]]
 
 
 def test_trade_is_chosen_from_filters_and_first_reminder_comes_at_once(bot, api, repo):
@@ -871,7 +744,7 @@ def test_reminders_respect_filters_and_hidden_leads(bot, api, repo):
     bot.handle_update(click(MIETEK, "fb:dach"))
 
     reminder = reminders_to(api, MIETEK)[-1]["text"]
-    assert "Dom blisko bazy" in reminder and "🚗 6 km" in reminder
+    assert "Dom blisko bazy" in reminder and "📏 6 km" in reminder
     assert "Dom daleko" not in reminder and "Dom ukryty" not in reminder
 
 
@@ -902,7 +775,7 @@ def test_filters_screen_shows_trade_and_timing(bot, api, repo):
     activate(bot, api)
     BotStore(repo).set_trade(MIETEK, "okna")
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
-    assert "Okna i drzwi – przypomnę 5–7 mies. po pozwoleniu" in api.last_to(MIETEK)["text"]
+    assert "Okna i drzwi – przypomnę orientacyjnie 5–7 mies. po decyzji" in api.last_to(MIETEK)["text"]
 
 
 def test_branza_command_opens_trade_picker(bot, api):
@@ -918,3 +791,166 @@ def test_reminded_lead_still_counts_as_new_in_normal_report(bot, api, repo):
     bot.handle_update(click(MIETEK, "fb:dach"))
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
     assert "Dom na etapie dachu" in api.last_to(MIETEK)["text"]
+
+
+# --- P0.3: zapisanie, przejrzenie i ukrycie to niezależne informacje ---------------------------------
+
+def flags(repo, id_sprawy):
+    f = BotStore(repo).lead_flags(MIETEK, id_sprawy)
+    return f.saved, f.reviewed, f.hidden
+
+
+def test_reviewing_a_saved_investment_keeps_it_saved(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    bot.handle_update(click(MIETEK, f"s1:{nr}"))
+    bot.handle_update(click(MIETEK, f"r1:{nr}"))
+
+    assert flags(repo, "WAW/1") == (True, True, False)
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert "Budowa zespołu dwóch budynków wielorodzinnych" in api.last_to(MIETEK)["text"]
+
+
+def test_old_buttons_reviewed_after_saved_no_longer_unsave(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    bot.handle_update(click(MIETEK, f"s:{nr}"))  # przyciski z wiadomości sprzed aktualizacji
+    bot.handle_update(click(MIETEK, f"r:{nr}"))
+    assert flags(repo, "WAW/1") == (True, True, False)
+
+
+def test_saving_can_be_switched_off(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    bot.handle_update(click(MIETEK, f"s1:{nr}"))
+    bot.handle_update(click(MIETEK, f"s0:{nr}"))
+    assert flags(repo, "WAW/1") == (False, False, False)
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert "Nie masz jeszcze zapisanych" in api.last_to(MIETEK)["text"]
+
+
+def test_hiding_and_restoring_keeps_saved_and_reviewed(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    for data in (f"s1:{nr}", f"r1:{nr}", f"h:{nr}"):
+        bot.handle_update(click(MIETEK, data))
+    assert flags(repo, "WAW/1") == (True, True, True)
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert "Budowa zespołu dwóch budynków wielorodzinnych" not in api.last_to(MIETEK)["text"]  # ukryte znika
+
+    bot.handle_update(click(MIETEK, f"u:{nr}"))
+
+    assert flags(repo, "WAW/1") == (True, True, False)
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert "Budowa zespołu dwóch budynków wielorodzinnych" in api.last_to(MIETEK)["text"]
+
+
+def test_repeated_clicks_do_not_flip_the_state(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    for _ in range(3):
+        bot.handle_update(click(MIETEK, f"s1:{nr}"))
+        bot.handle_update(click(MIETEK, f"r1:{nr}"))
+        bot.handle_update(click(MIETEK, f"u:{nr}"))
+    assert flags(repo, "WAW/1") == (True, True, False)
+
+
+def test_card_buttons_show_both_marks(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    nr = repo.get("WAW/1").nr
+    bot.handle_update(click(MIETEK, f"s1:{nr}"))
+    bot.handle_update(click(MIETEK, f"r1:{nr}"))
+    labels = dict(buttons(api.edits[-1]["markup"]))
+    assert labels["⭐ Zapisany ✓"] == f"s0:{nr}" and labels["✅ Przejrzany ✓"] == f"r0:{nr}"
+
+
+def test_hidden_investment_leaves_the_report(bot, api, repo):
+    activate(bot, api)
+    seed_leads(repo)
+    bot.handle_update(click(MIETEK, f"h:{repo.get('DOM/1').nr}"))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    assert "Budowa budynku mieszkalnego jednorodzinnego" not in api.last_to(MIETEK)["text"]
+
+
+# --- P0.4: wyniki zgodne z filtrami, pełne przeglądanie historii --------------------------------------
+
+def seed_far_and_one_match(repo):
+    """1000 nowszych inwestycji spoza obszaru i jedna starsza, pasująca (Olsztyn)."""
+    with repo.transaction():
+        for i in range(1000):
+            day = f"2026-09-{20 + i % 8:02d}"
+            repo.upsert(lead(f"DALEKO/{i}", data_aktualizacji=day, powiat_teryt="3021", gmina_teryt="3021085",
+                             gmina="Kostrzyn", miejscowosc="Wróblewo", adres_opisowy="Wróblewo"))
+        repo.upsert(lead("OLSZTYN/1", nazwa_zamierzenia="Dom w Olsztynie", data_aktualizacji="2026-09-05",
+                         powiat_teryt="2862", gmina_teryt="2862011", gmina="Olsztyn (miasto)", miejscowosc="Olsztyn",
+                         adres_opisowy="Olsztyn", powiat="powiat Olsztyn"))
+
+
+def test_match_older_than_a_thousand_others_is_found(bot, api, repo):
+    activate(bot, api)
+    seed_far_and_one_match(repo)
+    # pasująca była już kiedyś wysłana – znaleźć ją można tylko w przeglądzie historii
+    BotStore(repo).record_delivery(MIETEK, [repo.get("OLSZTYN/1")], "raport")
+    BotStore(repo).set_filters(MIETEK, UserFilters(powiaty=("2862",)))
+
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+
+    text = api.last_to(MIETEK)["text"]
+    assert "Dom w Olsztynie" in text
+    assert "(1)" in text  # liczba odpowiada temu, co da się zobaczyć
+
+
+def history_pages(api):
+    return [m for m in api.sent + api.edits if m.get("text") and "Pasujące" in m["text"]]
+
+
+def seed_matches(repo, count):
+    with repo.transaction():
+        for i in range(count):
+            repo.upsert(lead(f"P/{i:02d}", nazwa_zamierzenia=f"Inwestycja numer {i:02d}",
+                             data_aktualizacji=f"2026-09-{1 + i % 28:02d}"))
+
+
+def test_history_is_browsed_with_stable_next_and_back(bot, api, repo):
+    activate(bot, api)
+    seed_matches(repo, 25)
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))  # 25 nowych → raport zużywa pokazane
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))  # nic nowego → przegląd historii
+    first = api.last_to(MIETEK)
+    assert "(25)" in first["text"]
+    assert ("Dalej ▶️", "hp:1") in buttons(first["markup"])
+    shown = set()
+    for page in range(3):
+        bot.handle_update(click(MIETEK, f"hp:{page}", message_id=first["message_id"]))
+        page_text = api.edits[-1]["text"]
+        shown |= {line for line in page_text.splitlines() if "Inwestycja numer" in line}
+    assert len(shown) == 25  # każda pasująca dokładnie raz na którejś stronie
+    assert ("◀️ Wstecz", "hp:1") in buttons(api.edits[-1]["markup"])
+    assert "Dalej ▶️" not in [t for t, _ in buttons(api.edits[-1]["markup"])]
+
+
+def test_browsing_history_does_not_consume_new_notifications(bot, api, repo):
+    activate(bot, api)
+    seed_matches(repo, 3)
+    bot.handle_update(click(MIETEK, "hp:0"))  # przegląd historii zanim przyszedł raport
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    assert "Znaleziono 3 nowe inwestycje" in api.last_to(MIETEK)["text"]
+
+
+def test_no_results_means_really_nothing_matches(bot, api, repo):
+    activate(bot, api)
+    seed_matches(repo, 3)
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    BotStore(repo).set_filters(MIETEK, UserFilters(miejsca=("Gdańsk",)))
+    bot.handle_update(message(MIETEK, "📊 Co nowego?"))
+    text = api.last_to(MIETEK)["text"]
+    assert "brak pasujących" in text.lower()
+    assert "Gdańsk" in text  # pokazane aktywne filtry, bez kasowania
+    assert BotStore(repo).get_user(MIETEK).filtry.miejsca == ("Gdańsk",)

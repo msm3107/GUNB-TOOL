@@ -1,0 +1,25 @@
+# Exact versions installed on the server by deploy/install.sh (pip install --no-deps, then pip check).
+# Generated from requirements.txt in a clean Python 3.12 venv (Ubuntu 24.04 ships 3.12). Keep ASCII-only.
+#
+# To update dependencies on purpose:
+#   python -m venv /tmp/lock && /tmp/lock/bin/pip install -r requirements.txt
+#   /tmp/lock/bin/pip freeze | grep -v '^pip==' > requirements.lock   (keep this header)
+#   run the tests (CI uses this file as constraints), commit, then deploy the new version.
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+cryptography==50.0.1
+google-auth==2.59.0
+google-auth-oauthlib==1.5.0
+gspread==6.2.1
+idna==3.20
+oauthlib==4.0.0
+pyasn1==0.6.4
+pyasn1_modules==0.4.2
+pycparser==3.0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+requests==2.34.2
+requests-oauthlib==2.0.0
+tzdata==2026.4
+urllib3==2.8.0

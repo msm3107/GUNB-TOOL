@@ -203,6 +203,7 @@ class ResilientHttpClient:
         for attempt in range(self.config.max_retries + 1):
             self._throttle()
             merged["User-Agent"] = self._agents.next()
+            retry_after: float | None = None
             try:
                 response = self._session.request(method, url, headers=dict(merged), **kwargs)
             except RETRYABLE_EXCEPTIONS as exc:
@@ -221,23 +222,31 @@ class ResilientHttpClient:
             finally:
                 self._last_request_at = self._clock()
 
+            error_text = redact_url(str(last_error))  # requests wkłada do treści wyjątku ścieżkę z tokenem
+            limit = self.config.max_retry_after
+            if limit is not None and retry_after is not None and retry_after > limit:
+                log.warning("%s %s: %s – serwer każe czekać %.0f s, rezygnuję", method, safe_url, error_text,
+                            retry_after)
+                break
             if attempt < self.config.max_retries:
                 log.warning(
                     "%s %s: %s – ponowienie %d/%d za %.1f s",
-                    method, safe_url, last_error, attempt + 1, self.config.max_retries, delay,
+                    method, safe_url, error_text, attempt + 1, self.config.max_retries, delay,
                 )
                 self._sleep(delay)
 
+        error_text = redact_url(str(last_error))
         if breaker.record_failure():
             log.error(
                 "%s nie odpowiada: %d nieudane zapytania z rzędu (ostatni błąd: %s) – przerwa w zapytaniach %d min",
-                host, breaker.failures, last_error, round(breaker.cooldown / 60),
+                host, breaker.failures, error_text, round(breaker.cooldown / 60),
             )
+        # bez łańcucha ``from last_error`` – jego treść (z tokenem) trafiałaby do tracebacków w logach
         raise HttpError(
-            f"{method} {safe_url}: wyczerpano limit ponowień ({self.config.max_retries}); ostatni błąd: {last_error}",
+            f"{method} {safe_url}: wyczerpano limit ponowień ({self.config.max_retries}); ostatni błąd: {error_text}",
             status_code=last_status,
             url=safe_url,
-        ) from last_error
+        ) from None
 
     # --- Pobieranie plików -----------------------------------------------------
 

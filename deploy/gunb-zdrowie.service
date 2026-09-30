@@ -1,0 +1,23 @@
+[Unit]
+Description=Żółta Tablica - kontrola zdrowia bota (wynik do monitora zewnętrznego)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=gunb
+Group=gunb
+WorkingDirectory=/var/lib/gunb-tool
+# Adres monitora (np. healthchecks.io) bierze się z HEALTHCHECK_PING_URL w /var/lib/gunb-tool/.env.
+# Kontrola tylko czyta stan i zgłasza wynik – niczego nie restartuje.
+ExecStart=/opt/gunb-tool/current/.venv/bin/python /opt/gunb-tool/current/main.py --config /var/lib/gunb-tool/config.yaml --zdrowie
+# 1 = ostrzeżenie, 2 = awaria: to wynik kontroli, nie błąd jej uruchomienia (trafia do monitora i do dziennika).
+SuccessExitStatus=1 2
+TimeoutStartSec=120
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gunb-tool

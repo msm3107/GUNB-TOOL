@@ -107,15 +107,19 @@ segments:
 # Interaktywny bot Telegram (python main.py --bot) – każdy użytkownik ustawia własne filtry,
 # tryb raportów i „tylko HOT”, zapisuje leady i obserwuje inwestorów/gminy.
 bot:
-  # Administrator (ADMIN_CHAT_ID w .env; puste = TELEGRAM_CHAT_ID) – nadaje abonamenty komendami
-  #   /aktywuj <chat_id> <liczba_dni>   np. /aktywuj 9876543 30  (trwający abonament zostaje przedłużony)
-  #   /trial <chat_id>                  3 dni za darmo
+  # Administrator (ADMIN_CHAT_ID w .env; puste = TELEGRAM_CHAT_ID) – nadaje dostęp komendami
+  #   /aktywuj <chat_id> <dni|data>   np. /aktywuj 9876543 30 albo /aktywuj 9876543 2026-12-31
+  #   /przedluz <chat_id> <dni|data>  to samo (dni liczone od końca obecnego dostępu)
+  #   /odbierz <chat_id>              wyłącza dostęp od razu (zapisane i ustawienia klienta zostają)
+  #   /trial <chat_id>                pozwala na 7-dniowy test – rusza, gdy klient kliknie ▶️ (raz na osobę)
+  #   /nowymodel <chat_id|wszyscy> <dni|data>   termin dla dotychczasowych użytkowników (bez terminu)
+  #   /status                         import GUNB, wątek zadań i wysyłki z ostatniej doby
   # albo przyciskami na karcie nowej osoby. Sam ma dostęp bez abonamentu.
   admins: ["${ADMIN_CHAT_ID}"]
-  # Nick admina pokazywany osobom bez abonamentu („Skontaktuj się z administratorem @nick…”).
+  # Nick admina pokazywany osobom bez dostępu („Skontaktuj się z administratorem @nick…”).
   # Puste = klikalny link do admina po ID.
   admin_contact: ${ADMIN_CONTACT}
-  # approval – paywall: menu, filtry i leady tylko z aktywnym abonamentem; open – dostęp dla każdego.
+  # approval – dostęp tylko z testem albo abonamentem nadanym przez admina; open – dostęp dla każdego.
   access: approval
   # O której bot sam pobiera dane GUNB (paczki są aktualizowane ok. 23:30). [] = tylko przez --fetch.
   fetch_times: ["06:30"]
@@ -155,10 +159,12 @@ http:
 
 storage:
   db_path: data/gunb_leads.sqlite
-  # Kopia bazy raz w tygodniu, przed pobieraniem danych (data w nazwie pliku; zostaje 8 najnowszych).
+  # Kopia bazy raz dziennie: w nocnych porządkach bota (03:30) albo przed pobieraniem danych, jeśli
+  # tego dnia jeszcze jej nie było (data w nazwie pliku; zostaje 14 najnowszych). Kopie leżą na tym
+  # samym dysku – przechowuj je też gdzie indziej (docs/WDROZENIE.md, sekcja F).
   backup_dir: data/backups
-  backup_every_days: 7
-  backup_keep: 8
+  backup_every_days: 1
+  backup_keep: 14
   # Od tylu nowych/zmienionych leadów w jednym pobieraniu po imporcie wykonywany jest VACUUM.
   vacuum_threshold: 500
 

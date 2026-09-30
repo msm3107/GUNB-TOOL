@@ -15,11 +15,12 @@ GUNB (RWDZ – pozwolenia na budowę i zgłoszenia) dla lokalnych wykonawców bu
 - zapisuje wszystko w **SQLite** (tryb WAL) z wykrywaniem nowych spraw i **zmian statusu**,
 - wysyła powiadomienia **Telegram** (HTML, przyciski inline, raporty zbiorcze zamiast spamu, limit
   1 wiadomość/s) i **Discord**, synchronizuje **Google Sheets**,
-- ma **interaktywnego bota** dla wielu osób: własne filtry, 🔥 HOT/NORMAL/LOW, watchlista inwestorów
-  i gmin, ⭐ zapisane leady, raport rano lub wieczorem – wszystko przyciskami.
+- ma **interaktywnego bota „Żółta Tablica”** dla wielu osób: prowadzenie krok po kroku, 7-dniowy test,
+  własne filtry, 🔥 HOT/NORMAL/LOW (szacunek skali), obserwowani inwestorzy i gminy, ⭐ zapisane,
+  ⏰ przypomnienia i notatki, raport rano lub wieczorem – wszystko przyciskami.
 
 ```
-🏗️ NOWY LEAD · pozwolenie na budowę
+🏗️ NOWA INWESTYCJA · pozwolenie na budowę
 Budowa budynku mieszkalnego wielorodzinnego z lokalami usługowymi
 
 📌 Status: decyzja – pozwolenie na budowę
@@ -168,7 +169,7 @@ notifications:
 python main.py --fetch                              # pobierz i przetwórz (okno z config.yaml)
 python main.py --fetch --days 7 --limit 50          # szybki test konfiguracji
 python main.py --fetch --powiat 1206 --since 2026-09-01 --no-geocode
-python main.py --fetch --since 2025-03-29 --historical  # historia pod „⏰ Kiedy dzwonić” (bez zalewu nowości)
+python main.py --fetch --historical   # historia ok. 27 mies. pod przypomnienia o etapie (bez zalewu nowości)
 python main.py --notify-telegram --dry-run          # podgląd wiadomości (nie wymaga tokenów)
 python main.py --fetch --notify-telegram --notify-discord --sync-sheets
 python main.py --stats
@@ -244,59 +245,82 @@ i Geoportalu są **przyciskami inline** (każdy w osobnym, pełnym wierszu) – 
 Stan wysyłki jest śledzony **osobno dla każdego kanału** – Telegram i Discord dostają ten sam lead
 niezależnie. Lead trafia ponownie do kolejki, gdy zmieni się jego status.
 
-## Bot Telegram dla ekipy (`--bot`)
+## Bot Telegram „Żółta Tablica” (`--bot`)
 
-Interaktywny bot dla wielu osób – każda ustawia **własne** filtry, tryb raportów i listy.
-Obsługa wyłącznie przyciskami („proste jak drut”):
+Interaktywny bot dla wielu osób ([@ZoltaTablicaBot](https://t.me/ZoltaTablicaBot)) – każda ustawia
+**własny** obszar, rodzaj budynków, branżę i godziny raportów. Obsługa wyłącznie przyciskami:
 
 ```
 ┌──────────────────┬──────────────────┐
-│ 📊 Co nowego?     │ 🔎 Filtry         │   ← stałe menu na dole ekranu
-│ ⭐ Zapisane       │ 👀 Obserwowane    │
-│ ⏰ Kiedy wysyłać  │ 🔥 Tylko HOT      │
-│           📍 Blisko mnie             │
-└─────────────────────────────────────┘
+│ 📊 Inwestycje     │ ⭐ Zapisane       │   ← stałe menu na dole ekranu
+│ ⚙️ Ustawienia     │ ❓ Pomoc          │
+└──────────────────┴──────────────────┘
 ```
+
+Przyciski i komendy poprzedniego menu (`📊 Co nowego?`, `🔎 Filtry`, `/filtry`, `/blisko`, `/branza`,
+`/tryb`, `/tylkohot`…) działają dalej – nikt nie musi się uczyć od nowa.
+
+**Pierwsze kroki (nowa osoba, po zgodzie admina):** 1/2 branża → 2/2 obszar (powiat z listy, wpisana
+miejscowość, pinezka bazy albo cały monitorowany obszar – bot pisze wprost, co monitoruje) →
+podsumowanie z domyślnym raportem porannym i przyciskiem **▶️ Zacznij 7-dniowy test**. Zaraz potem
+bot pokazuje **przegląd ostatnich 30 dni** (historia, nie nowości – nie zużywa kolejki nowych). Gdy nic
+nie pasuje, pokazuje aktywne filtry i dwa proste wyjścia: poszerz obszar / zmień rodzaj. Filtrów nigdy
+nie czyści sam. Miejscowość spoza monitorowanych danych i pinezka daleko od nich dostają jasny komunikat.
+Przerwaną konfigurację `/start` wznawia od tego samego kroku; dotychczasowi użytkownicy jej nie powtarzają.
 
 | Funkcja | Jak działa |
 |---|---|
-| **📍 Blisko mnie** | Jedno kliknięcie „📍 Wyślij moją lokalizację” (albo dowolna pinezka 📎 → Lokalizacja) zapisuje bazę firmy i od razu włącza promień 15 km; przyciski 10 / 15 / 20 / 30 / 50 km. Raporty pokazują „🚗 6 km” przy każdej budowie, najpierw 🔥 HOT, a w każdej grupie od najbliższych. Odległość w linii prostej od bazy do działki (ULDK). Promień zastępuje powiaty i miejscowości; wybór powiatu go wyłącza, baza zostaje zapamiętana. |
-| **⏰ Kiedy dzwonić** | 🔎 Filtry → „🧰 Branża” (albo `/branza`): dach 4–6 mies. po pozwoleniu, okna i drzwi 5–7, instalacje 6–9, elewacja 8–12, wykończenia 9–14, ogrodzenie i kostka 10–18 (bloki i hale ×1,5; fundamenty – od razu). Codziennie o `morning_time` bot przypomina o budowach, które właśnie weszły w okno branży (zgodnych z filtrami i „Blisko mnie”, każda raz). Po wyborze branży od razu pokazuje te, które już są na tym etapie. Okna to szacunki do kalibracji – rejestr nie podaje daty rozpoczęcia budowy. |
-| **🔎 Filtry** | Miejsce (powiaty z listy albo wpisana miejscowość/gmina), rodzaj budynku (🏠 domy, 🏢 bloki, 🏭 hale…), minimalna kubatura (przyciski „od 10 000 m³”), inwestor (dowolny / tylko firmy / nazwa). Przykład: „Warszawa + bloki + od 10 000 m³”. |
-| **🔥 HOT / 🟡 NORMAL / ⚪ LOW** | Punkty bez AI: kubatura, rodzaj budynku, kilka budynków, nowa budowa, inwestor-firma; minus za garaże, wiaty, drobne roboty i zmiany starych pozwoleń. Każdy lead pokazuje punkty i powody. **🔥 Tylko HOT** włącza tylko najlepsze. |
-| **Przyciski pod leadem** | 📍 Mapa · 🏛️ Geoportal · ⭐ Zapisz · ✅ Przejrzane · 🗑️ Ukryj (z „↩️ Przywróć”) · 👀 Obserwuj inwestora · 📌 Obserwuj gminę |
-| **⭐ Zapisane** | Własna lista ciekawych inwestycji (namiastka CRM), z numerami do otwarcia szczegółów. |
-| **👀 Watchlista** | Nowa inwestycja obserwowanego inwestora lub w obserwowanej gminie → alert **„👀 WATCHLISTA”** od razu, niezależnie od trybu. Obserwacja „Napollo 3 Sp. z o.o.” obejmuje też „Napollo 4” (spółki celowe dewelopera). |
-| **⏰ Kiedy wysyłać** | ⚡ Od razu · 🌅 Raport rano · 🌙 Raport wieczorem. W trybie „od razu” przy wielu leadach naraz przychodzi raport zamiast spamu. |
-| **📊 Raport** | „📊 Raport 29.09 – Znaleziono 36 nowych inwestycji. 7 spełnia Twoje filtry. 2 to 🔥 HOT LEADY. 1 dotyczy obserwowanego inwestora lub gminy.” + lista z numerami – klik w numer otwiera lead z przyciskami. |
+| **📊 Inwestycje** | Nowe od ostatniego raportu (lista z numerami); gdy nowych brak – pełny przegląd ostatnich 30 dni stronami „◀️ Wstecz / Dalej ▶️”. Pod spodem „🕒 Rejestr GUNB sprawdzony: …”; gdy import trwa albo się nie udał, bot to mówi (z godziną ponowienia). Raport z harmonogramu przy braku nowości nie przychodzi wcale. |
+| **⚙️ Ustawienia** | 🔎 Obszar i rodzaj (powiaty, miejscowość, 📍 promień od bazy w linii prostej, rodzaj budynku, kubatura, inwestor) · 🧰 Branża · 👀 Obserwowane · ⏰ Harmonogram (od razu / rano / wieczorem) · ⏸️ Wstrzymaj powiadomienia · 👤 Konto. |
+| **Przyciski pod inwestycją** | 📍 Mapa · 🏛️ Geoportal · ⭐ Zapisz · ✅ Przejrzane · 🗑️ Ukryj (z „↩️ Przywróć”) – oznaczenia są niezależne · **⏰ Przypomnij** (7 / 14 / 30 dni, jedno na inwestycję, rano w wybranym dniu) · **📝 Notatka** (prywatna, do 300 znaków) · **⋯ Więcej** (👀 obserwuj inwestora / 📌 gminę, 👍 Przydatne / 👎 Nieprzydatne). |
+| **🧰 Przypomnienia o etapie** | Dach 4–6 mies. po decyzji, okna i drzwi 5–7, instalacje 6–9, elewacja 8–12, wykończenia 9–14, ogrodzenie i kostka 10–18 (bloki i hale ×1,5; fundamenty – od razu). Wiadomość mówi wprost: „Warto sprawdzić tę inwestycję”, „Orientacyjne okno dla Twojej branży”, „Szacunek na podstawie daty decyzji; rzeczywisty etap wymaga sprawdzenia”. |
+| **🔥 HOT / 🟡 NORMAL / ⚪ LOW** | Szacunek **skali** z prostych reguł (kubatura, rodzaj, liczba budynków, nowa budowa, inwestor-firma) – nie szansa na zlecenie. Karta pokazuje punkty i powody. |
+| **📏 Odległość** | W linii prostej od bazy do działki (ULDK); przy lokalizacji przybliżonej karta mówi „środek obrębu”. |
+| **👀 Obserwowane** | Nowa inwestycja obserwowanego inwestora lub w obserwowanej gminie → alert od razu; więcej niż 3 naraz (np. po pauzie) – jedna wiadomość zbiorcza. |
+| **⏸️ Pauza** | Wstrzymuje wszystkie automatyczne wiadomości: raporty, „od razu”, obserwowane, przypomnienia o etapie i „⏰ Przypomnij”. Przeglądanie działa, dostęp biegnie dalej. Informacje o końcu dostępu są transakcyjne – przychodzą także w pauzie. |
 
-**Dostęp i abonamenty (paywall bez bramki płatności, sterowany ręcznie):**
+**Dostęp: 7-dniowy test i abonament (bez bramki płatności, sterowany ręcznie):**
 
-- Nowa osoba po `/start` trafia do bazy jako nieaktywna (`is_active = 0`) i dostaje komunikat:
-  „⛔ Twój dostęp jest nieaktywny. Skontaktuj się z administratorem @nick, aby opłacić abonament.”
-  Nick ustawiasz w `ADMIN_CONTACT`; bez niego pokazuje się klikalny link do admina.
-- Każde menu, filtr i przycisk sprawdza, czy abonament jest aktywny (`is_active`) i nie wygasł
-  (`subscription_ends` później niż teraz). Pętle wysyłki (raporty, „od razu”, watchlista, „Kiedy dzwonić”)
-  pobierają z bazy wyłącznie takie osoby.
-- Administrator (`ADMIN_CHAT_ID`, domyślnie `TELEGRAM_CHAT_ID`) ma dostęp zawsze i steruje abonamentami:
+- Nowa osoba po `/start` nie ma dostępu i dostaje: „⛔ Twój dostęp jest nieaktywny. Skontaktuj się
+  z administratorem @nick, aby opłacić abonament.” (`ADMIN_CONTACT`; bez niego – klikalny link do admina).
+  Admin dostaje kartę osoby z przyciskami **🎁 Test 7 dni / ✅ 30 dni / ⛔ Odrzuć**.
+- **Test 7 dni**: admin tylko pozwala; zegar rusza, gdy osoba po konfiguracji kliknie **▶️ Zacznij** –
+  dokładnie 7 × 24 h, z datą i godziną końca. Jeden test na konto Telegram: `/start`, restart, zmiana
+  filtrów ani odblokowanie bota go nie odnawiają.
+- Uprawnienia sprawdza jedno miejsce dla komend, przycisków i zadań w tle: konto i pomoc – zawsze;
+  ustawienia – także, gdy test czeka na start; inwestycje – tylko z dostępem. Przycisk autoryzuje osoba,
+  która go kliknęła (`from.id`).
+- Po końcu dostępu raporty, alerty i przypomnienia stają, stare przyciski nie pokazują nic nowego,
+  a zapisane inwestycje i ustawienia zostają. Dzień przed końcem – jedno przypomnienie, po końcu – jedna
+  informacja (obie odporne na restart, nigdy w nocy); admin dostaje listę do przedłużenia.
 
-  | Komenda | Działanie |
-  |---|---|
-  | `/aktywuj <chat_id> <liczba_dni>` | abonament na N dni; trwający jest przedłużany od swojego końca; klient dostaje „✅ Twój abonament został aktywowany na N dni!” |
-  | `/trial <chat_id>` | równo 3 dni od teraz (nie skraca dłuższego abonamentu); klient dostaje „🎁 Aktywowano darmowy okres próbny na 3 dni!…” |
-  | `/uzytkownicy` | lista osób ze stanem abonamentu (do kiedy / wygasł / nieaktywny) |
+| Komenda admina | Działanie |
+|---|---|
+| `/aktywuj <chat_id> <dni\|RRRR-MM-DD\|DD.MM.RRRR>` | abonament na N dni (od końca trwającego dostępu) albo do końca podanego dnia (czas polski) |
+| `/przedluz <chat_id> <dni\|data>` | to samo – czytelniej przy przedłużaniu |
+| `/odbierz <chat_id>` | wyłącza dostęp od razu (dane klienta zostają) |
+| `/trial <chat_id>` | pozwala na 7-dniowy test (raz na osobę) |
+| `/nowymodel <chat_id\|wszyscy> <dni\|data>` | dotychczasowym użytkownikom (dostęp bez terminu sprzed abonamentów) ustawia termin |
+| `/uzytkownicy` | lista osób ze stanem dostępu |
+| `/status` | import GUNB (trwa / ok / błąd + treść, ponowienie), ostatni pełny import, wątek zadań, wysyłki z ostatniej doby |
+| `/raport [7\|30]` | pilotaż: unikalne osoby i inwestycje – wysłane, otwarte, zapisane, 👍/👎, konfiguracje, starty testu, przedłużenia (wysłanie ≠ przeczytanie; kliknięć w mapę Telegram nie zgłasza) |
 
-  Karta nowej osoby, którą dostaje admin, ma jej ID, gotowe komendy i przyciski
-  **🎁 Trial 3 dni / ✅ 30 dni / ⛔ Odrzuć**.
-- Po terminie abonament wyłącza się sam: klient dostaje jedno powiadomienie z kontaktem do admina,
-  a admin listę z gotową komendą przedłużenia.
-- `bot.access: open` wyłącza paywall (np. darmowy pilotaż).
+`bot.access: open` wyłącza paywall (np. darmowy pilotaż).
 
-**Uruchomienie:** bot musi działać **stale** (odbiera kliknięcia na bieżąco) – sam pobiera dane GUNB
-o `bot.fetch_times`, rozsyła alerty co `instant_every_minutes` i raporty o `morning_time` / `evening_time`:
+**Jak działa w środku:** proces ma dwa wątki. Główny tylko odbiera wiadomości i kliknięcia (krótkie
+limity czekania na Telegram – odpowiedź nie wisi minutami). Wątek zadań – z własnym połączeniem SQLite
+i klientami HTTP – o `bot.fetch_times` pobiera dane GUNB, o `morning_time` / `evening_time` rusza raporty
+(godziny w czasie polskim, także po zmianie czasu; w bazie UTC), co `instant_every_minutes` wysyła alerty.
+Raporty i przypomnienia idą przez kolejkę `wysylki`: najpierw lista odbiorców, potem każda osoba osobno –
+błąd jednej nie zatrzymuje innych, nieudana wysyłka wraca po 1, 5, 15 i 30 min (najwyżej 5 prób, potem
+alert do admina), restart nie gubi ani nie dubluje obsłużonych. Timeout Telegrama bywa niejednoznaczny
+(wiadomość mogła dojść) – wtedy bot woli powtórzyć raport niż go zgubić, więc „dokładnie raz” nie jest
+gwarantowane. W nocy (22–6) nic automatycznego nie wychodzi. Naraz działa jeden import (blokada w bazie
+wspólna dla bota, `--fetch` z crona i importu historii). `systemctl stop` / Ctrl+C kończą import między
+stronami; dokończy się zaraz po starcie.
 
 ```bash
-python main.py --bot          # działa do Ctrl+C
+python main.py --bot          # działa do Ctrl+C / SIGTERM
 python main.py --bot-once     # jeden cykl (odbierz wiadomości + zaległe zadania) – do testów
 ```
 
@@ -307,37 +331,45 @@ Tryb bota zastępuje `--notify-telegram` (nie uruchamiaj obu dla tego samego cza
 ## Serwer 24/7 (VPS lub Raspberry Pi)
 
 Bot tylko **wychodzi** do internetu (Telegram long polling, GUNB, ULDK) – nie potrzebuje publicznego
-IP, domeny ani otwartych portów. Wystarczy najmniejszy VPS z Debianem/Ubuntu (np. Hetzner, OVHcloud,
-Mikrus) albo Raspberry Pi w domu: 1 rdzeń, 512 MB RAM, 2 GB dysku.
+IP, domeny ani otwartych portów. Wystarczy najmniejszy VPS z Ubuntu 24.04 (także Debian 12+, Ubuntu
+22.04+, Raspberry Pi OS Bookworm+): 1 rdzeń, 512 MB RAM, 5 GB dysku.
 
-Instalacja jednym poleceniem (Debian 12+, Ubuntu 22.04+, Raspberry Pi OS Bookworm+):
+**Krok po kroku – nowy bot, przeniesienie bota z komputera, aktualizacja, wycofanie, kopie i monitor:
+[docs/WDROZENIE.md](docs/WDROZENIE.md).** Nowy bot jednym poleceniem:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/msm3107/GUNB-TOOL/main/deploy/install.sh | sudo bash
 ```
 
-[`deploy/install.sh`](deploy/install.sh):
-
-1. instaluje Pythona i gita, zakłada konto systemowe `gunb` i pobiera kod do `/opt/gunb-tool`,
-2. pyta o token bota (od razu sprawdza go w Telegramie) i Twój ID czatu → `/opt/gunb-tool/.env`
-   (uprawnienia 600, plik nigdy nie trafia do repozytorium),
-3. uruchamia test połączeń (`sanity_check.py`) i pierwsze pobieranie danych GUNB,
-4. instaluje usługę systemd [`gunb-bot`](deploy/gunb-bot.service): start razem z serwerem, restart po
-   awarii, godziny z konfiguracji liczone w czasie polskim (`TZ=Europe/Warsaw`, choć VPS-y zwykle
-   działają w UTC), zapis wyłącznie do `/opt/gunb-tool`.
-
-**Aktualizacja** to to samo polecenie – kod się odświeży, a baza, filtry i zapisane leady zostaną.
-Region (`gunb.voivodeships` / `gunb.powiats`) zmieniaj w `config.yaml` w repozytorium, potem aktualizuj.
+[`deploy/install.sh`](deploy/install.sh) instaluje każdą wersję kodu osobno (`/opt/gunb-tool/releases/`,
+dokładne wersje zależności z `requirements.lock`, właściciel root) i przełącza `current` dopiero po
+zatrzymaniu bota i kopii bazy. Stan trzyma w `/var/lib/gunb-tool` (config, `.env` z prawami 600, baza,
+kopie). Usługa systemd [`gunb-bot`](deploy/gunb-bot.service) działa na koncie bez uprawnień: startuje
+z serwerem, wstaje po awarii, a przy błędzie konfiguracji albo bazie nowszej niż kod zatrzymuje się
+bez pętli restartów. `--przygotuj` przygotowuje serwer pod przeniesienie bota i niczego nie uruchamia.
 
 | Co | Polecenie na serwerze |
 |---|---|
-| logi na żywo | `journalctl -u gunb-bot -f` |
-| stan / restart / stop | `systemctl status gunb-bot` · `sudo systemctl restart gunb-bot` · `sudo systemctl stop gunb-bot` |
-| kopia bazy | `/opt/gunb-tool/data/gunb_leads.sqlite` (np. `scp` na komputer) |
+| stan i kontrola zdrowia | `sudo gunb-admin status` · `sudo gunb-admin zdrowie` |
+| dziennik | `sudo gunb-admin logi -f` |
+| aktualizacja / wycofanie | `sudo gunb-admin aktualizuj <wersja>` · `sudo gunb-admin wycofaj` |
+| kopia bazy / kopia do pobrania poza serwer | `sudo gunb-admin kopia` · `sudo gunb-admin kopia-do-pobrania` |
+
+Kontrola zdrowia działa też bez serwera: `python main.py --zdrowie` (kod 0 / 1 / 2, tylko odczyt, bez
+migracji). `--ping <adres>` albo `HEALTHCHECK_PING_URL` zgłasza wynik do monitora typu healthchecks.io.
 
 > **Jeden token = jeden działający bot.** Dwa procesy odbierające aktualizacje tym samym tokenem
-> dostają od Telegrama błąd 409 (bot loguje ostrzeżenie i czeka) – po instalacji na serwerze wyłącz
-> bota na komputerze.
+> dostają od Telegrama błąd 409 – bot wstrzymuje wtedy wysyłki i alarmuje admina. Drugi proces na tych
+> samych danych kończy się od razu (blokada obok bazy, kod 3).
+
+### Zmiany schematu bazy
+
+Przy starcie nowej wersji migracje wykonują się same, każda w osobnej transakcji, a przed pierwszą
+z nich powstaje kopia bazy (`backups/<baza>-przed-v<N>-<czas>.sqlite`). Użytkownicy zaakceptowani przed
+abonamentami (baza < v6) dostają dostęp bez terminu – przełączasz ich świadomie: `/nowymodel wszyscy 30`
+albo `/nowymodel <chat_id> 2026-12-31`. Starsza wersja programu **nie uruchomi się** na bazie z nowszym
+schematem (kod wyjścia 2) – powrót do niej wymaga odtworzenia kopii sprzed aktualizacji, a zmiany
+z czasu po tej kopii przepadają ([docs/WDROZENIE.md](docs/WDROZENIE.md), sekcja E).
 
 ## Google Sheets
 
@@ -491,8 +523,9 @@ podmiotów innych niż osoby fizyczne.
 | **Ponowienia** | Każde zapytanie do GUNB i ULDK: 3 ponowienia z backoffem 2 → 4 → 8 s (`http.max_retries`). |
 | **Bezpiecznik** | 3 nieudane zapytania z rzędu do jednego serwera → przez 10 min kolejne są od razu odrzucane, potem jedno próbne (`http.circuit_breaker_*`). Awaria ULDK nie blokuje bota na godziny, a geokodowanie wraca samo. |
 | **Ponowienie pobierania** | Nieudane poranne pobieranie w trybie `--bot` jest ponawiane co godzinę aż do skutku. |
-| **Alerty admina** | Błędy z logów trafiają na osobny czat `TELEGRAM_ADMIN_CHAT_ID` z czytelnym nagłówkiem, np. „🚨 BŁĄD: ULDK zwraca HTTP 500”, „GUNB zablokował dostęp (HTTP 403)”, „Baza SQLite zablokowana”, a po awarii „✅ … znów odpowiada”. Ta sama awaria najwyżej raz na 3 h. Klienci niczego nie widzą. Test: `python main.py --test-alert`. |
-| **Kopia bazy** | Raz w tygodniu przed pobieraniem: `data/backups/gunb_leads-RRRR-MM-DD.sqlite`, spójna kopia przez API SQLite (także w trybie WAL), 8 ostatnich. |
+| **Alerty admina** | Błędy z logów trafiają na osobny czat `TELEGRAM_ADMIN_CHAT_ID` z czytelnym nagłówkiem, np. „🚨 BŁĄD: ULDK zwraca HTTP 500”, „GUNB zablokował dostęp (HTTP 403)”, „Baza SQLite zablokowana”, a po awarii „✅ … znów odpowiada”. Ta sama awaria (także u wielu osób naraz) najwyżej raz na 3 h, łącznie najwyżej 20 alertów na godzinę. Klienci niczego nie widzą. Test: `python main.py --test-alert`. |
+| **Kopia bazy** | Codziennie (nocne porządki bota o 03:30 albo przed pobieraniem): `data/backups/gunb_leads-RRRR-MM-DD.sqlite`, spójna kopia przez API SQLite (także w trybie WAL), 14 ostatnich; osobno kopia przed każdą zmianą schematu i wersji. |
+| **Kontrola zdrowia** | `python main.py --zdrowie`: proces, odbieranie wiadomości, wątek zadań, ostatni import, zaległe i nieudane wysyłki, baza, dysk, konflikt tokenu – tylko odczyt, niczego nie restartuje. |
 | **VACUUM** | Po dużym imporcie (≥ 500 nowych/zmienionych leadów, `storage.vacuum_threshold`). |
 
 Z pól inwestora i projektanta wyciągany jest też telefon (`+48…`) i e-mail do kolumn `telefon` i

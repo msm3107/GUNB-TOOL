@@ -18,11 +18,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install -r requirements-dev.txt
+      # te same wersje zależności, które instaluje serwer (requirements.lock)
+      - run: pip install -c requirements.lock -r requirements-dev.txt
       - run: pytest
 
   deploy-scripts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - run: shellcheck deploy/*.sh
+      - run: shellcheck deploy/*.sh deploy/gunb-admin

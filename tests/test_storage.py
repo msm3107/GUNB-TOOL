@@ -328,6 +328,110 @@ def test_version_3_database_gets_contact_columns(tmp_path, clock):
         assert (repo.get("NEW/1").telefon, repo.get("NEW/1").email) == ("+48600123456", "biuro@test.pl")
 
 
+def legacy_database(path, version: int):
+    """Baza w schemacie ``version`` – taka, jaką zostawił kod sprzed aktualizacji (połączenie otwarte)."""
+    import sqlite3
+    from gunb_tool import storage
+
+    conn = sqlite3.connect(path)
+    for number, step in enumerate(storage._MIGRATIONS[:version], start=1):
+        if callable(step):
+            step(conn, number - 1)
+        else:
+            conn.executescript(step)
+    conn.execute(f"PRAGMA user_version = {version}")
+    conn.commit()
+    return conn
+
+
+def test_version_7_job_times_move_to_utc_and_telegram_offset_stays(tmp_path, clock):
+    from gunb_tool.bot_store import BotStore
+
+    path = tmp_path / "v7.sqlite"
+    legacy = legacy_database(path, 7)
+    legacy.executemany("INSERT INTO bot_jobs (nazwa, ostatnio) VALUES (?, ?)", [
+        ("telegram_offset", "123456"), ("raport_rano", "2026-09-29T07:00:05"), ("zepsuty", "nie-data")])
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repo:
+        store = BotStore(repo)
+        # stary zapis to czas lokalny serwera, na którym działał bot – ten sam, na którym idzie migracja
+        assert store.job_time("raport_rano") == datetime(2026, 9, 29, 7, 0, 5).astimezone(timezone.utc)
+        assert store.job_time("zepsuty") is None
+        assert store.job_last_run("telegram_offset") == "123456"
+    with LeadRepository(path, now=clock) as again:  # ponowny start po migracji
+        assert BotStore(again).job_time("raport_rano") is not None
+
+
+def test_failed_migration_step_is_rolled_back_whole(tmp_path, monkeypatch):
+    import sqlite3
+    from gunb_tool import storage
+
+    def broken(conn, start):
+        conn.execute("ALTER TABLE bot_users ADD COLUMN proba TEXT")
+        raise RuntimeError("awaria w połowie migracji")
+
+    monkeypatch.setattr(storage, "_MIGRATIONS", storage._MIGRATIONS + (broken,))
+    path = tmp_path / "db.sqlite"
+    with pytest.raises(RuntimeError, match="awaria"):
+        LeadRepository(path)
+
+    check = sqlite3.connect(path)
+    assert check.execute("PRAGMA user_version").fetchone()[0] == len(storage._MIGRATIONS) - 1
+    assert "proba" not in [row[1] for row in check.execute("PRAGMA table_info(bot_users)")]
+    check.close()
+
+
+def test_import_lease_is_exclusive_until_released_or_expired(repo, clock):
+    ttl = timedelta(minutes=30)
+    assert repo.acquire_lease("import", "bot", ttl)
+    assert not repo.acquire_lease("import", "cron", ttl)
+    assert repo.lease_holder("import") == "bot"
+
+    clock.advance(minutes=20)
+    assert repo.renew_lease("import", "bot", ttl)  # import trwa – odnawia blokadę po każdej stronie
+    clock.advance(minutes=20)
+    assert not repo.acquire_lease("import", "cron", ttl)
+    clock.advance(minutes=11)  # proces „bot” padł – blokada wygasła sama
+    assert repo.acquire_lease("import", "cron", ttl)
+    assert not repo.renew_lease("import", "bot", ttl)  # stary właściciel wie, że ją stracił
+
+    repo.release_lease("import", "cron")
+    assert repo.lease_holder("import") is None
+
+
+def test_version_6_lead_states_become_independent_flags(tmp_path, clock):
+    import sqlite3
+    from gunb_tool import storage
+
+    path = tmp_path / "v6.sqlite"
+    legacy = sqlite3.connect(path)
+    for script in storage._MIGRATIONS[:6]:
+        legacy.executescript(script)
+    legacy.execute("PRAGMA user_version = 6")
+    legacy.execute("INSERT INTO bot_users (chat_id, status, nowe_od, utworzono, zmieniono) VALUES (1, 'aktywny', 'x', 'x', 'x')")
+    for n, stan in enumerate(("zapisany", "przejrzany", "ukryty"), start=1):
+        legacy.execute("INSERT INTO investments (id_sprawy, zrodlo, status, utworzono, zmieniono, status_zmieniony,"
+                       " ostatnio_widziany) VALUES (?, 'pozwolenia', 'decyzja', 'x', 'x', 'x', 'x')", (f"L/{n}",))
+        legacy.execute("INSERT INTO user_leads (chat_id, id_sprawy, stan, zmieniono) VALUES (1, ?, ?, 'x')",
+                       (f"L/{n}", stan))
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repo:
+        from gunb_tool.bot_store import BotStore, LeadFlags
+        store = BotStore(repo)
+        assert store.lead_flags(1, "L/1") == LeadFlags(saved=True)
+        assert store.lead_flags(1, "L/2") == LeadFlags(reviewed=True)
+        assert store.lead_flags(1, "L/3") == LeadFlags(hidden=True)
+        store.set_lead_flags(1, "L/1", reviewed=True)
+        # stary kod czyta nadal kolumnę „stan” – dostaje wartość pochodną
+        assert repo.connection.execute("SELECT stan FROM user_leads WHERE id_sprawy = 'L/1'").fetchone()[0] == "zapisany"
+    with LeadRepository(path, now=clock) as again:  # ponowny start po migracji
+        assert again.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
+
+
 def test_historical_import_dates_new_leads_by_their_decision(repo):
     """Import 18 miesięcy wstecz nie może zalać klientów „nowościami” – liczy się data decyzji."""
     repo.upsert_many([lead("OLD/1", data_aktualizacji="2025-06-01")], historical=True)
@@ -367,3 +471,67 @@ def test_leads_get_sequential_numbers_that_survive_updates(repo):
     assert repo.get("A/1").nr == 1
     assert repo.get_by_nr(2).id_sprawy == "B/1"
     assert repo.get_by_nr(99) is None
+
+
+# --- Kopia przed zmianą schematu -------------------------------------------------------------------------
+
+def test_existing_database_is_backed_up_before_a_schema_change(tmp_path, clock):
+    import sqlite3
+
+    path = tmp_path / "data" / "baza.sqlite"
+    path.parent.mkdir()
+    legacy = legacy_database(path, 6)
+    legacy.execute("INSERT INTO bot_users (chat_id, status, nowe_od, utworzono, zmieniono) VALUES (7, 'aktywny', 'x', 'x', 'x')")
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock):
+        pass
+    with LeadRepository(path, now=clock):  # drugi start – schemat aktualny, bez nowej kopii
+        pass
+
+    (backup,) = list((path.parent / "backups").glob("baza-przed-v*.sqlite"))
+    check = sqlite3.connect(backup)
+    try:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 6  # kopia sprzed migracji
+        assert check.execute("SELECT chat_id FROM bot_users").fetchall() == [(7,)]
+        assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        check.close()
+
+
+def test_new_database_needs_no_backup(tmp_path, clock):
+    with LeadRepository(tmp_path / "nowa.sqlite", now=clock):
+        pass
+    assert not (tmp_path / "backups").exists()
+
+
+def test_schema_change_is_refused_when_the_backup_cannot_be_made(tmp_path, clock):
+    import sqlite3
+
+    path = tmp_path / "baza.sqlite"
+    legacy_database(path, 6).close()
+    (tmp_path / "backups").write_text("to nie katalog")  # kopia nie powstanie
+
+    with pytest.raises(OSError):
+        LeadRepository(path, now=clock)
+
+    check = sqlite3.connect(path)
+    assert check.execute("PRAGMA user_version").fetchone()[0] == 6  # bez kopii – bez migracji
+    check.close()
+
+
+def test_code_older_than_the_database_refuses_to_run(tmp_path, clock):
+    """Po wycofaniu samego kodu (bez bazy) stary program nie może pracować na nieznanym mu schemacie."""
+    import sqlite3
+
+    from gunb_tool.storage import SCHEMA_VERSION, SchemaTooNew
+
+    path = tmp_path / "baza.sqlite"
+    LeadRepository(path, now=clock).close()
+    conn = sqlite3.connect(path)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    conn.close()
+
+    with pytest.raises(SchemaTooNew, match=f"v{SCHEMA_VERSION + 1}"):
+        LeadRepository(path, now=clock)

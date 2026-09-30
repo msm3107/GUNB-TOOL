@@ -49,6 +49,23 @@ def test_honors_retry_after_header_in_seconds():
     assert clock.sleeps == [7.0]
 
 
+def test_interactive_client_gives_up_instead_of_waiting_long_on_rate_limit():
+    """Odpowiedź na kliknięcie nie może czekać minuty na limit Telegrama – lepiej od razu zgłosić błąd."""
+    client, session, clock = make_client([FakeResponse(429, headers={"Retry-After": "60"}), FakeResponse(200)],
+                                         max_retry_after=10.0)
+    with pytest.raises(HttpError) as excinfo:
+        client.get("https://example.test/")
+    assert excinfo.value.status_code == 429
+    assert clock.sleeps == [] and len(session.calls) == 1
+
+
+def test_interactive_client_still_waits_for_a_short_rate_limit():
+    client, _, clock = make_client([FakeResponse(429, headers={"Retry-After": "3"}), FakeResponse(200)],
+                                   max_retry_after=10.0)
+    assert client.get("https://example.test/").status_code == 200
+    assert clock.sleeps == [3.0]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -78,6 +95,23 @@ def test_secrets_in_urls_are_redacted_from_logs_and_errors(caplog):
     assert "SECRET" not in caplog.text
     assert "WEBHOOK-secret" not in caplog.text
     assert "api.telegram.org/bot<token>/sendMessage" in caplog.text
+
+
+def test_network_errors_do_not_leak_the_token_from_their_own_message(caplog):
+    """requests wkłada ścieżkę z tokenem do treści wyjątku (np. brak sieci) – ona też musi być zamaskowana."""
+    url = "https://api.telegram.org/bot123456:SECRET-token_x/getUpdates"
+    leak = requests.ConnectionError(
+        "HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded with url: "
+        "/bot123456:SECRET-token_x/getUpdates (Caused by NewConnectionError('Failed to establish'))")
+    client, _, _ = make_client([leak] * 4, max_retries=3)
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(HttpError) as excinfo:
+            client.post(url, json={})
+
+    assert "SECRET" not in str(excinfo.value)
+    assert "SECRET" not in caplog.text
+    assert "/bot<token>/getUpdates" in str(excinfo.value)
 
 
 # --- User-Agent i uprzejme opóźnienia ----------------------------------------

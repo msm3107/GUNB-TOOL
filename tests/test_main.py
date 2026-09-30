@@ -1,14 +1,44 @@
+import logging
+import threading
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 import main
-from gunb_tool.config import FilterConfig
+from gunb_tool.config import FilterConfig, LoggingConfig
 from gunb_tool.data_filter import LeadFilter
 from gunb_tool.models import Investment
-from gunb_tool.pipeline import LeadPipeline
+from gunb_tool.bot_store import BotStore
+from gunb_tool.http_client import HttpError
+from gunb_tool.pipeline import IMPORT_LEASE, ImportSkipped, LeadPipeline
 from gunb_tool.storage import LeadRepository
 from tests.test_pipeline import FakeScraper, gunb_case
+
+
+def test_log_output_never_contains_the_token_even_in_tracebacks(tmp_path):
+    token = "123456:SECRET-token_x"
+    log_file = tmp_path / "bot.log"
+    main.setup_logging(LoggingConfig(level="INFO", file=log_file), secrets=(token,))
+    try:
+        try:
+            try:
+                raise ConnectionError("Max retries exceeded with url: /bot123456:SECRET-token_x/sendMessage")
+            except ConnectionError as exc:
+                raise RuntimeError(f"wysyłka nie powiodła się (token {token})") from exc
+        except RuntimeError:
+            logging.getLogger("gunb_tool.test").exception("Błąd wysyłki")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        text = log_file.read_text(encoding="utf-8")
+    finally:
+        for handler in [h for h in logging.getLogger().handlers if getattr(h, "_gunb_tool", False)]:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
+    assert "Błąd wysyłki" in text and "Traceback" in text
+    assert "SECRET" not in text and "<token>" in text
 
 
 @pytest.fixture
@@ -82,7 +112,7 @@ def test_fetch_uses_cli_scope_and_prints_summary(workdir, monkeypatch, capsys):
 def test_dry_run_notification_works_without_credentials(workdir, capsys):
     seed(workdir)
     assert run(workdir, "--notify-telegram", "--dry-run") == 0
-    assert "NOWY LEAD" in capsys.readouterr().out
+    assert "NOWA INWESTYCJA" in capsys.readouterr().out
 
 
 def test_real_notification_without_credentials_fails(workdir, caplog):
@@ -140,8 +170,26 @@ def test_bot_once_runs_single_cycle(workdir, monkeypatch, capsys):
 
     monkeypatch.setattr(main, "TelegramApi", Api)
     assert run(workdir, "--bot-once") == 0
-    assert calls == {"token": "123:ABC", "commands": 9, "timeout": 0}
+    assert calls == {"token": "123:ABC", "commands": 5, "timeout": 0}
     assert "Bot:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["--bot", "--bot-once"])
+def test_second_bot_on_the_same_data_exits_without_touching_telegram(workdir, monkeypatch, caplog, mode):
+    from gunb_tool.instance import instance_lock
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+
+    class Api:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("drugi proces nie może łączyć się z Telegramem")
+
+    monkeypatch.setattr(main, "TelegramApi", Api)
+    with instance_lock(workdir / "data" / "gunb-bot.lock"):  # pierwszy bot już działa
+        code = run(workdir, mode)
+
+    assert code == main.EXIT_ALREADY_RUNNING == 3
+    assert "już działa" in caplog.text
 
 
 # --- Utwardzenie: kopia bazy, alerty admina, awarie ------------------------------------------------
@@ -161,6 +209,44 @@ def test_fetch_makes_weekly_database_backup_first(workdir, monkeypatch):
 
     backups = list((workdir / "data" / "backups").glob("test-*.sqlite"))
     assert len(backups) == 1
+
+
+def test_cli_fetch_does_not_run_alongside_another_import(workdir, monkeypatch, caplog):
+    seed(workdir)
+    monkeypatch.setattr(main, "create_pipeline", fake_pipeline_factory([gunb_case("B/1")]))
+    monkeypatch.setattr(main, "CLI_IMPORT_WAIT", timedelta(0))
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        assert repo.acquire_lease(IMPORT_LEASE, "bot-na-serwerze", timedelta(minutes=30))
+
+    assert run(workdir, "--fetch", "--no-geocode") == 1
+
+    assert "trwa inny import" in caplog.text
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        assert repo.get("B/1") is None
+
+
+def test_bot_import_stops_between_pages_and_frees_the_lock(workdir):
+    config = main.load_config(workdir / "config.yaml")
+    config = replace(config, gunb=replace(config.gunb, page_size=1))
+    stop = threading.Event()
+
+    class StopDuringImport(FakeScraper):
+        def fetch_pages(self, query, page_size=200):
+            for page in super().fetch_pages(query, page_size):
+                yield page
+                stop.set()  # zamykanie programu w trakcie importu
+
+    with LeadRepository(config.storage.db_path) as repo:
+        pipeline = LeadPipeline(repo, scraper=StopDuringImport([gunb_case(f"A/{n}") for n in range(3)]),
+                                lead_filter=LeadFilter(FilterConfig()))
+        fetcher = main.bot_fetcher(pipeline, config, should_stop=stop.is_set)
+
+        with pytest.raises(ImportSkipped) as excinfo:
+            fetcher()
+
+        assert excinfo.value.retry_in == timedelta(0)  # dokończy zaraz po ponownym starcie
+        assert repo.get("A/1") is not None and repo.get("A/2") is None
+        assert repo.lease_holder(IMPORT_LEASE) is None
 
 
 def test_test_alert_requires_admin_chat(workdir, caplog):
@@ -198,3 +284,125 @@ def test_unexpected_crash_is_logged_as_critical(workdir, monkeypatch, caplog):
     monkeypatch.setattr(main, "_run_fetch", crash)
     assert run(workdir, "--fetch") == 1
     assert any(r.levelname == "CRITICAL" and r.exc_info for r in caplog.records)
+
+
+def test_cli_fetch_records_the_import_for_reports_and_status(workdir, monkeypatch):
+    monkeypatch.setattr(main, "create_pipeline", fake_pipeline_factory([gunb_case("B/1")]))
+
+    assert run(workdir, "--fetch", "--no-geocode") == 0
+
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        status = BotStore(repo).job_status("import")
+        assert status.stan == "ok" and "nowe 1" in status.opis
+        assert BotStore(repo).job_time("import_udany") is not None  # „🕒 Rejestr GUNB sprawdzony: …”
+
+
+def test_cli_fetch_failure_is_recorded(workdir, monkeypatch):
+    class BrokenScraper(FakeScraper):
+        def fetch_pages(self, query, page_size=200):
+            raise HttpError("GUNB: HTTP 503", status_code=503)
+
+    def factory(config, repo, *, geocode=True):
+        return LeadPipeline(repo, scraper=BrokenScraper([]), lead_filter=LeadFilter(FilterConfig()))
+
+    monkeypatch.setattr(main, "create_pipeline", factory)
+
+    assert run(workdir, "--fetch", "--no-geocode") == 1
+
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        status = BotStore(repo).job_status("import")
+        assert status.stan == "blad" and "503" in status.opis
+        assert BotStore(repo).job_time("import_udany") is None
+
+
+def test_import_without_any_case_is_not_counted_as_a_checked_registry(workdir, monkeypatch):
+    monkeypatch.setattr(main, "create_pipeline", fake_pipeline_factory([]))  # paczka bez spraw w oknie
+
+    assert run(workdir, "--fetch", "--no-geocode") == 1
+
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        status = BotStore(repo).job_status("import")
+        assert status.stan == "blad" and "brak spraw" in status.opis
+        assert BotStore(repo).job_time("import_udany") is None
+
+
+# --- Kontrola zdrowia (``--zdrowie``) ------------------------------------------------------------------
+
+def test_health_check_reports_a_stopped_bot_with_exit_code_2(workdir, capsys):
+    seed(workdir)
+    assert run(workdir, "--zdrowie") == 2
+    assert "proces bota nie działa" in capsys.readouterr().out
+
+
+def test_health_check_never_upgrades_an_old_database(workdir, capsys):
+    import sqlite3
+
+    from gunb_tool.instance import instance_lock
+    from tests.test_storage import legacy_database
+
+    (workdir / "data").mkdir()
+    legacy_database(workdir / "data" / "test.sqlite", 6).close()
+    with instance_lock(workdir / "data" / "gunb-bot.lock"):
+        run(workdir, "--zdrowie")
+
+    conn = sqlite3.connect(workdir / "data" / "test.sqlite")
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    conn.close()
+    assert "przy najbliższym starcie" in capsys.readouterr().out
+    assert not list((workdir / "data").glob("backups/*"))  # nie było migracji, więc i kopii przed nią
+
+
+def test_health_check_pings_the_external_monitor(workdir, monkeypatch):
+    import gunb_tool.health as health
+
+    calls = []
+    monkeypatch.setattr(health.requests, "get", lambda url, timeout: calls.append(url))
+    seed(workdir)
+    run(workdir, "--zdrowie", "--ping", "https://hc-ping.com/abc")
+    (workdir / ".env").write_text("HEALTHCHECK_PING_URL=https://hc-ping.com/z-env\n", encoding="utf-8")
+    monkeypatch.delenv("HEALTHCHECK_PING_URL", raising=False)
+    run(workdir, "--zdrowie")
+    monkeypatch.delenv("HEALTHCHECK_PING_URL", raising=False)  # ustawiła ją konfiguracja z .env
+
+    assert calls == ["https://hc-ping.com/abc/fail", "https://hc-ping.com/z-env/fail"]  # bot nie działa
+
+
+def test_health_check_does_not_write_the_log_file(workdir):
+    seed(workdir)
+    (workdir / "config.yaml").write_text(
+        (workdir / "config.yaml").read_text(encoding="utf-8") + "  file: logs/bot.log\n", encoding="utf-8")
+    run(workdir, "--zdrowie")
+    assert not (workdir / "logs").exists()  # uruchomiona z innego konta nie przejmie pliku logu bota
+
+
+# --- Nocna kopia bazy w bocie -----------------------------------------------------------------------------
+
+def test_jobs_bot_backs_up_the_database_every_night(workdir, monkeypatch):
+    from gunb_tool.config import load_config
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    seed(workdir)
+    config = load_config(workdir / "config.yaml")
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        jobs_bot = main._make_jobs_bot(config, repo, threading.Event())
+        first = jobs_bot.maintenance()
+        assert jobs_bot.maintenance() is None  # tego dnia kopia już jest
+        assert jobs_bot.fetcher is not None
+
+    assert first is not None and first.parent == workdir / "data" / "backups"
+    with LeadRepository(first) as copy:
+        assert copy.get("A/1") is not None
+
+
+def test_old_code_on_a_newer_database_stops_without_a_restart_loop(workdir, caplog):
+    import sqlite3
+
+    from gunb_tool.storage import SCHEMA_VERSION
+
+    seed(workdir)
+    conn = sqlite3.connect(workdir / "data" / "test.sqlite")
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    conn.close()
+
+    assert run(workdir, "--stats") == main.EXIT_USAGE  # systemd: RestartPreventExitStatus=2 3
+    assert "nowszy" in caplog.text

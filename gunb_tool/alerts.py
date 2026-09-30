@@ -5,7 +5,11 @@ Klient („pan Mietek”) dostaje wyłącznie leady. Awarie – „GUNB zablokow
 
 * :class:`TelegramLogHandler` przekazuje rekordy od poziomu ERROR oraz rekordy oznaczone
   ``extra={"alert": True}`` (np. „ULDK znów odpowiada”), z czytelnym nagłówkiem rozpoznanej awarii,
-* ta sama awaria powtarzająca się w ciągu 3 godzin daje jedną wiadomość (kolejna ma licznik powtórzeń),
+* ta sama awaria powtarzająca się w ciągu 3 godzin daje jedną wiadomość (kolejna ma licznik powtórzeń);
+  „ta sama” = ten sam nagłówek po zamianie liczb (ID czatu, numer aktualizacji), więc błąd u 200 osób
+  to jeden alert,
+* najwyżej ``MAX_PER_HOUR`` alertów na godzinę – przy lawinie różnych awarii reszta zostaje w logu,
+  a następny alert mówi, ile pominięto,
 * wysyłka idzie w osobnym wątku – awaria sieci nie spowalnia bota, a nieudany alert nigdy nie
   przerywa programu ani nie wywołuje kolejnego alertu.
 """
@@ -32,6 +36,7 @@ from .http_client import RETRYABLE_STATUS, HttpError, redact_url
 TELEGRAM_LIMIT = 3900  # Telegram: 4096 znaków; zapas na emoji liczone podwójnie
 DETAIL_LIMIT = 300
 DEDUP_SECONDS = 3 * 3600
+MAX_PER_HOUR = 20
 _SERVICES = (
     ("gunb.gov.pl", "GUNB"),
     ("uldk.gugik.gov.pl", "ULDK"),
@@ -39,6 +44,7 @@ _SERVICES = (
     ("discord.com", "Discord"),
 )
 _HTTP_STATUS_RE = re.compile(r"\bHTTP (\d{3})\b")
+_NUMBERS_RE = re.compile(r"\d+")
 
 Sender = Callable[[str], None]
 
@@ -67,6 +73,7 @@ class TelegramLogHandler(logging.Handler):
         send: funkcja wysyłająca gotowy tekst (np. :func:`telegram_sender`).
         min_level: od tego poziomu rekord jest alertem.
         dedup_seconds: w tym oknie ta sama awaria nie jest wysyłana ponownie.
+        max_per_hour: najwięcej alertów w godzinie (reszta tylko w logu).
         clock: zegar monotoniczny (wstrzykiwany w testach).
         hostname: nazwa maszyny w alercie (serwer czy komputer).
     """
@@ -77,6 +84,7 @@ class TelegramLogHandler(logging.Handler):
         *,
         min_level: int = logging.ERROR,
         dedup_seconds: float = DEDUP_SECONDS,
+        max_per_hour: int = MAX_PER_HOUR,
         clock: Callable[[], float] = time.monotonic,
         hostname: str | None = None,
     ) -> None:
@@ -86,8 +94,12 @@ class TelegramLogHandler(logging.Handler):
         self.dedup_seconds = dedup_seconds
         self._clock = clock
         self.hostname = hostname or socket.gethostname()
+        self.max_per_hour = max_per_hour
         self._last_sent: dict[str, float] = {}
         self._suppressed: dict[str, int] = {}
+        self._hour_start = float("-inf")
+        self._sent_this_hour = 0
+        self._dropped = 0
         self.addFilter(self.is_alert)
 
     def is_alert(self, record: logging.LogRecord) -> bool:
@@ -98,18 +110,29 @@ class TelegramLogHandler(logging.Handler):
         try:
             is_error = record.levelno >= self.min_level
             headline = alert_headline(record) if is_error else _first_line(record.getMessage())
+            key = _NUMBERS_RE.sub("#", headline)
             now = self._clock()
-            last = self._last_sent.get(headline)
+            last = self._last_sent.get(key)
             if last is not None and now - last < self.dedup_seconds:
-                self._suppressed[headline] = self._suppressed.get(headline, 0) + 1
+                self._suppressed[key] = self._suppressed.get(key, 0) + 1
                 return
-            self._last_sent[headline] = now
-            repeats = self._suppressed.pop(headline, 0)
-            self._send(self._format(record, headline, is_error, repeats))
+            if now - self._hour_start >= 3600:
+                self._hour_start, self._sent_this_hour = now, 0
+            if self._sent_this_hour >= self.max_per_hour:
+                self._dropped += 1
+                return
+            self._sent_this_hour += 1
+            if len(self._last_sent) > 500:  # proces działa miesiącami – stare wpisy nie są już potrzebne
+                self._last_sent = {k: t for k, t in self._last_sent.items() if now - t < self.dedup_seconds}
+            self._last_sent[key] = now
+            repeats = self._suppressed.pop(key, 0)
+            dropped, self._dropped = self._dropped, 0
+            self._send(self._format(record, headline, is_error, repeats, dropped))
         except Exception as exc:  # alert nie może przerwać programu ani wywołać kolejnego alertu
             _report_failure(exc)
 
-    def _format(self, record: logging.LogRecord, headline: str, is_error: bool, repeats: int) -> str:
+    def _format(self, record: logging.LogRecord, headline: str, is_error: bool, repeats: int,
+                dropped: int = 0) -> str:
         when = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M")
         lines = [f"🚨 BŁĄD: {headline}" if is_error else f"✅ {headline}", f"🖥️ {self.hostname} · {when}"]
         message = record.getMessage().strip()
@@ -120,6 +143,8 @@ class TelegramLogHandler(logging.Handler):
             lines.append(f"⚠️ {type(error).__name__}: {_shorten(str(error))}")
         if repeats:
             lines.append(f"🔁 powtórzyło się {repeats}× od poprzedniego alertu")
+        if dropped:
+            lines.append(f"🔇 pominięto {dropped} innych alertów (limit {self.max_per_hour} na godzinę) – są w logu")
         text = redact_url("\n".join(lines))
         return text if len(text) <= TELEGRAM_LIMIT else text[: TELEGRAM_LIMIT - 1] + "…"
 

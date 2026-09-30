@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 
 import pytest
 import responses
@@ -25,8 +24,7 @@ CREWS = (101, 202, 303)
 @pytest.fixture
 def bot(memory_repo, telegram_api) -> LeadBot:
     settings = BotConfig(admins=(1,), access="open", fetch_times=(), morning_time="07:00", evening_time="19:00")
-    return LeadBot(memory_repo, telegram_api, settings=settings, powiat_codes=("1607",), formatter=MessageFormatter(),
-                   clock=lambda: datetime(2026, 9, 29, 7, 5))
+    return LeadBot(memory_repo, telegram_api, settings=settings, powiat_codes=("1607",), formatter=MessageFormatter())
 
 
 @pytest.fixture

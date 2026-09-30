@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import socket
+import threading
+import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Iterator, Protocol, Sequence
 
 from .config import AppConfig, GunbConfig
 from .contacts import extract_contact
@@ -20,6 +25,56 @@ from .scoring import score_investment
 from .storage import GEO_FIELDS, ChangeType, LeadRepository
 
 log = logging.getLogger(__name__)
+
+IMPORT_LEASE = "import"
+IMPORT_LEASE_TTL = timedelta(minutes=30)
+"""Blokada importu wygasa sama po awarii procesu; działający import odnawia ją po każdej stronie."""
+
+
+class ImportSkipped(RuntimeError):
+    """Import się nie odbył, choć nic nie jest zepsute (np. trwa inny import, program się zamyka).
+
+    ``retry_in`` – po jakim czasie spróbować ponownie.
+    """
+
+    def __init__(self, reason: str, *, retry_in: timedelta = timedelta(hours=1)) -> None:
+        super().__init__(reason)
+        self.retry_in = retry_in
+
+
+class EmptyImport(RuntimeError):
+    """Zwykły import nie przyniósł ani jednej sprawy – to podejrzana paczka GUNB albo zły zakres,
+    więc nie liczy się jako udane sprawdzenie rejestru (dane w bazie zostają nietknięte)."""
+
+
+@contextmanager
+def import_lease(repo: LeadRepository, *, owner: str | None = None, wait: timedelta = timedelta(0),
+                 ttl: timedelta = IMPORT_LEASE_TTL,
+                 sleep: Callable[[float], None] = time.sleep) -> Iterator[Callable[[], bool]]:
+    """Jeden import naraz – bot, ``--fetch`` z harmonogramu systemu i import historii dzielą blokadę w bazie.
+
+    Zwraca funkcję odnawiającą blokadę (``False`` = blokadę przejął ktoś inny – import powinien się skończyć).
+
+    Args:
+        owner: identyfikator właściciela (domyślnie host:PID:wątek).
+        wait: ile czekać na zakończenie cudzego importu (np. ręczny ``--fetch``); 0 – od razu zrezygnuj.
+
+    Raises:
+        ImportSkipped: importuje inny proces.
+    """
+    owner = owner or f"{socket.gethostname()}:{os.getpid()}:{threading.get_ident()}"
+    waited = 0.0
+    while not repo.acquire_lease(IMPORT_LEASE, owner, ttl):
+        if waited >= wait.total_seconds():
+            raise ImportSkipped(f"trwa inny import danych ({repo.lease_holder(IMPORT_LEASE) or 'inny proces'})")
+        if not waited:
+            log.info("Trwa inny import danych – czekam na jego koniec (najwyżej %d min)", wait.total_seconds() // 60)
+        sleep(15.0)
+        waited += 15.0
+    try:
+        yield lambda: repo.renew_lease(IMPORT_LEASE, owner, ttl)
+    finally:
+        repo.release_lease(IMPORT_LEASE, owner)
 
 
 class PageSource(Protocol):
@@ -55,6 +110,13 @@ class FetchReport:
     geocoded: int = 0
     geocode_reused: int = 0
     geocode_missing: int = 0
+    interrupted: bool = False
+    """Import przerwany między stronami (zamykanie programu albo utrata blokady) – zapisane strony zostają."""
+
+    def summary(self) -> str:
+        """Krótki opis wyniku (np. do stanu zadań widocznego dla admina)."""
+        text = f"nowe {self.new}, zmiany statusu {self.status_changed}, sprawy {self.cases}"
+        return text + (" – przerwany" if self.interrupted else "")
 
 
 @dataclass
@@ -99,7 +161,7 @@ class LeadPipeline:
     # --- Pobieranie ------------------------------------------------------------------
 
     def fetch(self, query: FetchQuery, *, page_size: int, limit: int | None = None,
-              historical: bool = False) -> FetchReport:
+              historical: bool = False, should_continue: Callable[[], bool] | None = None) -> FetchReport:
         """Pobiera sprawy stronami, filtruje, geokoduje i zapisuje (jedna transakcja na stronę).
 
         Args:
@@ -107,6 +169,8 @@ class LeadPipeline:
             page_size: liczba spraw na stronę.
             limit: maksymalna liczba przetworzonych spraw (np. do testów konfiguracji).
             historical: import historyczny – nowe sprawy nie są „nowościami” (patrz ``LeadRepository.upsert``).
+            should_continue: wywoływane po każdej zapisanej stronie; ``False`` kończy import
+                (``report.interrupted``) – np. przy zamykaniu programu albo po utracie blokady importu.
         """
         if self.scraper is None or self.lead_filter is None:
             raise RuntimeError("fetch() wymaga scrapera i filtra")
@@ -141,6 +205,10 @@ class LeadPipeline:
                     report.unchanged += 1
             _log_page(page, processed, len(batch))
             if limit is not None and report.cases >= limit:
+                break
+            if should_continue is not None and not should_continue():
+                report.interrupted = True
+                log.warning("Import przerwany po %d stronach – zapisane strony zostają", report.pages)
                 break
         return report
 

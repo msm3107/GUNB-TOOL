@@ -1,8 +1,10 @@
-# Zależności runtime GUNB Lead Tool
+# Runtime dependencies of GUNB Lead Tool (keep this file ASCII-only: pip reads it in the system encoding)
 requests>=2.31,<3
 PyYAML>=6.0,<7
 python-dotenv>=1.0,<2
+# Europe/Warsaw time zone for the schedule (Windows has no system zone database; fallback on Linux)
+tzdata>=2024.1
 
-# Eksport do Google Sheets (opcjonalny – wymagany tylko dla --sync-sheets)
+# Google Sheets export (optional - needed only for --sync-sheets)
 gspread>=6.0,<7
 google-auth>=2.20,<3

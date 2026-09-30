@@ -16,8 +16,17 @@ data/
 *.part
 *.log
 
+# Pakiety przenoszenia bota i kopie bazy – dane osobowe użytkowników, NIGDY do repozytorium
+gunb-migracja-*.zip
+eksport/
+backups/
+przychodzace/
+*.sqlite.*
+
 # Sekrety – NIGDY nie commituj
 .env
+.env.*
+!.env.example
 service_account*.json
 credentials*.json
 *-sa.json

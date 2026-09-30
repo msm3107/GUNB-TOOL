@@ -101,7 +101,7 @@ def test_subscribers_are_only_users_with_paid_access_plus_admins(store, clock):
 
     assert [u.chat_id for u in store.subscribers(iso(now), admins=(5,))] == [1, 5]
     assert [u.chat_id for u in store.subscribers(iso(now), admins=(5,), tryb="wieczor")] == []
-    assert [u.chat_id for u in store.expired_subscriptions(iso(now))] == [2]
+    assert [u.chat_id for u in store.access_ended(now, admins=(5,))] == [2]  # do jednorazowej informacji o końcu
 
 
 def test_new_user_starts_without_subscription(store):
@@ -232,9 +232,10 @@ def test_saved_list_follows_lead_states(store, repo):
     store.set_lead_state(1, "A/1", "zapisany")
     store.set_lead_state(1, "B/1", "zapisany")
     assert [i.id_sprawy for i in store.saved(1, limit=10)] == ["B/1", "A/1"]
-    store.set_lead_state(1, "A/1", "przejrzany")
+    store.set_lead_state(1, "A/1", "przejrzany")  # przejrzenie nie zdejmuje zapisania (P0.3)
+    assert store.saved_count(1) == 2
+    store.set_lead_flags(1, "A/1", saved=False)
     assert [i.id_sprawy for i in store.saved(1, limit=10)] == ["B/1"]
-    assert store.saved_count(1) == 1
     assert store.lead_state(1, "A/1") == "przejrzany"
 
 
