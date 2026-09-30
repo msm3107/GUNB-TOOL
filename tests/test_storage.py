@@ -519,3 +519,19 @@ def test_schema_change_is_refused_when_the_backup_cannot_be_made(tmp_path, clock
     check = sqlite3.connect(path)
     assert check.execute("PRAGMA user_version").fetchone()[0] == 6  # bez kopii – bez migracji
     check.close()
+
+
+def test_code_older_than_the_database_refuses_to_run(tmp_path, clock):
+    """Po wycofaniu samego kodu (bez bazy) stary program nie może pracować na nieznanym mu schemacie."""
+    import sqlite3
+
+    from gunb_tool.storage import SCHEMA_VERSION, SchemaTooNew
+
+    path = tmp_path / "baza.sqlite"
+    LeadRepository(path, now=clock).close()
+    conn = sqlite3.connect(path)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    conn.close()
+
+    with pytest.raises(SchemaTooNew, match=f"v{SCHEMA_VERSION + 1}"):
+        LeadRepository(path, now=clock)

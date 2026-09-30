@@ -392,3 +392,17 @@ def test_jobs_bot_backs_up_the_database_every_night(workdir, monkeypatch):
     assert first is not None and first.parent == workdir / "data" / "backups"
     with LeadRepository(first) as copy:
         assert copy.get("A/1") is not None
+
+
+def test_old_code_on_a_newer_database_stops_without_a_restart_loop(workdir, caplog):
+    import sqlite3
+
+    from gunb_tool.storage import SCHEMA_VERSION
+
+    seed(workdir)
+    conn = sqlite3.connect(workdir / "data" / "test.sqlite")
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    conn.close()
+
+    assert run(workdir, "--stats") == main.EXIT_USAGE  # systemd: RestartPreventExitStatus=2 3
+    assert "nowszy" in caplog.text

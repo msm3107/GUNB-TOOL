@@ -57,7 +57,7 @@ from gunb_tool.pipeline import (
     notification_http_client,
 )
 from gunb_tool.stages import LONGEST_WINDOW_DAYS
-from gunb_tool.storage import LeadRepository
+from gunb_tool.storage import LeadRepository, SchemaTooNew
 from gunb_tool.telegram_api import TelegramApi
 
 log = logging.getLogger("gunb_tool.main")
@@ -155,6 +155,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                                       send=telegram_sender(telegram.bot_token, telegram.admin_chat_id))
     try:
         return _run_actions(args, config)
+    except SchemaTooNew as exc:  # np. po wycofaniu samego kodu – restart nic nie zmieni (RestartPreventExitStatus)
+        log.critical("%s", exc)
+        return EXIT_USAGE
     except Exception:  # awaria trafia do logu i na czat admina, zamiast zniknąć w konsoli
         log.critical("Nieoczekiwany błąd – program przerwany", exc_info=True)
         return EXIT_PARTIAL_FAILURE

@@ -316,6 +316,10 @@ razem z podbiciem wersji: przerwana migracja nie zostawia bazy w połowie.
 SCHEMA_VERSION = len(_MIGRATIONS)
 
 
+class SchemaTooNew(RuntimeError):
+    """Baza ma schemat nowszy niż ten kod (np. po wycofaniu samej aplikacji) – praca na niej byłaby ryzykowna."""
+
+
 def _run_script(conn: sqlite3.Connection, script: str) -> None:
     """Wykonuje skrypt SQL instrukcja po instrukcji w bieżącej transakcji (``executescript`` by ją zatwierdził)."""
     statement = ""
@@ -640,7 +644,13 @@ class LeadRepository:
         drugi czeka na blokadę zapisu i po niej widzi już nową wersję.
         """
         start = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        if start >= len(_MIGRATIONS):
+        if start > len(_MIGRATIONS):
+            raise SchemaTooNew(
+                f"Baza {self._file or ':memory:'} ma schemat v{start}, nowszy niż zna ta wersja programu "
+                f"(v{len(_MIGRATIONS)}) – uruchom nowszą wersję albo odtwórz kopię bazy sprzed aktualizacji "
+                "(docs/WDROZENIE.md, „Wycofanie wersji”)"
+            )
+        if start == len(_MIGRATIONS):
             return  # schemat aktualny – bez blokady zapisu (inny proces może właśnie importować)
         if start > 0:  # istniejąca baza: najpierw kopia; bez kopii nie zmieniamy schematu
             self._backup_before_migration()
