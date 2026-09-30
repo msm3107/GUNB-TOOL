@@ -1,5 +1,5 @@
 [Unit]
-Description=GUNB Lead Tool - bot Telegram z leadami z rejestru GUNB
+Description=Żółta Tablica (GUNB-TOOL) - bot Telegram z inwestycjami z rejestru GUNB
 Wants=network-online.target
 After=network-online.target
 
@@ -7,22 +7,37 @@ After=network-online.target
 Type=simple
 User=gunb
 Group=gunb
-WorkingDirectory=/opt/gunb-tool
-ExecStart=/opt/gunb-tool/.venv/bin/python main.py --config /opt/gunb-tool/config.yaml --bot
-# Bot ma działać stale: po awarii lub restarcie serwera wstaje sam.
+# Kod: /opt/gunb-tool/current (wersja przełączana przez deploy/install.sh, tylko do odczytu).
+# Stan: /var/lib/gunb-tool (config.yaml, .env z sekretami, data/ z bazą i kopiami).
+WorkingDirectory=/var/lib/gunb-tool
+ExecStart=/opt/gunb-tool/current/.venv/bin/python /opt/gunb-tool/current/main.py --config /var/lib/gunb-tool/config.yaml --bot
+# Bot ma działać stale: po awarii i po restarcie serwera wstaje sam...
 Restart=always
 RestartSec=15
-# Godziny w config.yaml (pobieranie 6:30, raporty 7:00/19:00) bot liczy w strefie Europe/Warsaw;
-# TZ zostaje dla czasów w logach. Stop (SIGTERM) kończy import między stronami (domyślnie 90 s).
+# ...ale nie w kółko, gdy restart nic nie zmieni: 2 = błąd konfiguracji albo baza nowsza niż kod
+# (np. po wycofaniu samego kodu), 3 = na tych danych działa już inny proces bota.
+RestartPreventExitStatus=2 3
+# SIGTERM (systemctl stop) kończy import między stronami; wątek zadań dostaje do 45 s.
+TimeoutStopSec=90
+# Godziny w config.yaml bot liczy w strefie Europe/Warsaw (także po zmianie czasu); TZ – dla czasów w logach.
 Environment=TZ=Europe/Warsaw
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONIOENCODING=utf-8
-# Ograniczenia bezpieczeństwa: usługa pisze tylko do własnego katalogu.
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Kopie bazy i pakiety migracji zawierają dane osobowe – bez prawa odczytu dla innych kont.
+UMask=0027
+# Ograniczenia: usługa pisze wyłącznie do katalogu stanu.
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/gunb-tool
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/gunb-tool
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# gunb-admin – obsługa bota Żółta Tablica na serwerze (instaluje go deploy/install.sh w /usr/local/bin).
+# Wszystko, co dotyka bazy i konfiguracji, działa z konta usługi „gunb”, więc pliki w /var/lib/gunb-tool
+# nie zmieniają właściciela (plik bazy albo blokady należący do roota zatrzymałby bota).
+set -euo pipefail
+
+APP_USER=gunb
+APP_ROOT=/opt/gunb-tool
+CURRENT=$APP_ROOT/current
+STATE_DIR=/var/lib/gunb-tool
+CONFIG=$STATE_DIR/config.yaml
+MARKER=$STATE_DIR/PRZENIESIENIE-W-TOKU
+SERVICE=gunb-bot
+HEALTH_TIMER=gunb-zdrowie.timer
+DEFAULT_REPO=https://github.com/msm3107/GUNB-TOOL.git
+
+usage() {
+    cat <<'EOF'
+Użycie: sudo gunb-admin <polecenie>
+
+Stan i dziennik
+  status                    usługa systemd i kontrola zdrowia
+  zdrowie                   kontrola zdrowia (kod 0 – OK, 1 – ostrzeżenie, 2 – awaria)
+  logi [-f | LICZBA]        dziennik bota (-f: na żywo; domyślnie 100 ostatnich linii)
+  wersja                    działająca i poprzednia wersja kodu
+
+Praca bota
+  start | stop | restart    uruchom (także po restarcie serwera) / zatrzymaj / uruchom ponownie
+
+Kopie i przenoszenie danych
+  kopia [ETYKIETA]          spójna kopia bazy teraz (działa także przy pracującym bocie)
+  kopie                     lista kopii bazy
+  odtworz KOPIA             zastąp bazę kopią (bot zatrzymany; obecna baza trafi najpierw do kopii)
+  eksport [--config PLIK]   pakiet do przeniesienia bota (bot zatrzymany; bez sekretów)
+  sprawdz PAKIET            sprawdź pakiet (sumy, wersja, spójność bazy) – niczego nie zmienia
+  importuj PAKIET [--zastap] [--konfiguracja-z-pakietu]
+                            wczytaj pakiet (bot zatrzymany; istniejąca baza najpierw trafi do kopii)
+
+Konfiguracja i wersje
+  sekrety                   token bota i ID administratora (plik .env, tylko dla konta usługi)
+  monitor ADRES             zewnętrzny monitor (np. https://hc-ping.com/...): kontrola co 5 min
+  aktualizuj [WERSJA]       instalacja wersji (tag, gałąź, commit; domyślnie main) z kopią bazy
+  wycofaj                   powrót do poprzedniej wersji kodu (sprawdza zgodność schematu bazy)
+EOF
+}
+
+die() { printf 'Błąd: %s\n' "$*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "uruchom z sudo: sudo gunb-admin ${COMMAND:-}"; }
+need_install() { [ -x "$CURRENT/.venv/bin/python" ] || die "bot nie jest zainstalowany (deploy/install.sh)"; }
+
+app() {  # python działającej wersji z konta usługi, w katalogu stanu
+    (cd "$STATE_DIR" && runuser -u "$APP_USER" -- env PYTHONPATH="$CURRENT" PYTHONDONTWRITEBYTECODE=1 \
+        PYTHONIOENCODING=utf-8 "$CURRENT/.venv/bin/python" "$@")
+}
+
+incoming() {  # incoming <plik>: kopia pliku w katalogu stanu, czytelna tylko dla konta usługi; wypisuje ścieżkę
+    local source=$1 target
+    [ -f "$source" ] || die "nie ma pliku: $source"
+    case $(realpath -- "$source") in
+        "$STATE_DIR"/*) realpath -- "$source"; return ;;  # już w katalogu stanu (np. kopia z data/backups)
+    esac
+    install -d -o "$APP_USER" -g "$APP_USER" -m 700 "$STATE_DIR/przychodzace"
+    target=$STATE_DIR/przychodzace/$(basename -- "$source")
+    install -o "$APP_USER" -g "$APP_USER" -m 600 -- "$source" "$target"
+    printf '%s\n' "$target"
+}
+
+backup_dir() {
+    app -c 'import sys; from gunb_tool.config import load_config
+s = load_config(sys.argv[1]).storage
+print(s.backup_dir or s.db_path.parent / "backups")' "$CONFIG"
+}
+
+running() { systemctl is-active --quiet "$SERVICE"; }
+
+start() {
+    [ ! -e "$MARKER" ] || die "serwer czeka na dane bota z komputera – najpierw: sudo gunb-admin importuj <pakiet>
+  (pusty bot na tym samym tokenie 'zgubiłby' wszystkich użytkowników)"
+    app -m gunb_tool.envfile jest "$STATE_DIR/.env" TELEGRAM_BOT_TOKEN || die "brak tokenu bota – sudo gunb-admin sekrety"
+    systemctl enable --quiet "$SERVICE"
+    systemctl start "$SERVICE"
+    sleep 5
+    running || { journalctl -u "$SERVICE" -n 30 --no-pager; die "bot nie wystartował (dziennik powyżej)"; }
+    echo "✔ bot działa i będzie wstawał sam po restarcie serwera. Stan za minutę: sudo gunb-admin zdrowie"
+}
+
+update() {  # update [wersja]: instalator z TEJ wersji (zna jej wymagania), pobrany z tego samego repozytorium
+    local ref=${1:-main} repo tmp commit git_opts=()
+    repo=$(cat "$APP_ROOT/repo" 2>/dev/null || echo "$DEFAULT_REPO")
+    if [ -d "$repo" ]; then git_opts=(-c "safe.directory=*"); fi
+    tmp=$(mktemp -d)
+    trap 'rm -rf -- "$tmp"' EXIT
+    git "${git_opts[@]}" clone --quiet "$repo" "$tmp/kod"
+    commit=$(git -C "$tmp/kod" rev-parse --verify --quiet "origin/$ref^{commit}" \
+        || git -C "$tmp/kod" rev-parse --verify --quiet "$ref^{commit}") || die "nie ma wersji '$ref' w $repo"
+    git -C "$tmp/kod" checkout --quiet --detach "$commit"
+    bash "$tmp/kod/deploy/install.sh" --wersja "$ref" --repo "$repo"
+}
+
+monitor() {
+    local url=${1:-}
+    [[ $url =~ ^https://[^[:space:]\'\"]+$ ]] || die "podaj adres https monitora, np. sudo gunb-admin monitor https://hc-ping.com/<id>"
+    (export GUNB_SET_HEALTHCHECK_PING_URL="$url"; app -m gunb_tool.envfile ustaw "$STATE_DIR/.env")
+    systemctl enable --quiet --now "$HEALTH_TIMER"
+    systemctl start gunb-zdrowie.service || true
+    echo "✔ kontrola co 5 min zgłasza wynik do monitora; brak zgłoszeń (serwer albo bot stoi) = alarm po jego stronie"
+}
+
+main() {
+    COMMAND=${1:-}
+    [ $# -eq 0 ] || shift
+    case $COMMAND in
+        status)
+            systemctl status "$SERVICE" --no-pager -n 0 || true
+            need_root; need_install
+            app "$CURRENT/main.py" --config "$CONFIG" --zdrowie || true ;;
+        zdrowie) need_root; need_install; app "$CURRENT/main.py" --config "$CONFIG" --zdrowie ;;
+        logi)
+            if [ "${1:-}" = "-f" ]; then
+                journalctl -u "$SERVICE" -f
+            else
+                journalctl -u "$SERVICE" -n "${1:-100}" --no-pager
+            fi ;;
+        wersja)
+            printf 'działająca: %s\n' "$(readlink -f "$CURRENT" 2>/dev/null || echo brak)"
+            printf 'poprzednia: %s\n' "$(readlink -f "$APP_ROOT/previous" 2>/dev/null || echo brak)" ;;
+        start) need_root; need_install; start ;;
+        stop) need_root; systemctl stop "$SERVICE"; echo "✔ bot zatrzymany (po restarcie serwera wstanie – chyba że: sudo systemctl disable $SERVICE)" ;;
+        restart) need_root; systemctl restart "$SERVICE"; sleep 5; running || die "bot nie wystartował: sudo gunb-admin logi" ;;
+        kopia) need_root; need_install; app -m gunb_tool.migration kopia --config "$CONFIG" ${1:+--etykieta "$1"} ;;
+        kopie) need_root; need_install; ls -lh --time-style=long-iso "$(backup_dir)" ;;
+        odtworz)
+            need_root; need_install
+            [ $# -ge 1 ] || die "podaj kopię: sudo gunb-admin odtworz <plik .sqlite> (lista: sudo gunb-admin kopie)"
+            ! running || die "najpierw zatrzymaj bota: sudo gunb-admin stop"
+            app -m gunb_tool.migration odtworz "$(incoming "$1")" --config "$CONFIG" ;;
+        eksport) need_root; need_install; app -m gunb_tool.migration eksport --config "$CONFIG" "$@" ;;
+        sprawdz)
+            need_root; need_install
+            [ $# -ge 1 ] || die "podaj pakiet: sudo gunb-admin sprawdz <plik .zip>"
+            app -m gunb_tool.migration sprawdz "$(incoming "$1")" ;;
+        importuj)
+            need_root; need_install
+            [ $# -ge 1 ] || die "podaj pakiet: sudo gunb-admin importuj <plik .zip> [--zastap] [--konfiguracja-z-pakietu]"
+            local package original=$1
+            shift
+            package=$(incoming "$original")
+            app -m gunb_tool.migration importuj "$package" --config "$CONFIG" "$@"
+            rm -f -- "$MARKER"
+            [ "$package" = "$(realpath -- "$original")" ] || rm -f -- "$package"
+            echo "Pakiet zawiera dane osobowe – gdy bot ruszy i wszystko się zgadza, usuń oryginał: rm $original" ;;
+        sekrety) need_root; need_install; bash "$CURRENT/deploy/install.sh" --sekrety ;;
+        monitor) need_root; need_install; monitor "$@" ;;
+        aktualizuj) need_root; update "$@" ;;
+        wycofaj) need_root; need_install; bash "$CURRENT/deploy/install.sh" --wycofaj ;;
+        -h|--pomoc|--help|pomoc|"") usage ;;
+        *) usage >&2; die "nieznane polecenie: $COMMAND" ;;
+    esac
+}
+
+main "$@"

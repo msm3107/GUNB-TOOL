@@ -1,0 +1,10 @@
+[Unit]
+Description=Żółta Tablica - kontrola zdrowia co 5 minut (włącza: sudo gunb-admin monitor <adres>)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
