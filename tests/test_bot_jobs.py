@@ -430,3 +430,29 @@ def test_receiving_loop_survives_a_locked_database(repo, clock, monkeypatch):
 
     assert "Jak to działa" in api.last_to(MIETEK)["text"]
     assert BotStore(repo).job_last_run("telegram_offset") == "3"
+
+
+# --- Drugi bot z tym samym tokenem na innej maszynie (np. zapomniany na PC w trakcie migracji) --------------
+
+def test_telegram_conflict_pauses_all_sends_until_it_is_gone(repo, clock, caplog):
+    class ConflictApi(FakeApi):
+        def get_updates(self, offset, timeout):
+            raise TelegramApiError("getUpdates", 409, "Conflict: terminated by other getUpdates request")
+
+    api = ConflictApi()
+    ui_bot = make_bot(repo, api, clock)
+    activate(ui_bot, api, MIETEK)
+    repo.upsert(lead("A/1"))
+    polls = []
+    with caplog.at_level(logging.ERROR):
+        ui_bot.run_forever(should_stop=lambda: len(polls) >= 1 or bool(polls.append(1)), sleep=lambda s: None)
+    assert any("409" in r.getMessage() or "inny proces" in r.getMessage() for r in caplog.records)
+
+    jobs_bot = make_bot(repo, api, clock)
+    clock.utc = TODAY_0701
+    jobs_bot.run_due_jobs()
+    assert reports_to(api, MIETEK) == []  # podczas konfliktu żadnych wysyłek – nie zdublujemy raportu
+
+    clock.advance(minutes=11)  # konflikt ustał (brak nowych 409)
+    jobs_bot.run_due_jobs()
+    assert len(reports_to(api, MIETEK)) == 1

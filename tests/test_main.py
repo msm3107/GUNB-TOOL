@@ -174,6 +174,24 @@ def test_bot_once_runs_single_cycle(workdir, monkeypatch, capsys):
     assert "Bot:" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("mode", ["--bot", "--bot-once"])
+def test_second_bot_on_the_same_data_exits_without_touching_telegram(workdir, monkeypatch, caplog, mode):
+    from gunb_tool.instance import instance_lock
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+
+    class Api:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("drugi proces nie może łączyć się z Telegramem")
+
+    monkeypatch.setattr(main, "TelegramApi", Api)
+    with instance_lock(workdir / "data" / "gunb-bot.lock"):  # pierwszy bot już działa
+        code = run(workdir, mode)
+
+    assert code == main.EXIT_ALREADY_RUNNING == 3
+    assert "już działa" in caplog.text
+
+
 # --- Utwardzenie: kopia bazy, alerty admina, awarie ------------------------------------------------
 
 def fake_pipeline_factory(cases):

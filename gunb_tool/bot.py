@@ -84,6 +84,9 @@ NO_ACCESS_TOAST = "⛔ Brak aktywnego dostępu (test albo abonament) – szczeg�
 SETUP_DONE_TOAST = "✅ To już ustawione – zmienisz w ⚙️ Ustawienia"
 DB_BUSY_RETRIES = 3
 """Ile razy obsłużyć ponownie aktualizację, przy której baza była chwilowo zajęta."""
+CONFLICT_JOB = "konflikt_telegrama"
+CONFLICT_PAUSE = timedelta(minutes=10)
+"""Tyle po ostatnim konflikcie 409 wątek zadań nic nie wysyła (drugi bot z tym samym tokenem)."""
 WATCH_DIGEST_AFTER = 3
 """Więcej alertów obserwowanych naraz (np. po wznowieniu powiadomień) idzie jedną wiadomością."""
 
@@ -175,6 +178,7 @@ class LeadBot:
         self._now = clock or repo.now
         self._offset: int | None = None
         self._db_busy: dict[int, int] = {}
+        self._paused_by_conflict: datetime | None = None
         self.should_stop: Callable[[], bool] = lambda: False
         """Prośba o zakończenie (ustawia :class:`JobsWorker`) – długie pętle wysyłek kończą się po bieżącej osobie."""
 
@@ -196,14 +200,36 @@ class LeadBot:
             try:
                 self.poll_once(self.settings.poll_timeout)
             except TelegramApiError as exc:
-                log.warning("Telegram: %s", exc)
-                sleep(30 if exc.code == 409 else 5)  # 409 = drugi proces bota odbiera te same aktualizacje
+                if exc.code == 409:  # drugi proces odbiera aktualizacje tym samym tokenem
+                    self._note_conflict(exc)
+                    sleep(30)
+                else:
+                    log.warning("Telegram: %s", exc)
+                    sleep(5)
             except sqlite3.Error as exc:  # np. baza chwilowo zajęta przez VACUUM w wątku zadań
                 log.warning("Baza chwilowo niedostępna: %s – ponawiam", exc)
                 sleep(1)
             except Exception:  # pętla odbierania nie może paść – bez niej bot jest głuchy
                 log.exception("Nieoczekiwany błąd pętli odbierania wiadomości")
                 sleep(5)
+
+    def _note_conflict(self, exc: TelegramApiError) -> None:
+        """Telegram 409: ten sam token odbiera inny proces (np. zapomniany bot na drugim komputerze).
+
+        Zapis w bazie wstrzymuje wysyłki wątku zadań na ``CONFLICT_PAUSE`` – dwa boty wysłałyby każdy
+        raport dwa razy. Alert do admina idzie przy pierwszym konflikcie w oknie, potem tylko log.
+        """
+        now = self._now()
+        try:
+            previous = self.store.job_time(CONFLICT_JOB)
+            self.store.set_job_time(CONFLICT_JOB, now)
+        except sqlite3.Error:
+            previous = None
+        if previous is None or now - previous >= CONFLICT_PAUSE:
+            log.error("Telegram 409: ten sam token odbiera inny proces bota – wstrzymuję wysyłki. "
+                      "Zostaw włączonego tylko jednego bota.")
+        else:
+            log.warning("Telegram 409 (konflikt trwa): %s", exc.description)
 
     def poll_once(self, timeout: int) -> int:
         """Pobiera i obsługuje oczekujące aktualizacje; zwraca ich liczbę.
@@ -259,6 +285,13 @@ class LeadBot:
             self._fetch()
             ran.append(FETCH_RETRY_JOB)
         now = self._now()  # import mógł trwać długo
+        conflict = self.store.job_time(CONFLICT_JOB)
+        if conflict is not None and now - conflict < CONFLICT_PAUSE:  # drugi bot z tym samym tokenem
+            if self._paused_by_conflict != conflict:
+                log.warning("Wysyłki wstrzymane do %s: inny proces odbiera wiadomości tym samym tokenem",
+                            f"{local(conflict + CONFLICT_PAUSE):%H:%M}")
+                self._paused_by_conflict = conflict
+            return ran  # zadania zostają „do zrobienia” – ruszą, gdy konflikt minie
         jobs = [(name, hhmm) for name, hhmm in (("raport_rano", self.settings.morning_time),
                                                   ("raport_wieczor", self.settings.evening_time),
                                                   (STAGE_REMINDER_JOB, self.settings.morning_time))]

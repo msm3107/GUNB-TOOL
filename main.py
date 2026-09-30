@@ -40,6 +40,7 @@ from gunb_tool.exporter import (
 )
 from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError
 from gunb_tool.http_client import HttpError, ResilientHttpClient, redact_url
+from gunb_tool.instance import AlreadyRunning, instance_lock
 from gunb_tool.maintenance import vacuum_after_import, weekly_backup
 from gunb_tool.models import Source
 from gunb_tool.pipeline import (
@@ -59,7 +60,7 @@ from gunb_tool.telegram_api import TelegramApi
 log = logging.getLogger("gunb_tool.main")
 
 CHANNELS = ("telegram", "discord")
-EXIT_OK, EXIT_PARTIAL_FAILURE, EXIT_USAGE = 0, 1, 2
+EXIT_OK, EXIT_PARTIAL_FAILURE, EXIT_USAGE, EXIT_ALREADY_RUNNING = 0, 1, 2, 3
 CLI_IMPORT_WAIT = timedelta(minutes=45)
 """Ręczny ``--fetch`` (także import historii z instalatora) czeka tyle, aż skończy się import bota."""
 INTERACTIVE_MAX_RETRY_AFTER = 10.0
@@ -385,6 +386,20 @@ def _run_bot(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
     if not config.telegram.bot_token:
         log.error("Bot: brak TELEGRAM_BOT_TOKEN (sekcja telegram / plik .env)")
         return EXIT_PARTIAL_FAILURE
+    try:
+        with instance_lock(bot_lock_path(config)):
+            return _run_bot_alone(config, repo, once=once)
+    except AlreadyRunning as exc:  # systemd tego nie restartuje (RestartPreventExitStatus=3)
+        log.error("Bot już działa – ten proces kończy pracę: %s", exc)
+        return EXIT_ALREADY_RUNNING
+
+
+def bot_lock_path(config: AppConfig) -> Path:
+    """Blokada jednej instancji bota – obok bazy, więc dotyczy tych samych danych."""
+    return config.storage.db_path.parent / "gunb-bot.lock"
+
+
+def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
     stop = threading.Event()
     ui_bot = _make_bot(config, repo, interactive=True)
     if once:
