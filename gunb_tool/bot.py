@@ -56,6 +56,8 @@ LAST_IMPORT_JOB = "import_udany"
 """Kiedy ostatni import GUNB zakończył się w całości."""
 HEARTBEAT_JOB = "watek_zadan"
 """Ostatni cykl wątku zadań – po nim widać, że zadania w tle żyją."""
+RECEIVE_HEARTBEAT_JOB = "petla_odbioru"
+"""Ostatni udany odbiór aktualizacji z Telegrama – brak świeżego znaczy: bot głuchy (kontrola zdrowia)."""
 REPORT_JOBS: dict[str, str] = {"raport_rano": "rano", "raport_wieczor": "wieczor"}
 """Zadanie raportu → tryb użytkowników, którzy go dostają."""
 CLEANUP_JOB, CLEANUP_TIME = "porzadki", "03:30"
@@ -199,6 +201,7 @@ class LeadBot:
         while not should_stop():
             try:
                 self.poll_once(self.settings.poll_timeout)
+                self.store.set_job_time(RECEIVE_HEARTBEAT_JOB, self._now())
             except TelegramApiError as exc:
                 if exc.code == 409:  # drugi proces odbiera aktualizacje tym samym tokenem
                     self._note_conflict(exc)
@@ -342,6 +345,7 @@ class LeadBot:
         for item in self.store.due_sends():
             if self.should_stop():
                 break
+            self.store.set_job_time(HEARTBEAT_JOB, self._now())  # długa kolejka (limity Telegrama) to nie zawieszenie
             sent += self._process_send(item)
         return sent
 

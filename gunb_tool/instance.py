@@ -17,10 +17,16 @@ from pathlib import Path
 from typing import IO, Iterator
 
 _WINDOWS_LOCK_OFFSET = 1 << 20
+LOCK_NAME = "gunb-bot.lock"
 
 
 class AlreadyRunning(RuntimeError):
     """Inny proces bota pracuje już na tych danych."""
+
+
+def bot_lock_path(db_path: str | Path) -> Path:
+    """Blokada bota – obok bazy, więc dotyczy tych samych danych (bot, eksport, kontrola zdrowia)."""
+    return Path(db_path).parent / LOCK_NAME
 
 
 @contextmanager

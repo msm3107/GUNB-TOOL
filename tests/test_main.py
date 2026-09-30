@@ -324,3 +324,52 @@ def test_import_without_any_case_is_not_counted_as_a_checked_registry(workdir, m
         status = BotStore(repo).job_status("import")
         assert status.stan == "blad" and "brak spraw" in status.opis
         assert BotStore(repo).job_time("import_udany") is None
+
+
+# --- Kontrola zdrowia (``--zdrowie``) ------------------------------------------------------------------
+
+def test_health_check_reports_a_stopped_bot_with_exit_code_2(workdir, capsys):
+    seed(workdir)
+    assert run(workdir, "--zdrowie") == 2
+    assert "proces bota nie działa" in capsys.readouterr().out
+
+
+def test_health_check_never_upgrades_an_old_database(workdir, capsys):
+    import sqlite3
+
+    from gunb_tool.instance import instance_lock
+    from tests.test_storage import legacy_database
+
+    (workdir / "data").mkdir()
+    legacy_database(workdir / "data" / "test.sqlite", 6).close()
+    with instance_lock(workdir / "data" / "gunb-bot.lock"):
+        run(workdir, "--zdrowie")
+
+    conn = sqlite3.connect(workdir / "data" / "test.sqlite")
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    conn.close()
+    assert "przy najbliższym starcie" in capsys.readouterr().out
+    assert not list((workdir / "data").glob("backups/*"))  # nie było migracji, więc i kopii przed nią
+
+
+def test_health_check_pings_the_external_monitor(workdir, monkeypatch):
+    import gunb_tool.health as health
+
+    calls = []
+    monkeypatch.setattr(health.requests, "get", lambda url, timeout: calls.append(url))
+    seed(workdir)
+    run(workdir, "--zdrowie", "--ping", "https://hc-ping.com/abc")
+    (workdir / ".env").write_text("HEALTHCHECK_PING_URL=https://hc-ping.com/z-env\n", encoding="utf-8")
+    monkeypatch.delenv("HEALTHCHECK_PING_URL", raising=False)
+    run(workdir, "--zdrowie")
+    monkeypatch.delenv("HEALTHCHECK_PING_URL", raising=False)  # ustawiła ją konfiguracja z .env
+
+    assert calls == ["https://hc-ping.com/abc/fail", "https://hc-ping.com/z-env/fail"]  # bot nie działa
+
+
+def test_health_check_does_not_write_the_log_file(workdir):
+    seed(workdir)
+    (workdir / "config.yaml").write_text(
+        (workdir / "config.yaml").read_text(encoding="utf-8") + "  file: logs/bot.log\n", encoding="utf-8")
+    run(workdir, "--zdrowie")
+    assert not (workdir / "logs").exists()  # uruchomiona z innego konta nie przejmie pliku logu bota

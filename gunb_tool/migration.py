@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .config import AppConfig, ConfigError, load_config
-from .instance import lock_is_free
+from .instance import bot_lock_path, lock_is_free
 from .storage import SCHEMA_VERSION
 
 FORMAT = "gunb-tool-migracja"
@@ -60,7 +60,6 @@ CONFIG_ENTRY = "konfiguracja/config.yaml"
 ENV_ENTRY = "konfiguracja/env.bez-sekretow"
 MAX_PACKAGE_BYTES = 50 * 1024 ** 3
 SERVICE = os.environ.get("GUNB_SERVICE", "gunb-bot")
-LOCK_NAME = "gunb-bot.lock"
 
 ENV_KEEP = frozenset({
     "TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID_DOMKI", "TELEGRAM_CHAT_ID_DUZE", "TELEGRAM_ADMIN_CHAT_ID",
@@ -322,7 +321,7 @@ def _config(config_path: Path) -> AppConfig:
 
 def _require_stopped(config: AppConfig, db_path: Path, *, action: str) -> None:
     """Bot i inne procesy zapisujące muszą stać: blokada instancji, usługa systemd, import, zapis do bazy."""
-    if not lock_is_free(db_path.parent / LOCK_NAME):
+    if not lock_is_free(bot_lock_path(db_path)):
         raise MigrationError(f"Bot działa na tych danych – zatrzymaj go przed operacją: {action}")
     if shutil.which("systemctl"):
         active = subprocess.run(["systemctl", "is-active", "--quiet", SERVICE], check=False)

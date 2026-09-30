@@ -456,3 +456,37 @@ def test_telegram_conflict_pauses_all_sends_until_it_is_gone(repo, clock, caplog
     clock.advance(minutes=11)  # konflikt ustał (brak nowych 409)
     jobs_bot.run_due_jobs()
     assert len(reports_to(api, MIETEK)) == 1
+
+
+# --- Bicie serca dla kontroli zdrowia (``main.py --zdrowie``) ---------------------------------------------
+
+def test_successful_receiving_is_recorded_for_the_health_check(repo, clock):
+    bot = make_bot(repo, PollingApi([numbered(1, MIETEK, "/start")]), clock)
+    polls = []
+    bot.run_forever(should_stop=lambda: len(polls) >= 1 or bool(polls.append(1)), sleep=lambda s: None)
+    assert BotStore(repo).job_time("petla_odbioru") == clock.utc
+
+
+def test_failed_receiving_does_not_count_as_alive(repo, clock):
+    class RevokedTokenApi(FakeApi):
+        def get_updates(self, offset, timeout):
+            raise TelegramApiError("getUpdates", 401, "Unauthorized")
+
+    bot = make_bot(repo, RevokedTokenApi(), clock)
+    polls = []
+    bot.run_forever(should_stop=lambda: len(polls) >= 2 or bool(polls.append(1)), sleep=lambda s: None)
+    assert BotStore(repo).job_time("petla_odbioru") is None  # kontrola zdrowia zgłosi awarię odbierania
+
+
+def test_long_send_queue_keeps_the_jobs_thread_heartbeat_fresh(bot, api, repo, clock):
+    real_send = api.send_message
+
+    def slow_send(chat_id, text, reply_markup=None):
+        clock.advance(minutes=4)  # np. czekanie na limit Telegrama (429 Retry-After)
+        return real_send(chat_id, text, reply_markup)
+
+    api.send_message = slow_send
+    clock.utc = TODAY_0701
+    bot.run_due_jobs()
+    assert len(reports_to(api, MIETEK)) == 1 and len(reports_to(api, OBCY)) == 1
+    assert BotStore(repo).job_time("watek_zadan") >= TODAY_0701 + timedelta(minutes=4)

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import os
 import signal
 import socket
 import sys
@@ -25,6 +26,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable, Sequence
 
+from gunb_tool import health
 from gunb_tool.alerts import install_admin_alerts, telegram_sender
 from gunb_tool.bot import IMPORT_JOB, LAST_IMPORT_JOB, JobsWorker, LeadBot
 from gunb_tool.bot_store import BotStore
@@ -40,7 +42,7 @@ from gunb_tool.exporter import (
 )
 from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError
 from gunb_tool.http_client import HttpError, ResilientHttpClient, redact_url
-from gunb_tool.instance import AlreadyRunning, instance_lock
+from gunb_tool.instance import AlreadyRunning, bot_lock_path, instance_lock
 from gunb_tool.maintenance import vacuum_after_import, weekly_backup
 from gunb_tool.models import Source
 from gunb_tool.pipeline import (
@@ -95,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
                          help="jeden cykl bota: odbierz wiadomości i wykonaj zaległe zadania, potem zakończ")
     actions.add_argument("--test-alert", action="store_true",
                          help="wyślij wiadomość testową na czat admina (TELEGRAM_ADMIN_CHAT_ID)")
+    actions.add_argument("--zdrowie", action="store_true",
+                         help="kontrola zdrowia bota, tylko do odczytu (kod 0 – OK, 1 – ostrzeżenie, 2 – awaria); "
+                              "nie łączy się z innymi akcjami")
+    actions.add_argument("--ping", metavar="URL",
+                         help="z --zdrowie: zgłoś wynik do monitora typu healthchecks.io "
+                              "(domyślnie HEALTHCHECK_PING_URL z .env)")
 
     fetch = parser.add_argument_group("opcje --fetch")
     fetch.add_argument("--since", type=_parse_date, metavar="RRRR-MM-DD", help="data początkowa (nadpisuje okno)")
@@ -124,7 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not (args.fetch or args.notify_telegram or args.notify_discord or args.sync_sheets
-            or args.mark_sent or args.stats or args.bot or args.bot_once or args.test_alert):
+            or args.mark_sent or args.stats or args.bot or args.bot_once or args.test_alert or args.zdrowie):
         parser.print_help()
         return EXIT_USAGE
 
@@ -135,6 +143,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"Błąd konfiguracji: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    if args.zdrowie:  # bez logu do pliku, alertów i otwierania bazy przez repozytorium (to by ją migrowało)
+        return _run_health(config, ping_url=args.ping or os.environ.get("HEALTHCHECK_PING_URL"))
     setup_logging(config.logging, verbose=args.verbose,
                   secrets=(config.telegram.bot_token, config.discord.webhook_url))
 
@@ -222,6 +232,17 @@ def setup_logging(config: LoggingConfig, *, verbose: bool = False, secrets: Sequ
 
 
 # --- Akcje ------------------------------------------------------------------------
+
+def _run_health(config: AppConfig, *, ping_url: str | None) -> int:
+    """Wypisuje wynik kontroli zdrowia; kod wyjścia = poziom (0 / 1 / 2)."""
+    level, checks = health.check_health(config)
+    for check in checks:
+        print(check)
+    print({health.OK: "WYNIK: OK", health.WARNING: "WYNIK: OSTRZEŻENIE", health.CRITICAL: "WYNIK: AWARIA"}[level])
+    if ping_url:
+        health.ping(ping_url, level)
+    return level
+
 
 def history_start(args: argparse.Namespace, *, today: date) -> date | None:
     """Początek okna importu: ``--since`` albo – przy ``--historical`` – najdłuższe okno etapów budowy.
@@ -396,16 +417,11 @@ def _run_bot(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
         log.error("Bot: brak TELEGRAM_BOT_TOKEN (sekcja telegram / plik .env)")
         return EXIT_PARTIAL_FAILURE
     try:
-        with instance_lock(bot_lock_path(config)):
+        with instance_lock(bot_lock_path(config.storage.db_path)):
             return _run_bot_alone(config, repo, once=once)
     except AlreadyRunning as exc:  # systemd tego nie restartuje (RestartPreventExitStatus=3)
         log.error("Bot już działa – ten proces kończy pracę: %s", exc)
         return EXIT_ALREADY_RUNNING
-
-
-def bot_lock_path(config: AppConfig) -> Path:
-    """Blokada jednej instancji bota – obok bazy, więc dotyczy tych samych danych."""
-    return config.storage.db_path.parent / "gunb-bot.lock"
 
 
 def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
