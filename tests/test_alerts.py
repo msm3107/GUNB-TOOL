@@ -125,6 +125,24 @@ def test_different_failures_are_not_grouped(logger, sent):
     assert len(sent) == 2
 
 
+def test_same_failure_for_many_people_is_one_alert(logger, sent):
+    for chat_id in range(1001, 1201):  # np. błąd w raporcie u każdego odbiorcy
+        logger.error("Wysyłka raport_rano:2026-09-30 do %s: nieoczekiwany błąd", chat_id)
+    assert len(sent) == 1
+    assert "do 1001" in sent[0]  # treść pierwszego wystąpienia, nie wzorzec
+
+
+def test_flood_of_distinct_failures_is_capped_per_hour(logger, sent, clock):
+    for number in range(50):
+        logger.error(f"Awaria {chr(65 + number % 26)}{chr(65 + number // 26)}")  # 50 różnych awarii
+    assert len(sent) == 20
+
+    clock.now += 3600 + 1
+    logger.error("Kolejna awaria po godzinie")
+    assert len(sent) == 21
+    assert "pominięto 30" in sent[-1]  # admin wie, że część alertów przepadła (są w logu)
+
+
 # --- Bezpieczeństwo i odporność ------------------------------------------------------------------
 
 def test_alert_is_short_and_contains_no_secrets(logger, sent):
