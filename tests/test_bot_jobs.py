@@ -516,3 +516,19 @@ def test_nightly_backup_runs_once_a_day_and_its_failure_does_not_stop_reports(bo
     clock.advance(days=1)
     bot.run_due_jobs()
     assert len(calls) == 2  # następnego dnia kolejna próba
+
+
+# --- Potwierdzenie kliknięcia, które nie dotarło (wolna sieć, „query is too old”) ------------------------
+
+def test_expired_click_confirmation_neither_undoes_the_action_nor_alerts_the_admin(bot, api, repo, caplog):
+    def too_old(callback_query_id, text=None):
+        raise TelegramApiError("answerCallbackQuery", 400,
+                               "Bad Request: query is too old and response timeout expired or query ID is invalid")
+
+    api.answer_callback_query = too_old
+    number = repo.get("A/1").nr
+    with caplog.at_level(logging.WARNING):
+        bot.handle_update(click(MIETEK, f"s1:{number}"))
+
+    assert BotStore(repo).lead_flags(MIETEK, "A/1").saved  # zapis się odbył
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]  # to nie awaria – bez alertu

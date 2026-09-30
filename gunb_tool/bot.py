@@ -517,7 +517,10 @@ class LeadBot:
                 else:
                     answer = handler(self, user, arg, message_id) if handler else None
         finally:
-            self.api.answer_callback_query(callback.get("id"), answer)
+            try:
+                self.api.answer_callback_query(callback.get("id"), answer)
+            except TelegramApiError as exc:  # np. „query is too old” po wolnej sieci – akcja już się odbyła
+                log.warning("Nie potwierdzono kliknięcia %r: %s", data, exc)
 
     # === Rejestracja i admin ===================================================================
 
