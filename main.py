@@ -44,6 +44,7 @@ from gunb_tool.instance import AlreadyRunning, instance_lock
 from gunb_tool.maintenance import vacuum_after_import, weekly_backup
 from gunb_tool.models import Source
 from gunb_tool.pipeline import (
+    EmptyImport,
     FetchReport,
     ImportSkipped,
     LeadPipeline,
@@ -157,7 +158,8 @@ def _run_actions(args: argparse.Namespace, config: AppConfig) -> int:
     exit_code = EXIT_OK
     if args.test_alert:
         exit_code = max(exit_code, _run_test_alert(config))
-    with LeadRepository(config.storage.db_path, negative_cache_days=config.geocoding.negative_cache_days) as repo:
+    with LeadRepository(config.storage.db_path, negative_cache_days=config.geocoding.negative_cache_days,
+                        backup_dir=config.storage.backup_dir) as repo:
         pipeline = LeadPipeline(repo, formatter=build_formatter(config))
         if args.fetch:
             pipeline = create_pipeline(config, repo, geocode=not args.no_geocode)
@@ -245,7 +247,7 @@ def _run_fetch(pipeline: LeadPipeline, config: AppConfig, args: argparse.Namespa
     try:
         report = fetch_with_maintenance(pipeline, config, query, limit=args.limit, historical=args.historical,
                                         wait_for_other_import=CLI_IMPORT_WAIT)
-    except (HttpError, GunbFormatError) as exc:
+    except (HttpError, GunbFormatError, EmptyImport) as exc:
         log.error("Pobieranie danych GUNB nie powiodło się: %s", exc)
         return EXIT_PARTIAL_FAILURE
     except ImportSkipped as exc:
@@ -287,6 +289,13 @@ def fetch_with_maintenance(
             raise
         if report.interrupted:
             status.job_finished(IMPORT_JOB, "pominieto", report.summary())
+        elif report.cases == 0 and not historical and limit is None:
+            # zwykły import (okno tygodni) dla monitorowanego regionu zawsze ma sprawy – zero to podejrzana
+            # paczka albo zły zakres, nie „sprawdzony rejestr”; bot ponowi import za godzinę
+            problem = EmptyImport(f"brak spraw w paczce GUNB dla okna od {query.date_from} – podejrzana paczka "
+                                  "albo zły zakres (gunb.voivodeships / gunb.powiats)")
+            status.job_finished(IMPORT_JOB, "blad", str(problem))
+            raise problem
         else:
             status.job_finished(IMPORT_JOB, "ok", report.summary())
             status.set_job_time(LAST_IMPORT_JOB, pipeline.repo.now())
@@ -413,7 +422,8 @@ def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> in
         return EXIT_OK
 
     def make_jobs_bot() -> tuple[LeadBot, Callable[[], None]]:  # wywoływane w wątku zadań
-        jobs_repo = LeadRepository(config.storage.db_path, negative_cache_days=config.geocoding.negative_cache_days)
+        jobs_repo = LeadRepository(config.storage.db_path, negative_cache_days=config.geocoding.negative_cache_days,
+                                   backup_dir=config.storage.backup_dir)
         jobs_bot = _make_bot(config, jobs_repo, interactive=False)
         jobs_bot.fetcher = bot_fetcher(create_pipeline(config, jobs_repo), config, should_stop=stop.is_set)
         return jobs_bot, jobs_repo.close

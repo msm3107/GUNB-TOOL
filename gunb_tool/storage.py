@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import enum
 import json
+import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
@@ -22,6 +24,8 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
+
+log = logging.getLogger(__name__)
 
 BUSY_TIMEOUT_MS = 5000
 
@@ -367,6 +371,8 @@ class LeadRepository:
         db_path: ścieżka do pliku bazy (katalog zostanie utworzony) lub ``":memory:"``.
         now: źródło bieżącego czasu (UTC) – wstrzykiwane w testach.
         negative_cache_days: czas życia negatywnych wpisów cache geokodowania.
+        backup_dir: katalog kopii zapasowych (domyślnie ``backups`` obok bazy) – tu trafia kopia
+            robiona przed każdą zmianą schematu istniejącej bazy.
     """
 
     def __init__(
@@ -375,9 +381,12 @@ class LeadRepository:
         *,
         now: Callable[[], datetime] | None = None,
         negative_cache_days: int = 30,
+        backup_dir: str | Path | None = None,
     ) -> None:
-        if str(db_path) != ":memory:":
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._file = None if str(db_path) == ":memory:" else Path(db_path)
+        if self._file is not None:
+            self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._backup_dir = Path(backup_dir) if backup_dir else (self._file.parent / "backups" if self._file else None)
         self._conn = sqlite3.connect(str(db_path), isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -390,7 +399,11 @@ class LeadRepository:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.negative_cache_days = negative_cache_days
         self._depth = 0
-        self._migrate()
+        try:
+            self._migrate()
+        except BaseException:
+            self._conn.close()  # nieudana kopia albo migracja – nie zostawiamy otwartego pliku
+            raise
 
     # --- Cykl życia ---------------------------------------------------------------
 
@@ -629,6 +642,8 @@ class LeadRepository:
         start = self._conn.execute("PRAGMA user_version").fetchone()[0]
         if start >= len(_MIGRATIONS):
             return  # schemat aktualny – bez blokady zapisu (inny proces może właśnie importować)
+        if start > 0:  # istniejąca baza: najpierw kopia; bez kopii nie zmieniamy schematu
+            self._backup_before_migration()
         while True:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -646,6 +661,27 @@ class LeadRepository:
                 raise
             if version + 1 >= len(_MIGRATIONS):
                 return
+
+    def _backup_before_migration(self) -> Path | None:
+        """Spójna kopia (API kopii SQLite, także z danymi w pliku ``-wal``) przed zmianą schematu.
+
+        Nazwa mówi, przed którą wersją powstała (``baza-przed-v11-20260930T060000Z.sqlite``); takich kopii
+        nic nie usuwa automatycznie. Błąd (np. brak miejsca) przerywa start – migracja bez kopii nie rusza.
+        """
+        if self._file is None or self._backup_dir is None:
+            return None
+        self._backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = self._now().astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = self._backup_dir / f"{self._file.stem}-przed-v{len(_MIGRATIONS)}-{stamp}.sqlite"
+        partial = target.with_name(target.name + ".part")
+        destination = sqlite3.connect(partial)
+        try:
+            self._conn.backup(destination)
+        finally:
+            destination.close()
+        os.replace(partial, target)
+        log.warning("Zmiana schematu bazy – kopia sprzed migracji: %s", target)
+        return target
 
     # --- Blokady (np. jeden import naraz) ---------------------------------------------
 

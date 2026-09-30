@@ -471,3 +471,51 @@ def test_leads_get_sequential_numbers_that_survive_updates(repo):
     assert repo.get("A/1").nr == 1
     assert repo.get_by_nr(2).id_sprawy == "B/1"
     assert repo.get_by_nr(99) is None
+
+
+# --- Kopia przed zmianą schematu -------------------------------------------------------------------------
+
+def test_existing_database_is_backed_up_before_a_schema_change(tmp_path, clock):
+    import sqlite3
+
+    path = tmp_path / "data" / "baza.sqlite"
+    path.parent.mkdir()
+    legacy = legacy_database(path, 6)
+    legacy.execute("INSERT INTO bot_users (chat_id, status, nowe_od, utworzono, zmieniono) VALUES (7, 'aktywny', 'x', 'x', 'x')")
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock):
+        pass
+    with LeadRepository(path, now=clock):  # drugi start – schemat aktualny, bez nowej kopii
+        pass
+
+    (backup,) = list((path.parent / "backups").glob("baza-przed-v*.sqlite"))
+    check = sqlite3.connect(backup)
+    try:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 6  # kopia sprzed migracji
+        assert check.execute("SELECT chat_id FROM bot_users").fetchall() == [(7,)]
+        assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        check.close()
+
+
+def test_new_database_needs_no_backup(tmp_path, clock):
+    with LeadRepository(tmp_path / "nowa.sqlite", now=clock):
+        pass
+    assert not (tmp_path / "backups").exists()
+
+
+def test_schema_change_is_refused_when_the_backup_cannot_be_made(tmp_path, clock):
+    import sqlite3
+
+    path = tmp_path / "baza.sqlite"
+    legacy_database(path, 6).close()
+    (tmp_path / "backups").write_text("to nie katalog")  # kopia nie powstanie
+
+    with pytest.raises(OSError):
+        LeadRepository(path, now=clock)
+
+    check = sqlite3.connect(path)
+    assert check.execute("PRAGMA user_version").fetchone()[0] == 6  # bez kopii – bez migracji
+    check.close()

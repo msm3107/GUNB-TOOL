@@ -34,7 +34,7 @@ from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
 from .gunb_scraper import GunbFormatError
 from .http_client import HttpError
 from .models import Investment
-from .pipeline import IMPORT_LEASE, ImportSkipped
+from .pipeline import IMPORT_LEASE, EmptyImport, ImportSkipped
 from .scoring import HOT
 from .stages import LONGEST_WINDOW_DAYS, get_trade, is_due
 from .storage import LeadRepository
@@ -1654,7 +1654,7 @@ class LeadBot:
             log.info("Pobieranie danych GUNB pominięte: %s", exc)
             self.store.job_finished(IMPORT_JOB, "pominieto", str(exc))
             retry_in = exc.retry_in
-        except (HttpError, GunbFormatError) as exc:  # awaria po stronie GUNB – znana, bez śladu stosu
+        except (HttpError, GunbFormatError, EmptyImport) as exc:  # znana awaria po stronie GUNB – bez śladu stosu
             log.error("Pobieranie danych GUNB nie powiodło się (ponowię za godzinę): %s", exc)
             self.store.job_finished(IMPORT_JOB, "blad", str(exc))
         except Exception as exc:  # np. zablokowana baza – bot działa dalej, pobieranie wróci za godzinę

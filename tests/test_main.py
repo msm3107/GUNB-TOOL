@@ -313,3 +313,14 @@ def test_cli_fetch_failure_is_recorded(workdir, monkeypatch):
         status = BotStore(repo).job_status("import")
         assert status.stan == "blad" and "503" in status.opis
         assert BotStore(repo).job_time("import_udany") is None
+
+
+def test_import_without_any_case_is_not_counted_as_a_checked_registry(workdir, monkeypatch):
+    monkeypatch.setattr(main, "create_pipeline", fake_pipeline_factory([]))  # paczka bez spraw w oknie
+
+    assert run(workdir, "--fetch", "--no-geocode") == 1
+
+    with LeadRepository(workdir / "data" / "test.sqlite") as repo:
+        status = BotStore(repo).job_status("import")
+        assert status.stan == "blad" and "brak spraw" in status.opis
+        assert BotStore(repo).job_time("import_udany") is None

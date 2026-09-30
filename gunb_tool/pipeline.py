@@ -42,6 +42,11 @@ class ImportSkipped(RuntimeError):
         self.retry_in = retry_in
 
 
+class EmptyImport(RuntimeError):
+    """Zwykły import nie przyniósł ani jednej sprawy – to podejrzana paczka GUNB albo zły zakres,
+    więc nie liczy się jako udane sprawdzenie rejestru (dane w bazie zostają nietknięte)."""
+
+
 @contextmanager
 def import_lease(repo: LeadRepository, *, owner: str | None = None, wait: timedelta = timedelta(0),
                  ttl: timedelta = IMPORT_LEASE_TTL,
