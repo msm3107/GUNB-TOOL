@@ -222,3 +222,17 @@ def test_new_sales_screens_promise_nothing_the_product_does_not_do(bot, api, rep
         assert not any(word in lowered for word in ("telefon", "zadzwo", "dzwoni")), text
         assert all("nie" in words for words in re.findall(r"(\S+) (\S+) gwaranc", lowered)), text
     assert "płatn" not in ui.activated_text("29.10.2026", "Mietek", days=30).lower()
+
+
+def test_long_admin_text_is_split_between_lines_into_messages_telegram_accepts():
+    from tests.bot_helpers import telegram_rejects
+
+    lines = ["👥 <b>Użytkownicy</b>"] + [f"✅ Firma {n} &amp; Syn ({n})" for n in range(400)] + [""]
+    parts = ui.split_lines("\n".join(lines), limit=500)
+    assert len(parts) > 1 and all(telegram_rejects(part) is None and len(part) <= 500 for part in parts)
+    assert "\n".join(parts).split("\n") == lines[:-1]  # nic nie ginie, kolejność zostaje
+    assert ui.split_lines("krótko") == ["krótko"]
+
+    single = "<b>" + "A &amp; B " * 100 + "</b>"  # jedna linia dłuższa niż limit – bez znaczników, przed encją
+    (cut,) = ui.split_lines(single, limit=101)
+    assert telegram_rejects(cut) is None and len(cut) <= 101 and cut.endswith("…")

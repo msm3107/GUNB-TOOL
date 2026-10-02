@@ -426,6 +426,9 @@ def _run_bot(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
 
 
 def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> int:
+    if config.bot.offer.problems:  # bot działa dalej (bez ceny i zamówień), a admin dostaje alert
+        log.error("Oferta wyłączona – popraw w .env i zrestartuj bota; do tego czasu klienci widzą tylko "
+                  "„💬 Zapytaj o ofertę”: %s", "; ".join(config.bot.offer.problems))
     stop = threading.Event()
     ui_bot = _make_bot(config, repo, interactive=True)
     if once:

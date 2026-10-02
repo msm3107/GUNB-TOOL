@@ -196,6 +196,21 @@ def test_one_reminder_before_the_end_and_one_notice_after_it_even_across_restart
     assert sum(f"/aktywuj {MIETEK}" in m["text"] for m in api.to(ADMIN)) == 1  # admin wie, komu przedłużyć
 
 
+def test_many_expiries_at_once_reach_the_admin_in_messages_telegram_accepts(bot, api, repo, clock):
+    store = BotStore(repo)
+    people = [7_000_000_000 + n for n in range(60)]
+    for n, chat_id in enumerate(people):
+        bot.handle_update(message(chat_id, "/start", first_name=f"Zakład Dekarski {n:02d} " + "x" * 40))
+        store.set_access(chat_id, "2026-09-30T08:00:00+00:00", kind="reczny")
+    api.sent.clear()
+    clock.utc = datetime(2026, 9, 30, 9, 0, tzinfo=timezone.utc)  # 11:00 – po terminie, w dzień
+    bot.run_due_jobs()
+    notes = [m["text"] for m in api.to(ADMIN) if "Koniec dostępu" in m["text"] or "/aktywuj 7" in m["text"]]
+    assert len(notes) > 1
+    assert all(f"({chat_id})" in "\n".join(notes) for chat_id in people)
+    assert all(f"/wplata {chat_id}" in "\n".join(notes) for chat_id in people)  # płatność – nie dostęp ręczny
+
+
 def test_no_expiry_messages_at_night(bot, api, repo, clock):
     bot.handle_update(message(MIETEK, "/start"))
     bot.handle_update(message(ADMIN, f"/aktywuj {MIETEK} 2026-10-01"))  # do 01.10 23:59

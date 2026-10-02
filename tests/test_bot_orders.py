@@ -179,11 +179,75 @@ def test_admin_can_answer_through_the_bot_and_list_orders(bot, api, repo):
     assert store(repo).orders()[0].number in listing and "121,77 zł" in listing
 
 
+def test_admin_message_keeps_its_lines(bot, api, repo):
+    """Dane do przelewu w kilku liniach dochodzą w kilku liniach (wcześniej wszystko sklejało się w jedną)."""
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, f"/napisz {MIETEK} Dane do przelewu:\nJan Przykładowy\nPL 12 3456 7890\n"
+                                     "Tytuł: Z-1"))
+    assert api.last_to(MIETEK)["text"].endswith("Dane do przelewu:\nJan Przykładowy\nPL 12 3456 7890\nTytuł: Z-1")
+
+
+def test_too_long_admin_message_goes_back_to_the_admin_instead_of_being_cut(bot, api, repo):
+    bot.handle_update(message(MIETEK, "/start"))
+    api.sent.clear()
+    bot.handle_update(message(ADMIN, f"/napisz {MIETEK} " + "A & B " * 700))  # po ucieczce HTML ponad 4096 znaków
+    assert api.to(MIETEK) == []
+    assert "za długa" in api.last_to(ADMIN)["text"]
+
+
+def test_long_orders_list_comes_in_several_messages_telegram_accepts(bot, api, repo):
+    bot.handle_update(message(ADMIN, "/start"))
+    for n in range(30):
+        chat_id = 6_000_000_000 + n
+        bot.handle_update(message(chat_id, "/start", first_name=f"Hurtownia Materiałów Budowlanych {n:02d} " + "x" * 25))
+        bot.handle_update(click(chat_id, "zm:new"))
+    api.sent.clear()
+    bot.handle_update(message(ADMIN, "/zamowienia"))
+    parts = [m["text"] for m in api.to(ADMIN)]
+    assert len(parts) > 1
+    assert all(f"• {order.number} · " in "\n".join(parts) for order in store(repo).orders(limit=50))
+
+
+def test_payment_received_outside_the_order_button_is_recorded_as_a_payment(bot, api, repo):
+    """Klient zapłacił po rozmowie, bez „🛒 Zamawiam”: /wplata zakłada zamówienie z bieżącej oferty i od razu je
+    potwierdza – płatność nie ląduje w „dostępie ręcznym” (/aktywuj), więc /raport liczy ją jako płatność."""
+    on_trial(bot, api)
+    bot.handle_update(message(ADMIN, f"/wplata {MIETEK} przelew po rozmowie"))
+    orders = store(repo).orders()
+    assert len(orders) == 1 and orders[0].stan == "oplacone" and orders[0].uwagi == "przelew po rozmowie"
+    assert orders[0].opis_ceny == "99 zł netto + 23% VAT = 121,77 zł do zapłaty"
+    assert store(repo).get_user(MIETEK).rodzaj_dostepu == "platny"
+    assert f"Płatność za zamówienie {orders[0].number} potwierdzona" in api.last_to(MIETEK)["text"]
+    assert api.last_to(ADMIN)["text"].startswith(f"✅ {orders[0].number} opłacone")
+    kinds = [e.rodzaj for e in store(repo).events(kinds=("zamowienie", "platnosc"))]
+    assert kinds == ["zamowienie", "platnosc"]
+
+
+def test_payment_by_person_confirms_the_open_order_instead_of_making_a_second_one(bot, api, repo):
+    on_trial(bot, api)
+    bot.handle_update(click(MIETEK, "zm:new"))
+    bot.handle_update(message(ADMIN, f"/wplata {MIETEK}"))
+    bot.handle_update(message(ADMIN, f"/wplata {MIETEK}"))  # drugi raz – nowe zamówienie i kolejne 30 dni
+    orders = store(repo).orders()
+    assert [o.stan for o in orders] == ["oplacone", "oplacone"]
+    assert len([e for e in store(repo).events(kinds=("zamowienie",))]) == 2
+
+
+def test_payment_by_person_needs_a_complete_offer(repo, api, clock):
+    bot = make_bot(repo, api, clock)  # oferta niepełna – nie wiadomo, za ile i na ile dni
+    bot.handle_update(message(MIETEK, "/start"))
+    bot.handle_update(message(ADMIN, f"/wplata {MIETEK}"))
+    assert store(repo).orders() == []
+    reply = api.last_to(ADMIN)["text"]
+    assert "OFERTA_" in reply and f"/aktywuj {MIETEK}" in reply
+
+
 def test_orders_and_admin_commands_are_only_for_the_admin(bot, api, repo):
     on_trial(bot, api)
     bot.handle_update(click(MIETEK, "zm:new"))
     order = store(repo).orders()[0]
     bot.handle_update(click(MIETEK, f"adm:pay:{order.id}"))
     bot.handle_update(message(MIETEK, f"/zaplacone {order.id}"))
-    assert store(repo).get_order(order.id).stan == "zgloszone"
+    bot.handle_update(message(MIETEK, f"/wplata {MIETEK}"))
+    assert store(repo).get_order(order.id).stan == "zgloszone" and len(store(repo).orders()) == 1
     assert api.answers[-1].startswith("⛔ Tylko administrator")

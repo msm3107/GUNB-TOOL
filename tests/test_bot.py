@@ -187,6 +187,19 @@ def test_users_list_shows_subscriptions(bot, api):
     assert "do 29.10.2026" in text and "nieaktywny" in text
 
 
+def test_long_users_list_comes_in_several_messages_telegram_accepts(bot, api):
+    """Każde wejście ze strony to konto – lista ponad ~55 osób przekraczała 4096 znaków i Telegram ją odrzucał."""
+    bot.handle_update(message(ADMIN, "/start"))
+    people = [5_000_000_000 + n for n in range(120)]
+    for n, chat_id in enumerate(people):  # imię w Telegramie ma najwyżej 64 znaki
+        bot.handle_update(message(chat_id, "/start", first_name=f"Przedsiębiorstwo Budowlane {n:03d} " + "x" * 30))
+    api.sent.clear()
+    bot.handle_update(message(ADMIN, "/uzytkownicy"))
+    parts = [m["text"] for m in api.to(ADMIN)]
+    assert len(parts) > 1 and parts[0].startswith("👥 <b>Użytkownicy</b>")
+    assert all(f"({chat_id})" in "\n".join(parts) for chat_id in people)
+
+
 def test_rejected_user_is_informed(bot, api):
     bot.handle_update(message(OBCY, "/start"))
     bot.handle_update(click(ADMIN, f"adm:no:{OBCY}"))

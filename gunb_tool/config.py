@@ -229,6 +229,8 @@ class OfferConfig:
     Dopóki brakuje ceny, sposobu podatku, sposobu płatności albo danych sprzedawcy (:meth:`missing`), bot
     nie pokazuje przycisku zamówienia ani ceny – tylko uczciwe „💬 Zapytaj o ofertę”. Wartości trzymaj
     w ``.env`` (repozytorium jest publiczne): ``config.yaml`` ma dla nich placeholdery ``${OFERTA_…}``.
+    Błędna wartość (``problems``, np. ``OFERTA_CENA='99 zł'``) wyłącza ofertę tak samo – bot działa dalej
+    dla wszystkich, a admin widzi problem w alercie przy starcie i w ``/dane``.
 
     Attributes:
         name / area: nazwa oferty i obsługiwany obszar (słowami).
@@ -240,6 +242,7 @@ class OfferConfig:
         renewal: zasady odnowienia (dostęp nie odnawia się sam).
         terms_url / privacy_url: zasady usługi i informacja o prywatności (https).
         response_time: kiedy operator odpowiada – pokazywane tylko, gdy ustawione.
+        problems: błędne wartości z konfiguracji (opis ze zmienną ``.env``) – oferta jest wtedy wyłączona.
     """
 
     name: str = "Żółta Tablica"
@@ -257,6 +260,7 @@ class OfferConfig:
     terms_url: str = ""
     privacy_url: str = ""
     response_time: str = ""
+    problems: tuple[str, ...] = ()
 
     def missing(self) -> list[str]:
         """Czego brakuje, żeby pokazać cenę i przyjmować zamówienia (puste – oferta kompletna)."""
@@ -267,7 +271,8 @@ class OfferConfig:
 
     @property
     def complete(self) -> bool:
-        return not self.missing()
+        """Cena i zamówienia tylko przy pełnej i poprawnej ofercie (bez braków i bez błędnych wartości)."""
+        return not self.missing() and not self.problems
 
     @property
     def amount_due(self) -> Decimal | None:
@@ -659,52 +664,78 @@ def _bot(data: dict[str, Any]) -> BotConfig:
     )
 
 
+_OFFER_VARIABLES = {
+    "price": "OFERTA_CENA", "tax": "OFERTA_PODATEK", "currency": "OFERTA_WALUTA", "vat_rate": "OFERTA_VAT",
+    "period_days": "OFERTA_DNI", "accounts": "OFERTA_KONTA", "terms_url": "OFERTA_ZASADY_URL",
+    "privacy_url": "OFERTA_PRYWATNOSC_URL",
+}
+"""Zmienna ``.env`` przy każdym polu oferty (``config.yaml`` ma placeholdery) – do opisu problemu dla operatora."""
+
+
 def _offer(data: dict[str, Any]) -> OfferConfig:
-    """``bot.offer``: puste wartości są dozwolone (oferta niepełna), błędne – zatrzymują start."""
+    """``bot.offer``: puste wartości – oferta niepełna; błędne – oferta wyłączona z opisem w ``problems``.
+
+    Błędna oferta nie zatrzymuje startu: literówka w cenie nie może wyłączyć bota klientom, którzy już mają
+    dostęp (błąd konfiguracji kończy proces kodem 2, a tego systemd nie wznawia). Bez poprawnej oferty bot
+    pokazuje tylko „💬 Zapytaj o ofertę”.
+    """
     defaults = OfferConfig()
+    problems: list[str] = []
 
     def text(key: str, default: str = "") -> str:
         return str(data.get(key) or default).strip()
 
+    def problem(key: str, raw: str, hint: str) -> None:
+        problems.append(f"{_OFFER_VARIABLES[key]}={raw!r} – {hint}")
+
     def whole(key: str, default: int, low: int, high: int) -> int:
         raw = text(key) or str(default)
-        if not raw.isdigit() or not low <= int(raw) <= high:
-            raise ConfigError(f"bot.offer.{key}: {raw!r} – podaj liczbę całkowitą {low}–{high}")
-        return int(raw)
+        if raw.isdigit() and low <= int(raw) <= high:
+            return int(raw)
+        problem(key, raw, f"podaj liczbę całkowitą {low}–{high}")
+        return default
 
     price = None
     if text("price"):
         try:
-            price = Decimal(text("price").replace(" ", "").replace(",", "."))
+            amount = Decimal(text("price").replace(" ", "").replace(",", "."))
         except InvalidOperation:
-            raise ConfigError(f"bot.offer.price: {text('price')!r} nie jest kwotą (np. 99 albo 99,50)") from None
-        if not Decimal("0") < price <= Decimal("100000") or price != price.quantize(Decimal("0.01")):
-            raise ConfigError(f"bot.offer.price: {text('price')!r} – kwota musi być dodatnia, z groszami najwyżej")
+            amount = None
+        if (amount is not None and amount.is_finite() and Decimal("0") < amount <= Decimal("100000")
+                and amount == amount.quantize(Decimal("0.01"))):
+            price = amount
+        else:
+            problem("price", text("price"), "podaj samą kwotę, dodatnią, z groszami najwyżej (np. 99 albo 99,50)")
     tax = text("tax").lower()
     if tax and tax not in TAX_MODES:
-        raise ConfigError(f"bot.offer.tax: {tax!r} – dozwolone: {', '.join(TAX_MODES)} (puste = nie pokazuj ceny)")
+        problem("tax", tax, f"dozwolone: {', '.join(TAX_MODES)}")
+        tax = ""
     currency = text("currency", defaults.currency).upper()
     if not re.fullmatch(r"[A-Z]{3}", currency):
-        raise ConfigError(f"bot.offer.currency: {currency!r} – podaj kod waluty, np. PLN")
+        problem("currency", text("currency"), "podaj kod waluty, np. PLN")
+        currency = defaults.currency
     urls = {}
     for key in ("terms_url", "privacy_url"):
         urls[key] = text(key)
         if urls[key] and not re.fullmatch(r"https://[^\s<>\"']+", urls[key]):
-            raise ConfigError(f"bot.offer.{key}: {urls[key]!r} – podaj pełny adres https://…")
+            problem(key, urls[key], "podaj pełny adres https://…")
+            urls[key] = ""
+    numbers = {"accounts": whole("accounts", defaults.accounts, 1, 100),
+               "period_days": whole("period_days", defaults.period_days, 1, 366),
+               "vat_rate": whole("vat_rate", defaults.vat_rate, 0, 99)}
     return OfferConfig(
         name=text("name", defaults.name),
         area=text("area"),
-        accounts=whole("accounts", defaults.accounts, 1, 100),
         price=price,
         currency=currency,
-        period_days=whole("period_days", defaults.period_days, 1, 366),
         tax=tax,
-        vat_rate=whole("vat_rate", defaults.vat_rate, 0, 99),
         payment=text("payment"),
         seller_name=text("seller_name"),
         seller_contact=text("seller_contact"),
         renewal=text("renewal"),
         response_time=text("response_time"),
+        problems=tuple(problems),
+        **numbers,
         **urls,
     )
 
