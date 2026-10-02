@@ -378,35 +378,123 @@ SETUP_RESUME_BUTTON = ("⚙️ Dokończ ustawienia", "ob:resume")
 def setup_trade_step() -> tuple[str, Markup]:
     rows = [[(trade.label, f"ob:{trade.key}")] for trade in TRADES]
     rows.append([("🏗️ Inna branża / wszystkie etapy", "ob:none")])
-    return ("<b>1/2</b> 🧰 <b>Czym się zajmujesz?</b>\n"
-            "Dam znać, gdy budowa wejdzie w orientacyjne okno Twojego etapu (szacunek od daty decyzji).",
-            inline(rows))
+    return ("<b>1/2</b> 🧰 <b>Co oferujesz?</b>\n"
+            "Od tego zależy kolejność wyników, a przy pracach na późniejszym etapie – przypomnienie, gdy budowa "
+            "wejdzie w orientacyjne okno Twojego etapu (szacunek od daty decyzji). Branża nie zawęża rodzaju "
+            "budynków – to ustawisz osobno.", inline(rows))
 
 
 def setup_area_step(options: Sequence[tuple[str, str]], region: str) -> tuple[str, Markup]:
     rows = [[(f"📌 {label}", f"oa:p:{code}")] for code, label in options]
     rows += [[("📍 W promieniu od mojej bazy", "oa:loc")], [("✏️ Wpisz miejscowość", "oa:txt")],
              [("🗺️ Cały monitorowany obszar", "oa:all")]]
-    return ("<b>2/2</b> 📍 <b>Gdzie szukać inwestycji?</b>\n"
+    return ("<b>2/2</b> 📍 <b>Gdzie działasz?</b>\n"
             f"Monitoruję: {escape_html(region)}.\n"
             "Wybierz powiat albo wpisz miejscowość – bieżącej lokalizacji nie trzeba udostępniać.", inline(rows))
 
 
-def setup_summary(user: BotUser, place: str, settings: BotConfig, *, can_start_trial: bool) -> tuple[str, Markup | None]:
+START_ANYWAY_BUTTON = ("▶️ Rozumiem – zacznij test mimo to", "ts:ok")
+TIP_OPEN = ("💡 Kliknij numer, żeby otworzyć kartę z mapą i szczegółami. Przydatną ⭐ zapisz – wrócisz do niej "
+            "w „⭐ Zapisane”.")
+TIP_SAVE = "💡 Przydatna? Kliknij ⭐ Zapisz – wrócisz do niej w „⭐ Zapisane”."
+TIP_NOTE = ("💡 Do zapisanej dodaj 📝 notatkę (np. co ustalone) albo ⏰ przypomnienie – przyjdzie rano "
+            "wybranego dnia.")
+
+
+def setup_summary(user: BotUser, place: str, settings: BotConfig, *, can_start_trial: bool, area: str,
+                  data_range: tuple[str, str] | None, freshness: str, recent: int, in_window: int,
+                  notes: Sequence[str] = (), empty: Sequence[str] = ()) -> tuple[str, Markup | None]:
+    """Podsumowanie po dwóch pytaniach: ustawienia (i gdzie je zmienić), zakres i świeżość danych, ile pasuje.
+
+    Przy pustym wyniku zamiast zwykłego startu testu: przyczyna, zmiana obszaru lub rodzaju, kontakt
+    i świadome „zacznij mimo to” – test nigdy nie startuje sam.
+    """
     trade = get_trade(user.branza)
-    lines = ["✅ <b>Gotowe!</b>",
-             f"🧰 Branża: {escape_html(trade.label) if trade else 'bez przypomnień o etapach budowy'}",
+    categories = [label for key, label in CATEGORY_CHOICES if key in user.filtry.kategorie]
+    lines = ["✅ <b>Gotowe – sprawdź ustawienia:</b>",
+             f"🧰 Oferujesz: {escape_html(_trade_label(trade))}",
              f"📍 Obszar: {escape_html(place)}",
-             f"⏰ Raport: {_mode_sentence(user.tryb, settings)} (zmienisz w ⚙️ Ustawienia)"]
-    if can_start_trial:
+             f"🏗️ Rodzaj budynków: {escape_html(', '.join(categories)) if categories else 'wszystkie'}"
+             " (zmienisz w ⚙️ Ustawienia)",
+             f"⏰ Raport: {_mode_sentence(user.tryb, settings)} (zmienisz w ⚙️ Ustawienia)", ""]
+    span = (f"; w bocie od {_pl_date(data_range[0])} do {_pl_date(data_range[1])}." if data_range
+            else "; jeszcze nic nie pobrano.")
+    lines += [f"📦 Dane: rejestr GUNB (pozwolenia i zgłoszenia), {escape_html(area)}{span}", freshness]
+    lines += list(notes)
+    found = recent or in_window
+    if found:
+        parts = [f"{_count(recent, 'inwestycja', 'inwestycje', 'inwestycji')} z ostatnich {settings.recent_days} dni"]
+        if in_window and trade is not None:
+            parts.append(f"{in_window} w orientacyjnym oknie etapu {trade.stage}")
+        lines.append("🔎 Teraz pasuje: " + "; ".join(parts) + ".")
+    else:
+        lines += ["", "⚠️ <b>Na razie nic nie pasuje.</b>", *empty]
+    if not can_start_trial:
+        return "\n".join(lines), None
+    if found:
         lines += ["", "▶️ Kliknij, aby zacząć 7-dniowy test – od tej chwili liczy się 7 dni."]
-        return "\n".join(lines), inline([[START_TRIAL_BUTTON]])
-    return "\n".join(lines), None
+        return "\n".join(lines), inline([[START_TRIAL_BUTTON], [("⚙️ Zmień obszar", "f:place")]])
+    lines += ["", "Możesz zmienić obszar albo rodzaj, napisać do nas – albo świadomie zacząć test mimo to."]
+    return "\n".join(lines), inline([[("🗺️ Zmień obszar", "f:place"), ("🏗️ Zmień rodzaj", "f:type")],
+                                      [("💬 Napisz do nas", "zm:q")], [START_ANYWAY_BUTTON]])
 
 
-def first_review_head() -> list[str]:
-    return ["🔎 <b>Na początek – przegląd ostatnich 30 dni.</b>",
-            "To historia z rejestru, nie nowości: nowe inwestycje przyjdą w raporcie."]
+def empty_reason_lines(reason: str, *, area: str, region_count: int, days: int, filters: str,
+                       places: Sequence[str] = ()) -> list[str]:
+    """Dlaczego nic nie pasuje – brak danych, miejsce spoza obszaru, zbyt wąskie ustawienia albo cisza w rejestrze."""
+    if reason == "brak_danych":
+        return ["📭 Nie mam jeszcze danych z rejestru – pierwsze pobieranie jeszcze się nie zakończyło. "
+                "To brak danych w bocie, nie brak budów na rynku."]
+    if reason == "poza_obszarem":
+        return [f"📍 Wybrane miejsce jest poza monitorowanym obszarem ({escape_html(area)}) – tam nic nie znajdę."]
+    if reason == "miejsce_bez_danych":
+        return [f"📍 Z miejsca „{escape_html(', '.join(places))}” nie ma jeszcze żadnej inwestycji w danych bota – "
+                "nowe przyjdą, gdy pojawią się w rejestrze. Możesz też poszerzyć obszar."]
+    if reason == "cisza":
+        return [f"🔎 W ostatnich {days} dniach rejestr nie pokazał nowych inwestycji w całym monitorowanym "
+                "obszarze – nowe przyjdą w raportach."]
+    return [f"🔎 W ostatnich {days} dniach w monitorowanym obszarze jest "
+            f"{_count(region_count, 'inwestycja', 'inwestycje', 'inwestycji')}, ale żadna nie pasuje do Twoich "
+            "ustawień.", filters]
+
+
+def history_gap_note(trade: Trade, oldest: str | None) -> str:
+    start = trade_window_label(trade)
+    since = f" (najstarsza w bocie: {_pl_date(oldest)})" if oldest else ""
+    return (f"🕰️ Starszych decyzji, potrzebnych do przypomnień o etapie {trade.stage} ({start} po decyzji), "
+            f"jeszcze nie ma w bocie{since} – to brak danych w bocie, nie brak budów na rynku.")
+
+
+def first_value(leads: Sequence[Investment], *, recent: int, in_window_ids: set[str], trade: Trade | None,
+                days: int, distance: Distance | None = None, tip: bool = False,
+                freshness: str = "") -> tuple[str, Markup]:
+    """Po starcie: 3–5 najlepiej dopasowanych inwestycji (bez zużywania nowości) i pełny przegląd."""
+    lines = [f"⭐ <b>Na początek – {_count(len(leads), 'najlepiej dopasowana', 'najlepiej dopasowane', 'najlepiej dopasowanych')}</b>"]
+    if in_window_ids and trade is not None:
+        lines.append(f"⏳ = w orientacyjnym oknie etapu {trade.stage} (szacunek od daty decyzji – etap trzeba "
+                     "sprawdzić na miejscu)")
+    lines.append("")
+    lines += [_report_entry(position, inv, distance, badge="⏳" if inv.id_sprawy in in_window_ids else "")
+              for position, inv in enumerate(leads, start=1)]
+    lines.append("")
+    lines.append(f"📋 Pełny przegląd: wszystkie pasujące z ostatnich {days} dni ({recent})." if recent
+                 else f"Nowych z ostatnich {days} dni brak – nowe przyjdą w raportach.")
+    if tip:
+        lines.append(TIP_OPEN)
+    if freshness:
+        lines.append(freshness)
+    rows = number_buttons([(p, inv.nr) for p, inv in enumerate(leads, start=1)])
+    if recent:
+        rows.append([(f"📋 Pełny przegląd ({recent})", "hp:0")])
+    return "\n".join(lines), inline(rows)
+
+
+def first_value_empty(explanation: Sequence[str], *, days: int, freshness: str = "") -> tuple[str, Markup]:
+    lines = [f"🔎 <b>Na początek:</b> z ostatnich {days} dni brak pasujących do Twoich ustawień.", *explanation]
+    if freshness:
+        lines.append(freshness)
+    return "\n".join(lines), inline([[("🗺️ Poszerz obszar", "f:place"), ("🏗️ Zmień rodzaj", "f:type")],
+                                      [("💬 Napisz do nas", "zm:q")]])
 
 
 def place_unknown(name: str, region: str) -> tuple[str, Markup]:
@@ -1242,15 +1330,18 @@ def nothing_new_head(*, total_new: int, watched: int, note: str | None = None) -
 
 def history_page(leads: Sequence[Investment], *, page: int, pages: int, total: int, days: int,
                  head: Sequence[str] = (), distance: Distance | None = None,
-                 filters: str = "", freshness: str = "") -> tuple[str, Markup | None]:
+                 filters: str = "", freshness: str = "", explanation: Sequence[str] = ()) -> tuple[str, Markup | None]:
     """Przegląd historii: pasujące z ostatnich ``days`` dni, stronami „◀️ Wstecz / Dalej ▶️”.
 
     ``total`` to wszystkie pasujące – dokładnie tyle da się przejrzeć; przegląd niczego nie oznacza jako wysłane.
+    ``explanation`` – przy pustym wyniku: dlaczego (brak danych, miejsce spoza obszaru, zbyt wąskie ustawienia).
     """
     lines = list(head)
     if not total:
         lines.append(f"\n🔎 Z ostatnich {days} dni brak pasujących do Twoich filtrów.")
-        if filters:
+        if explanation:
+            lines += list(explanation)
+        elif filters:
             lines.append(filters)
         lines.append("Możesz poszerzyć obszar albo zmienić rodzaj inwestycji 👇")
         if freshness:
@@ -1332,8 +1423,8 @@ def unknown_text() -> str:
 
 # --- Pomocnicze ---------------------------------------------------------------------------------
 
-def _report_entry(position: int, inv: Investment, distance: Distance | None = None) -> str:
-    icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+def _report_entry(position: int, inv: Investment, distance: Distance | None = None, badge: str = "") -> str:
+    icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•") + badge
     km = distance(inv) if distance else None
     facts = [p for p in (
         f"📏 {distance_label(km)}" if km is not None else None,

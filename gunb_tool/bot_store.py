@@ -546,6 +546,34 @@ class BotStore:
         """Czy w bazie są już jakiekolwiek dane (świeża instalacja przed pierwszym importem – nie)."""
         return self._conn.execute("SELECT 1 FROM investments WHERE is_noise = 0 LIMIT 1").fetchone() is not None
 
+    def data_range(self) -> tuple[str, str] | None:
+        """Najstarsza i najnowsza data zdarzenia (decyzja, a bez niej wpływ) w danych bota; ``None`` – pusto."""
+        row = self._conn.execute(
+            "SELECT min(coalesce(data_decyzji, data_wplywu, data_aktualizacji)) AS od,"
+            " max(coalesce(data_decyzji, data_wplywu, data_aktualizacji)) AS do FROM investments WHERE is_noise = 0"
+        ).fetchone()
+        return (row["od"], row["do"]) if row and row["od"] else None
+
+    def recent_count(self, date_from: str) -> int:
+        """Ile inwestycji (bez szumu) z całego monitorowanego obszaru ma datę zdarzenia od ``date_from``."""
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM investments WHERE is_noise = 0 AND data_aktualizacji >= ?", (date_from,)
+        ).fetchone()[0]
+
+    def decided_since(self, chat_id: int, since: str) -> list[Investment]:
+        """Inwestycje (bez szumu i ukrytych) z decyzją albo wpływem od ``since`` – także już widziane."""
+        rows = self._conn.execute(
+            """
+            SELECT i.* FROM investments i
+            WHERE i.is_noise = 0 AND coalesce(i.data_decyzji, i.data_wplywu) >= ?
+              AND NOT EXISTS (SELECT 1 FROM user_leads u
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
+            ORDER BY coalesce(i.data_decyzji, i.data_wplywu) DESC, i.nr DESC
+            """,
+            (since, chat_id),
+        )
+        return [investment_from_row(row) for row in rows]
+
     def place_is_known(self, name: str) -> bool:
         """Czy w danych (monitorowany obszar) jest inwestycja z tej miejscowości lub gminy."""
         if not normalize_text(name):

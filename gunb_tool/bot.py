@@ -39,7 +39,7 @@ from .http_client import HttpError
 from .models import Investment
 from .pipeline import IMPORT_LEASE, EmptyImport, ImportSkipped
 from .scoring import HOT
-from .stages import LONGEST_WINDOW_DAYS, get_trade, is_due
+from .stages import DAYS_PER_MONTH, LONGEST_WINDOW_DAYS, get_trade, is_due
 from .storage import LeadRepository
 from .telegram_api import TelegramApiError
 
@@ -96,6 +96,10 @@ CONFLICT_PAUSE = timedelta(minutes=10)
 """Tyle po ostatnim konflikcie 409 wątek zadań nic nie wysyła (drugi bot z tym samym tokenem)."""
 WATCH_DIGEST_AFTER = 3
 """Więcej alertów obserwowanych naraz (np. po wznowieniu powiadomień) idzie jedną wiadomością."""
+FIRST_VALUE_SIZE = 5
+"""Ile najlepiej dopasowanych inwestycji pokazać zaraz po starcie (reszta – w pełnym przeglądzie)."""
+STALE_AFTER = timedelta(hours=48)
+"""Rejestr niesprawdzony dłużej niż tyle = dane mogą być nieaktualne (mówimy to wprost)."""
 INQUIRY_EVERY = timedelta(hours=24)
 """Pytanie o ofertę trafia do admina najwyżej raz na tyle (kolejne kliknięcia – tylko potwierdzenie)."""
 _SOURCE_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
@@ -899,7 +903,8 @@ class LeadBot:
         return ui.admin_trial_allowed_text(user, delivered=delivered)
 
     def _cb_trial_start(self, user: BotUser, arg: str, message_id: int) -> str | None:
-        """„▶️ Zacznij 7-dniowy test” – świadomy start po ustawieniach; kolejne kliknięcia nic nie zmieniają."""
+        """„▶️ Zacznij 7-dniowy test” (``ts``) albo „Rozumiem – zacznij mimo to” (``ts:ok``, przy pustym wyniku) –
+        świadomy start po ustawieniach; kolejne kliknięcia nic nie zmieniają, sam z siebie test nie rusza."""
         if user.trial_used:
             ends_on = self._local_date(user.test_koniec, with_time=True)
             if user.on_trial and self._has_access(user):
@@ -915,11 +920,10 @@ class LeadBot:
         now = self._now()
         if not self.store.start_trial(user.chat_id, now, now + TRIAL_LENGTH):
             return None  # drugie kliknięcie w tej samej chwili – test już ruszył
-        self.store.record_event(user.chat_id, "test_start")
+        self.store.record_event(user.chat_id, "test_start", szczegoly="mimo_pustych" if arg == "ok" else None)
         ends_on = self._local_date(_utc_iso(now + TRIAL_LENGTH), with_time=True)
         self._send(user.chat_id, ui.trial_started_text(ends_on), ui.menu_keyboard())
-        self._send(user.chat_id, *self._history_screen(self.store.get_user(user.chat_id) or user, 0,
-                                                       head=ui.first_review_head()))
+        self._send(user.chat_id, *self._first_value(self.store.get_user(user.chat_id) or user))
         return "🎁 Test wystartował"
 
     # === Pierwsze kroki: branża → obszar → gotowe ========================================================
@@ -929,6 +933,8 @@ class LeadBot:
         step = user.konfiguracja if user.konfiguracja in SETUP_STEPS else "branza"
         if user.konfiguracja != step:
             self.store.set_setup_step(user.chat_id, step)
+        if not self.store.has_event(user.chat_id, "konfiguracja_start"):
+            self.store.record_event(user.chat_id, "konfiguracja_start")
         screen = ui.setup_trade_step() if step == "branza" else \
             ui.setup_area_step(self.store.place_options(self.powiat_codes), self._region_label())
         if message_id is None:
@@ -971,19 +977,109 @@ class LeadBot:
         return "📍 Zapisano obszar"
 
     def _finish_setup(self, user: BotUser, message_id: int | None = None) -> None:
-        """Koniec pierwszej konfiguracji: podsumowanie; z dostępem od razu przegląd ostatnich 30 dni."""
+        """Koniec pierwszej konfiguracji: podsumowanie (zakres danych, ile pasuje, świeżość); przed testem – start
+        testu albo, przy pustym wyniku, przyczyna i wybór; z dostępem od razu najlepiej dopasowane."""
         self.store.set_setup_step(user.chat_id, SETUP_DONE)
         self.store.record_event(user.chat_id, "konfiguracja")
         user = self.store.get_user(user.chat_id) or user
         level = self._level(user)
-        text, markup = ui.setup_summary(user, ui.place_label(user.filtry, self._place_names()), self.settings,
-                                        can_start_trial=level == SETUP)
+        text, markup = self._summary(user, can_start_trial=level == SETUP)
         if message_id is None:
             self._send(user.chat_id, text, markup or ui.menu_keyboard())
         else:
             self.api.edit_message_text(user.chat_id, message_id, text, markup)
         if level == FULL:
-            self._send(user.chat_id, *self._history_screen(user, 0, head=ui.first_review_head()))
+            self._send(user.chat_id, *self._first_value(user))
+
+    def _summary(self, user: BotUser, *, can_start_trial: bool) -> tuple[str, dict | None]:
+        recent, in_window = len(self._history_matches(user)), len(self._stage_matches(user))
+        notes = [note for note in (self._stale_note(), self._history_gap(user)) if note]
+        empty = [] if recent or in_window else self._empty_explanation(user)
+        return ui.setup_summary(user, ui.place_label(user.filtry, self._place_names()), self.settings,
+                                can_start_trial=can_start_trial, area=self._offer_area(),
+                                data_range=self.store.data_range(), freshness=self._freshness(), recent=recent,
+                                in_window=in_window, notes=notes, empty=empty)
+
+    def _first_value(self, user: BotUser) -> tuple[str, dict]:
+        """Pierwsza wartość: 3–5 najlepiej dopasowanych (okno etapu branży, miejsce, data) bez zużywania nowości."""
+        today = local(self._now()).date()
+        in_window = self._stage_matches(user)
+        recent = self._history_matches(user)
+        seen = {inv.id_sprawy for inv in in_window}
+        combined = ranked(user, in_window + [inv for inv in recent if inv.id_sprawy not in seen], today)
+        if not combined:
+            reason = self._empty_reason(user)
+            self.store.record_event(user.chat_id, "pusto", szczegoly=reason)
+            return ui.first_value_empty(self._empty_explanation(user, reason), days=self.settings.recent_days,
+                                        freshness=self._freshness())
+        self.store.record_event(user.chat_id, "wyniki", szczegoly=str(len(combined)))
+        tip = self._take_tip(user, "otworz", done=self.store.has_event(user.chat_id, "szczegoly"))
+        return ui.first_value(combined[:FIRST_VALUE_SIZE], recent=len(recent), in_window_ids=seen,
+                              trade=get_trade(user.branza), days=self.settings.recent_days,
+                              distance=user.filtry.distance_km if user.filtry.baza else None, tip=tip,
+                              freshness=self._freshness())
+
+    def _stage_matches(self, user: BotUser) -> list[Investment]:
+        """Inwestycje z ustawień osoby, które według szacunku są dziś w oknie etapu jej branży."""
+        trade = get_trade(user.branza)
+        if trade is None or trade.months is None:
+            return []
+        today = local(self._now()).date()
+        since = (today - timedelta(days=LONGEST_WINDOW_DAYS)).isoformat()
+        return [inv for inv in self.store.decided_since(user.chat_id, since)
+                if is_due(trade, inv, today) and self._wanted(user, inv)]
+
+    def _empty_reason(self, user: BotUser) -> str:
+        """Dlaczego nic nie pasuje: ``brak_danych``, ``poza_obszarem``, ``miejsce_bez_danych``, ``cisza``, ``filtry``."""
+        if not self.store.has_investments():
+            return "brak_danych"
+        filters = user.filtry
+        if filters.radius_active:
+            nearest = self.store.nearest_investment_km(filters.baza)  # type: ignore[arg-type]
+            if nearest is None or nearest > (filters.promien_km or 0):
+                return "poza_obszarem"
+        elif filters.miejsca and not filters.powiaty and not any(self.store.place_is_known(m) for m in filters.miejsca):
+            return "miejsce_bez_danych"
+        date_from = (local(self._now()).date() - timedelta(days=self.settings.recent_days)).isoformat()
+        return "cisza" if self.store.recent_count(date_from) == 0 else "filtry"
+
+    def _empty_explanation(self, user: BotUser, reason: str | None = None) -> list[str]:
+        reason = reason or self._empty_reason(user)
+        date_from = (local(self._now()).date() - timedelta(days=self.settings.recent_days)).isoformat()
+        lines = ui.empty_reason_lines(reason, area=self._offer_area(), region_count=self.store.recent_count(date_from),
+                                      days=self.settings.recent_days,
+                                      filters=ui.filters_summary(user, self._place_names()),
+                                      places=user.filtry.miejsca)
+        stale = self._stale_note()
+        return lines + ([stale] if stale and reason != "brak_danych" else [])
+
+    def _stale_note(self) -> str | None:
+        """Import w toku, nieudany albo dawno niesprawdzony rejestr – żeby pusto nie znaczyło „nic się nie dzieje”."""
+        note = self._import_note()
+        if note:
+            return note
+        checked = self.store.job_time(LAST_IMPORT_JOB)
+        if checked is not None and self._now() - checked > STALE_AFTER:
+            return (f"⚠️ Rejestr nie był sprawdzony od {self._local_date(_utc_iso(checked), with_time=True)} – "
+                    "dane mogą być nieaktualne.")
+        return None
+
+    def _history_gap(self, user: BotUser) -> str | None:
+        """Branża z oknem etapu, a w bocie brak decyzji na tyle starych, by jakakolwiek budowa była w oknie."""
+        trade = get_trade(user.branza)
+        if trade is None or trade.months is None or not self.store.has_investments():
+            return None
+        data_range = self.store.data_range()
+        oldest = data_range[0] if data_range else None
+        reachable = (local(self._now()).date() - timedelta(days=round(trade.months[0] * DAYS_PER_MONTH))).isoformat()
+        return ui.history_gap_note(trade, oldest) if oldest is None or oldest > reachable else None
+
+    def _take_tip(self, user: BotUser, key: str, *, done: bool) -> bool:
+        """Podpowiedź ``key`` pokazujemy raz – i wcale, gdy osoba już to zrobiła albo wyłączyła podpowiedzi."""
+        if done or not user.tips_enabled or key in user.porady:
+            return False
+        self.store.mark_tip(user.chat_id, key)
+        return True
 
     def _region_label(self) -> str:
         """Monitorowany obszar słowami (np. „Olsztyn, powiat olsztyński”)."""
@@ -1061,7 +1157,10 @@ class LeadBot:
         return "brak", None
 
     def _send_gate(self, user: BotUser) -> None:
-        if user.trial_available:
+        if user.trial_available and user.setup_done:  # przed startem: ustawienia, zakres danych, ile pasuje
+            text, markup = self._summary(user, can_start_trial=True)
+            self._send(user.chat_id, ui.trial_waiting()[0] + "\n\n" + text, markup)
+        elif user.trial_available:
             self._send(user.chat_id, *ui.trial_waiting())
         else:
             self._send(user.chat_id, *self._gate_screen(user))
@@ -1260,7 +1359,11 @@ class LeadBot:
                 return NO_ACCESS_TOAST
             self._send(user.chat_id, *self._archive_card(user, inv))
             return None
-        self._send_card(user, inv)
+        text, markup = self._card(user, inv)
+        if self._take_tip(user, "zapisz", done=self.store.saved_count(user.chat_id) > 0):
+            text, markup = self._card(user, inv, limit=TELEGRAM_LIMIT - len(ui.TIP_SAVE) - 2)
+            text += "\n\n" + ui.TIP_SAVE
+        self._send(user.chat_id, text, markup)
         self.store.record_event(user.chat_id, "szczegoly", inv.id_sprawy)
         return None
 
@@ -1320,9 +1423,14 @@ class LeadBot:
     def _cb_save(self, user: BotUser, arg: str, message_id: int) -> str:
         """``s1:``/``s:`` (starsze przyciski) – zapisz; ponowione kliknięcie niczego nie cofa."""
         inv = self._lead(arg)
-        if inv is not None and not self.store.lead_flags(user.chat_id, inv.id_sprawy).saved:
+        newly_saved = inv is not None and not self.store.lead_flags(user.chat_id, inv.id_sprawy).saved
+        if newly_saved:
             self.store.record_event(user.chat_id, "zapis", inv.id_sprawy)
-        return self._cb_flag(user, arg, message_id, saved=True, toast="⭐ Zapisano – znajdziesz je pod „⭐ Zapisane”")
+        toast = self._cb_flag(user, arg, message_id, saved=True, toast="⭐ Zapisano – znajdziesz je pod „⭐ Zapisane”")
+        work = self.store.work_summary(user.chat_id, "")
+        if newly_saved and self._take_tip(user, "notatka", done=bool(work["notatki"] or work["przypomnienia"])):
+            self._send_safely(user.chat_id, ui.TIP_NOTE)
+        return toast
 
     def _cb_unsave(self, user: BotUser, arg: str, message_id: int) -> str:
         return self._cb_flag(user, arg, message_id, saved=False, toast="Usunięto z zapisanych")
@@ -1774,11 +1882,19 @@ class LeadBot:
         pages = max(1, -(-len(matches) // ui.HISTORY_PAGE_SIZE))
         page = min(max(page, 0), pages - 1)
         start = page * ui.HISTORY_PAGE_SIZE
+        explanation: list[str] = []
+        if not matches:
+            reason = self._empty_reason(user)
+            explanation = self._empty_explanation(user, reason)
+            self.store.record_event(user.chat_id, "pusto", szczegoly=reason)
+        elif page == 0:
+            self.store.record_event(user.chat_id, "wyniki", szczegoly=str(len(matches)))
         return ui.history_page(
             matches[start:start + ui.HISTORY_PAGE_SIZE], page=page, pages=pages, total=len(matches),
             days=self.settings.recent_days, head=head,
             distance=user.filtry.distance_km if user.filtry.baza else None,
             filters=ui.filters_summary(user, self._place_names()), freshness=self._freshness(),
+            explanation=explanation,
         )
 
     def _freshness(self) -> str:
@@ -1892,7 +2008,7 @@ class LeadBot:
         return self.repo.get_by_nr(int(arg)) if arg.isdigit() else None
 
     def _card(self, user: BotUser, inv: Investment, header: tuple[str, str, str] | None = None, *,
-              details: bool = False) -> tuple[str, dict]:
+              details: bool = False, limit: int = TELEGRAM_LIMIT) -> tuple[str, dict]:
         """Karta inwestycji: fakty z rejestru, dlaczego ją widać, szacunki i prywatna notatka (tylko tej osoby)."""
         today = local(self._now()).date()
         estimates = []
@@ -1905,7 +2021,7 @@ class LeadBot:
             if change is not None and change.stary_status else None
         text = ui.lead_card(inv, why=match_reasons(user, inv, self._place_names(), today), estimates=estimates,
                             note=self.store.note(user.chat_id, inv.id_sprawy), header=header,
-                            status_change=status_change, details=details)
+                            status_change=status_change, details=details, limit=limit)
         return text, self._keyboard(user, inv, details=details)
 
     def _archive_card(self, user: BotUser, inv: Investment) -> tuple[str, dict]:
