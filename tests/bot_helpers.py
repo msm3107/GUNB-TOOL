@@ -2,16 +2,60 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from gunb_tool.bot import LeadBot
 from gunb_tool.bot_store import BotStore
 from gunb_tool.config import BotConfig
-from gunb_tool.exporter import MessageFormatter
+from gunb_tool.exporter import TELEGRAM_LIMIT, MessageFormatter
 from gunb_tool.models import Investment
 from gunb_tool.telegram_api import TelegramApiError
 
 ADMIN, MIETEK, OBCY = 1001, 2002, 3003
+
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s[^<>]*)?)>")
+_TELEGRAM_TAGS = frozenset({"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "a", "code", "pre",
+                            "blockquote", "tg-spoiler", "span", "tg-emoji"})
+_ENTITY_RE = re.compile(r"&(?:lt|gt|amp|quot|#\d+|#x[0-9a-fA-F]+);")
+
+
+def telegram_rejects(text: str | None, markup: dict | None = None) -> str | None:
+    """Dlaczego Telegram odrzuciłby tę wiadomość (``None`` – przyjmie): pusta albo dłuższa niż 4096 znaków,
+    HTML spoza dozwolonych znaczników, niedomknięty albo z nieucieczkowanym ``<``/``>``/``&``, przycisk bez
+    tekstu albo z ``callback_data`` dłuższym niż 64 bajty."""
+    if text is not None:
+        if not text.strip():
+            return "message text is empty"
+        if len(text) > TELEGRAM_LIMIT:
+            return f"message is too long ({len(text)} > {TELEGRAM_LIMIT})"
+        stack: list[str] = []
+        for match in _TAG_RE.finditer(text):
+            closing, name = match.group(1), match.group(2).lower()
+            if name not in _TELEGRAM_TAGS:
+                return f"can't parse entities: unsupported start tag {name!r}"
+            if not closing:
+                stack.append(name)
+            elif not stack or stack.pop() != name:
+                return f"can't parse entities: unmatched end tag {name!r}"
+        if stack:
+            return f"can't parse entities: unclosed tag {stack[-1]!r}"
+        rest = _ENTITY_RE.sub("", _TAG_RE.sub("", text))
+        if "<" in rest or ">" in rest or "&" in rest:
+            return "can't parse entities: unescaped <, > or &"
+    for row in (markup or {}).get("inline_keyboard", []):
+        for button in row:
+            data = button.get("callback_data")
+            if not button.get("text"):
+                return "inline keyboard button text is empty"
+            if data is None and not button.get("url"):
+                return "inline keyboard button without callback_data or url"
+            if data is not None and not 1 <= len(data.encode("utf-8")) <= 64:
+                return f"BUTTON_DATA_INVALID: {data!r}"
+    for row in (markup or {}).get("keyboard", []):
+        if any(not button.get("text") for button in row):
+            return "keyboard button text is empty"
+    return None
 
 
 class Clock:
@@ -38,10 +82,19 @@ class FakeApi:
         self.sent, self.edits, self.answers, self.commands = [], [], [], []
         self.blocked: set[int] = set()
         self.failures: dict[int, list[tuple[BaseException, bool]]] = {}
+        self.rejected: list[str] = []
+        """Wiadomości, które prawdziwy Telegram by odrzucił (:func:`telegram_rejects`) – fikstura ``api`` pilnuje,
+        żeby lista była pusta, także gdy bot połknie błąd (np. ``_send_safely``)."""
         self._message_id = 500
 
     def fail(self, chat_id, *errors: BaseException, delivered: bool = False) -> None:
         self.failures.setdefault(chat_id, []).extend((error, delivered) for error in errors)
+
+    def _validate(self, method: str, text: str | None, markup) -> None:
+        problem = telegram_rejects(text, markup)
+        if problem is not None:
+            self.rejected.append(f"{method}: {problem} – {(text or '')[:80]!r}")
+            raise TelegramApiError(method, 400, f"Bad Request: {problem}")
 
     def send_message(self, chat_id, text, reply_markup=None):
         if chat_id in self.blocked:
@@ -49,6 +102,7 @@ class FakeApi:
         failure = self.failures[chat_id].pop(0) if self.failures.get(chat_id) else None
         if failure is not None and not failure[1]:
             raise failure[0]
+        self._validate("sendMessage", text, reply_markup)
         self._message_id += 1
         self.sent.append({"chat_id": chat_id, "text": text, "markup": reply_markup, "message_id": self._message_id})
         if failure is not None:
@@ -56,9 +110,11 @@ class FakeApi:
         return {"message_id": self._message_id}
 
     def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        self._validate("editMessageText", text, reply_markup)
         self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text, "markup": reply_markup})
 
     def edit_message_reply_markup(self, chat_id, message_id, reply_markup):
+        self._validate("editMessageReplyMarkup", None, reply_markup)
         self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": None, "markup": reply_markup})
 
     def answer_callback_query(self, callback_query_id, text=None):
