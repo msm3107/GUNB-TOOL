@@ -9,10 +9,12 @@ from __future__ import annotations
 import json
 import math
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence, TypeGuard
 
+from .config import OfferConfig
 from .models import Investment
 from .storage import LeadRepository, investment_from_row
 from .text import normalize_text
@@ -23,12 +25,28 @@ SETUP_DONE = "gotowe"
 LEAD_STATES: tuple[str, ...] = ("zapisany", "przejrzany", "ukryty")
 _STATE_FLAG = {"zapisany": "saved", "przejrzany": "reviewed", "ukryty": "hidden"}
 WATCH_KINDS: tuple[str, ...] = ("inwestor", "gmina")
+OUTCOMES: tuple[str, ...] = ("do_sprawdzenia", "sprawdzona", "rozmowa", "oferta", "niepasujaca")
+"""Wynik pracy z inwestycją (jeden na osobę i inwestycję) – nie CRM, tylko prosty ślad, co się stało."""
+NOT_MATCHING_REASONS: tuple[str, ...] = ("obszar", "rodzaj", "moment", "brak_dzialania", "bledne_dane")
+POSITIVE_OUTCOMES: frozenset[str] = frozenset({"rozmowa", "oferta"})
+ORDER_STATES: tuple[str, ...] = ("zgloszone", "oplacone", "anulowane")
+
+
+def location_mismatch(inv: Investment) -> bool:
+    """Działka znaleziona w ULDK leży w innej gminie niż kod gminy z rejestru – lokalizacja niepewna.
+
+    Nie wiadomo, które źródło się myli (literówka w numerze działki albo w kodzie), więc niczego nie poprawiamy:
+    karta mówi „lokalizacja niepewna”, a odległość od bazy nie jest liczona.
+    """
+    unit = (inv.teryt_dzialki or "")[:6]
+    return bool(inv.gmina_teryt) and len(unit) == 6 and unit.isdigit() and (inv.gmina_teryt or "")[:6] != unit
 
 
 def mentions_place(place: str, name: str) -> bool:
     """Czy znormalizowany opis miejsca zawiera nazwę całymi słowami („Olsztyn” to nie „Olsztynek” ani „olsztyński”)."""
     wanted = normalize_text(name)
     return bool(wanted) and re.search(rf"(?<!\w){re.escape(wanted)}(?!\w)", place) is not None
+
 
 @dataclass(frozen=True)
 class LeadFlags:
@@ -87,8 +105,9 @@ class UserFilters:
         return self.baza is not None and bool(self.promien_km)
 
     def distance_km(self, inv: Investment) -> float | None:
-        """Odległość budowy od bazy w km (w linii prostej); ``None`` bez bazy lub współrzędnych."""
-        if self.baza is None or inv.lat is None or inv.lon is None:
+        """Odległość budowy od bazy w km (w linii prostej); ``None`` bez bazy, współrzędnych albo przy lokalizacji
+        niepewnej (:func:`location_mismatch`) – lepiej bez odległości niż z odległością do złego miejsca."""
+        if self.baza is None or inv.lat is None or inv.lon is None or location_mismatch(inv):
             return None
         return haversine_km(self.baza, (inv.lat, inv.lon))
 
@@ -190,6 +209,14 @@ class BotUser:
     test_koniec: str | None = None
     konfiguracja: str | None = None
     wstrzymane: bool = False
+    zrodlo: str | None = None
+    firma: str | None = None
+    prosba_o_test: str | None = None
+    porady: tuple[str, ...] = ()
+    tips_enabled: bool = True
+    podpowiedz_test: str | None = None
+    test_przedluzono: str | None = None
+    test_przedluzenie_powod: str | None = None
 
     @property
     def setup_done(self) -> bool:
@@ -219,6 +246,66 @@ class BotUser:
     def on_trial(self) -> bool:
         """Obecne (albo ostatnie) okno dostępu to darmowy test."""
         return self.rodzaj_dostepu == "test"
+
+    @property
+    def ever_had_access(self) -> bool:
+        """Czy kiedykolwiek miał dostęp (test, ręczny, opłacony albo sprzed abonamentów) – stąd jego zapisana praca."""
+        return self.bez_limitu or self.subscription_ends is not None or self.test_start is not None
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """Wynik pracy z inwestycją (:data:`OUTCOMES`), powód „niepasującej” i ocena 👍 (1) / 👎 (-1)."""
+
+    wynik: str | None = None
+    powod: str | None = None
+    ocena: int | None = None
+
+    @property
+    def positive(self) -> bool:
+        return self.ocena == 1 or self.wynik in POSITIVE_OUTCOMES
+
+
+@dataclass(frozen=True)
+class Order:
+    """Zamówienie dostępu z migawką oferty z chwili zamówienia (cena się nie zmienia po fakcie).
+
+    Stany: ``zgloszone`` → ``oplacone`` (admin potwierdził otrzymaną płatność) albo ``anulowane``.
+    To nie jest faktura ani dowód płatności – tylko ślad, kto co zamówił i kiedy admin potwierdził wpłatę.
+    """
+
+    id: int
+    chat_id: int
+    stan: str
+    oferta: str
+    cena: str
+    waluta: str
+    podatek: str
+    do_zaplaty: str
+    opis_ceny: str
+    dni: int
+    utworzono: str
+    zmieniono: str
+    oplacono: str | None
+    potwierdzil: int | None
+    uwagi: str | None
+    dostep_do: str | None
+
+    @property
+    def number(self) -> str:
+        """Numer dla ludzi, np. „Z-7”."""
+        return f"Z-{self.id}"
+
+
+@dataclass(frozen=True)
+class Event:
+    """Zdarzenie pilotażu (``zdarzenia``): kto, co, której inwestycji, kiedy (UTC) i krótki szczegół."""
+
+    chat_id: int
+    rodzaj: str
+    id_sprawy: str | None
+    kiedy: str
+    szczegoly: str | None
 
 
 @dataclass(frozen=True)
@@ -301,21 +388,76 @@ class BotStore:
         return _user(row) if row else None
 
     def register(self, chat_id: int, imie: str | None, username: str | None, *, status: str,
-                 backlog_days: int) -> BotUser:
-        """Rejestruje użytkownika przy pierwszym ``/start``; istniejącemu nie zmienia ustawień.
+                 backlog_days: int, zrodlo: str | None = None) -> BotUser:
+        """Rejestruje użytkownika przy pierwszym ``/start``; istniejącemu nie zmienia ustawień ani źródła.
 
-        ``backlog_days`` – ile dni wstecz leady są dla nowego użytkownika „nowe” (pierwszy raport).
+        ``backlog_days`` – ile dni wstecz leady są dla nowego użytkownika „nowe” (pierwszy raport);
+        ``zrodlo`` – sprawdzony parametr startowy (np. ``strona``), zapisywany tylko przy pierwszym wejściu.
         """
         existing = self.get_user(chat_id)
         if existing is not None:
             return existing
         now = self.repo.now()
         self._conn.execute(
-            "INSERT INTO bot_users (chat_id, imie, username, status, nowe_od, utworzono, zmieniono)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, imie, username, status, _iso(now - timedelta(days=backlog_days)), _iso(now), _iso(now)),
+            "INSERT INTO bot_users (chat_id, imie, username, status, nowe_od, utworzono, zmieniono, zrodlo)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, imie, username, status, _iso(now - timedelta(days=backlog_days)), _iso(now), _iso(now), zrodlo),
         )
         return self.get_user(chat_id)  # type: ignore[return-value]
+
+    def set_company(self, chat_id: int, firma: str | None) -> None:
+        """Firma osoby (ustawia admin) – raport liczy wtedy firmy, nie tylko konta."""
+        self._update(chat_id, firma=firma)
+
+    def request_trial(self, chat_id: int) -> bool:
+        """Osoba prosi o test; ``False`` – prosiła już wcześniej (admin dostaje jedno zgłoszenie)."""
+        cursor = self._conn.execute(
+            "UPDATE bot_users SET prosba_o_test = ?, zmieniono = ? WHERE chat_id = ? AND prosba_o_test IS NULL",
+            (_iso(self.repo.now()), _iso(self.repo.now()), chat_id),
+        )
+        return cursor.rowcount == 1
+
+    def mark_tip(self, chat_id: int, key: str) -> None:
+        """Podpowiedź ``key`` została pokazana – drugi raz już nie przyjdzie."""
+        user = self.get_user(chat_id)
+        if user is not None and key not in user.porady:
+            self._update(chat_id, porady=",".join((*user.porady, key)))
+
+    def set_tips_enabled(self, chat_id: int, value: bool) -> None:
+        """Podpowiedzi i podsumowania testu (wiadomości usługowe ponad raporty) – włączone domyślnie."""
+        self._update(chat_id, podpowiedzi=int(value))
+
+    def trial_nudge_candidates(self, started_before: datetime, now: datetime) -> list[BotUser]:
+        """Osoby w trwającym teście (start przed ``started_before``) bez zaplanowanej podpowiedzi do tego testu,
+        z włączonymi podpowiedziami i bez pauzy."""
+        rows = self._conn.execute(
+            "SELECT * FROM bot_users WHERE status = 'aktywny' AND rodzaj_dostepu = 'test' AND is_active = 1"
+            " AND subscription_ends > ? AND test_start IS NOT NULL AND test_start <= ?"
+            " AND podpowiedz_test IS NOT test_start AND podpowiedzi = 1 AND wstrzymane = 0 ORDER BY chat_id",
+            (_iso(now), _iso(started_before)),
+        ).fetchall()
+        return [_user(row) for row in rows]
+
+    def mark_trial_nudged(self, chat_id: int, test_start: str) -> None:
+        """Podpowiedź po starcie testu bez efektów zaplanowana – raz na dany test."""
+        self._conn.execute("UPDATE bot_users SET podpowiedz_test = ? WHERE chat_id = ?", (test_start, chat_id))
+
+    def extend_trial(self, chat_id: int, new_end: datetime, reason: str) -> bool:
+        """Jednorazowe przedłużenie testu przez admina (z powodem); ``False`` – brak testu albo już przedłużany.
+
+        Dotyczy tylko okna testowego (trwającego albo zakończonego), nigdy płatnego – i nie resetuje testu.
+        """
+        now = _iso(self.repo.now())
+        cursor = self._conn.execute(
+            "UPDATE bot_users SET subscription_ends = ?, test_koniec = ?, is_active = 1, test_przedluzono = ?,"
+            " test_przedluzenie_powod = ?, zmieniono = ? WHERE chat_id = ? AND rodzaj_dostepu = 'test'"
+            " AND test_start IS NOT NULL AND test_przedluzono IS NULL",
+            (_iso(new_end), _iso(new_end), now, reason[:200], now, chat_id),
+        )
+        return cursor.rowcount == 1
+
+    def all_users(self) -> list[BotUser]:
+        return [_user(row) for row in self._conn.execute("SELECT * FROM bot_users ORDER BY chat_id").fetchall()]
 
     def users(self, status: str = "aktywny", tryb: str | None = None) -> list[BotUser]:
         sql, params = "SELECT * FROM bot_users WHERE status = ?", [status]
@@ -429,6 +571,34 @@ class BotStore:
         """Czy w bazie są już jakiekolwiek dane (świeża instalacja przed pierwszym importem – nie)."""
         return self._conn.execute("SELECT 1 FROM investments WHERE is_noise = 0 LIMIT 1").fetchone() is not None
 
+    def data_range(self) -> tuple[str, str] | None:
+        """Najstarsza i najnowsza data zdarzenia (decyzja, a bez niej wpływ) w danych bota; ``None`` – pusto."""
+        row = self._conn.execute(
+            "SELECT min(coalesce(data_decyzji, data_wplywu, data_aktualizacji)) AS od,"
+            " max(coalesce(data_decyzji, data_wplywu, data_aktualizacji)) AS do FROM investments WHERE is_noise = 0"
+        ).fetchone()
+        return (row["od"], row["do"]) if row and row["od"] else None
+
+    def recent_count(self, date_from: str) -> int:
+        """Ile inwestycji (bez szumu) z całego monitorowanego obszaru ma datę zdarzenia od ``date_from``."""
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM investments WHERE is_noise = 0 AND data_aktualizacji >= ?", (date_from,)
+        ).fetchone()[0]
+
+    def decided_since(self, chat_id: int, since: str) -> list[Investment]:
+        """Inwestycje (bez szumu i ukrytych) z decyzją albo wpływem od ``since`` – także już widziane."""
+        rows = self._conn.execute(
+            """
+            SELECT i.* FROM investments i
+            WHERE i.is_noise = 0 AND coalesce(i.data_decyzji, i.data_wplywu) >= ?
+              AND NOT EXISTS (SELECT 1 FROM user_leads u
+                              WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)
+            ORDER BY coalesce(i.data_decyzji, i.data_wplywu) DESC, i.nr DESC
+            """,
+            (since, chat_id),
+        )
+        return [investment_from_row(row) for row in rows]
+
     def place_is_known(self, name: str) -> bool:
         """Czy w danych (monitorowany obszar) jest inwestycja z tej miejscowości lub gminy."""
         if not normalize_text(name):
@@ -437,6 +607,39 @@ class BotStore:
             "SELECT DISTINCT gmina, miejscowosc, adres_opisowy, powiat FROM investments WHERE is_noise = 0"
         ).fetchall()
         return any(mentions_place(normalize_text(" ".join(value for value in row if value)), name) for row in rows)
+
+    def data_overview(self, powiat_codes: Sequence[str]) -> dict[str, object]:
+        """Diagnostyka danych dla admina: liczby, nazwy obszarów przy kodach (niespójne – do wglądu, bez
+        poprawiania), sprawy spoza ustawionych powiatów, dokładność lokalizacji i braki pól."""
+        q = self._conn.execute
+        powiaty: dict[str, dict[str, int]] = {}
+        for row in q("SELECT powiat_teryt AS kod, powiat AS nazwa, COUNT(*) AS n FROM investments WHERE is_noise = 0"
+                     " AND powiat_teryt IS NOT NULL GROUP BY powiat_teryt, powiat ORDER BY powiat_teryt"):
+            powiaty.setdefault(row["kod"], {})[row["nazwa"] or "—"] = row["n"]
+        gminy: dict[str, set[str]] = {}
+        for row in q("SELECT DISTINCT gmina_teryt AS kod, gmina FROM investments WHERE is_noise = 0"
+                     " AND gmina_teryt IS NOT NULL AND gmina IS NOT NULL"):
+            gminy.setdefault(row["kod"], set()).add(row["gmina"])
+        marks = ",".join("?" for _ in powiat_codes)
+        outside = q(f"SELECT COUNT(*) FROM investments WHERE is_noise = 0 AND powiat_teryt NOT IN ({marks})",
+                    list(powiat_codes)).fetchone()[0] if powiat_codes else 0
+        row = q("SELECT COUNT(*) AS n, sum(precyzja_geo = 'dzialka') AS dzialka, sum(precyzja_geo = 'obreb') AS obreb,"
+                " sum(lat IS NULL) AS brak, sum(powiat_teryt IS NULL) AS bez_kodu,"
+                " sum(coalesce(gmina, '') = '') AS bez_gminy,"
+                " sum(coalesce(miejscowosc, '') = '' AND coalesce(adres_opisowy, '') = '') AS bez_miejsca,"
+                " sum(teryt_dzialki IS NOT NULL AND gmina_teryt IS NOT NULL"
+                " AND substr(teryt_dzialki, 1, 6) != substr(gmina_teryt, 1, 6)) AS niepewne,"
+                " min(coalesce(data_decyzji, data_wplywu)) AS najstarsza FROM investments WHERE is_noise = 0").fetchone()
+        return {
+            "wszystkie": q("SELECT COUNT(*) FROM investments").fetchone()[0], "inwestycje": row["n"],
+            "zakres": self.data_range(), "powiaty": powiaty,
+            "gminy_rozne": {kod: sorted(names) for kod, names in sorted(gminy.items()) if len(names) > 1},
+            "spoza": outside, "bez_kodu": row["bez_kodu"] or 0,
+            "dzialka": row["dzialka"] or 0, "obreb": row["obreb"] or 0, "brak_lokalizacji": row["brak"] or 0,
+            "bez_gminy": row["bez_gminy"] or 0, "bez_miejsca": row["bez_miejsca"] or 0,
+            "niepewne": row["niepewne"] or 0,
+            "najstarsza_decyzja": row["najstarsza"],
+        }
 
     def nearest_investment_km(self, point: tuple[float, float]) -> float | None:
         """Odległość (w linii prostej) od punktu do najbliższej inwestycji w danych; ``None`` – brak danych."""
@@ -571,13 +774,189 @@ class BotStore:
     def delete_note(self, chat_id: int, id_sprawy: str) -> None:
         self._conn.execute("DELETE FROM notatki WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy))
 
+    # Wynik pracy (📋) i ocena 👍/👎 – jeden wiersz na osobę i inwestycję ------------------------------
+
+    def outcome(self, chat_id: int, id_sprawy: str) -> Outcome:
+        row = self._conn.execute(
+            "SELECT wynik, powod, ocena FROM wyniki WHERE chat_id = ? AND id_sprawy = ?", (chat_id, id_sprawy)
+        ).fetchone()
+        return Outcome(row["wynik"], row["powod"], row["ocena"]) if row else Outcome()
+
+    _KEEP = object()
+
+    def set_outcome(self, chat_id: int, id_sprawy: str, *, wynik: object = _KEEP, powod: object = _KEEP,
+                    ocena: object = _KEEP) -> bool:
+        """Ustawia wynik (``None`` – wyczyść), powód „niepasującej” albo ocenę; ``True`` – coś się zmieniło.
+
+        Ponowione kliknięcie tego samego niczego nie zmienia (ani nie dopisuje zdarzeń – robi to wywołujący
+        tylko przy zmianie). Powód zostaje wyłącznie przy wyniku ``niepasujaca``.
+        """
+        current = self.outcome(chat_id, id_sprawy)
+        new_wynik = current.wynik if wynik is self._KEEP else wynik
+        new_powod = current.powod if powod is self._KEEP else powod
+        new_ocena = current.ocena if ocena is self._KEEP else ocena
+        if new_wynik is not None and new_wynik not in OUTCOMES:
+            raise ValueError(f"Nieznany wynik: {new_wynik!r}")
+        if new_powod is not None and new_powod not in NOT_MATCHING_REASONS:
+            raise ValueError(f"Nieznany powód: {new_powod!r}")
+        if new_ocena not in (None, 1, -1):
+            raise ValueError(f"Ocena to 1 albo -1: {new_ocena!r}")
+        if new_wynik != "niepasujaca":
+            new_powod = None
+        updated = Outcome(new_wynik, new_powod, new_ocena)  # type: ignore[arg-type]
+        if updated == current:
+            return False
+        self._conn.execute(
+            "INSERT INTO wyniki (chat_id, id_sprawy, wynik, powod, ocena, zmieniono) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (chat_id, id_sprawy) DO UPDATE SET wynik = excluded.wynik, powod = excluded.powod,"
+            " ocena = excluded.ocena, zmieniono = excluded.zmieniono",
+            (chat_id, id_sprawy, updated.wynik, updated.powod, updated.ocena, _iso(self.repo.now())),
+        )
+        return True
+
+    def outcome_counts(self, since: datetime) -> dict[str, int]:
+        """Stan ocen i wyników zmienionych od ``since``: pary osoba–inwestycja (powtórne kliknięcia się nie liczą)."""
+        counts: dict[str, int] = {}
+        for row in self._conn.execute(
+            "SELECT wynik, powod, ocena FROM wyniki WHERE zmieniono >= ?", (_iso(since),)
+        ):
+            if row["ocena"] is not None:
+                key = "ocena_plus" if row["ocena"] == 1 else "ocena_minus"
+                counts[key] = counts.get(key, 0) + 1
+            if row["wynik"]:
+                counts[row["wynik"]] = counts.get(row["wynik"], 0) + 1
+            if row["powod"]:
+                counts[f"powod:{row['powod']}"] = counts.get(f"powod:{row['powod']}", 0) + 1
+        return counts
+
+    def owns_work(self, chat_id: int, id_sprawy: str) -> bool:
+        """Czy osoba ma przy tej inwestycji własną pracę (zapis, notatkę, wynik, przypomnienie) – tylko te
+        inwestycje są widoczne po końcu dostępu, więc stare przyciski nie otwierają nowych danych."""
+        row = self._conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM user_leads WHERE chat_id = :c AND id_sprawy = :i AND zapisany = 1)"
+            " OR EXISTS (SELECT 1 FROM notatki WHERE chat_id = :c AND id_sprawy = :i)"
+            " OR EXISTS (SELECT 1 FROM wyniki WHERE chat_id = :c AND id_sprawy = :i)"
+            " OR EXISTS (SELECT 1 FROM przypomnienia WHERE chat_id = :c AND id_sprawy = :i)",
+            {"c": chat_id, "i": id_sprawy},
+        ).fetchone()
+        return bool(row[0])
+
+    def work_summary(self, chat_id: int, since: str) -> dict[str, int]:
+        """Rzeczywiste działania osoby od ``since`` (UTC ISO) – do podsumowania testu; same liczby z bazy."""
+        def one(sql: str, *params: object) -> int:
+            return self._conn.execute(sql, (chat_id, *params)).fetchone()[0]
+
+        return {
+            "dostarczone": one("SELECT COUNT(DISTINCT id_sprawy) FROM deliveries WHERE chat_id = ? AND doreczono >= ?"
+                               " AND rodzaj IN ('raport', 'natychmiast', 'watchlista', 'etap')", since),
+            "otwarte": one("SELECT COUNT(DISTINCT id_sprawy) FROM zdarzenia WHERE chat_id = ? AND rodzaj = 'szczegoly'"
+                           " AND kiedy >= ?", since),
+            "zapisane": one("SELECT COUNT(*) FROM user_leads WHERE chat_id = ? AND zapisany = 1 AND ukryty = 0"),
+            "notatki": one("SELECT COUNT(*) FROM notatki WHERE chat_id = ?"),
+            "przypomnienia": one("SELECT COUNT(*) FROM przypomnienia WHERE chat_id = ?"),
+            "wyniki": one("SELECT COUNT(*) FROM wyniki WHERE chat_id = ? AND wynik IS NOT NULL"),
+        }
+
+    # Zamówienia (ręczne potwierdzenie płatności) ----------------------------------------------------------
+
+    def create_order(self, chat_id: int, offer: OfferConfig) -> tuple[Order, bool]:
+        """Zamówienie z migawką kompletnej oferty; ``(zamówienie, False)`` – osoba ma już otwarte (to samo)."""
+        existing = self.open_order(chat_id)
+        if existing is not None:
+            return existing, False
+        if not offer.complete:
+            raise ValueError("Oferta jest niepełna – nie przyjmujemy zamówień")
+        now = _iso(self.repo.now())
+        try:
+            cursor = self._conn.execute(
+                "INSERT INTO zamowienia (chat_id, oferta, cena, waluta, podatek, do_zaplaty, opis_ceny, dni,"
+                " utworzono, zmieniono) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (chat_id, offer.name, str(offer.price), offer.currency, offer.tax, str(offer.amount_due),
+                 offer.price_line(), offer.period_days, now, now),
+            )
+        except sqlite3.IntegrityError:  # drugie kliknięcie z innego procesu w tej samej chwili
+            return self.open_order(chat_id), False  # type: ignore[return-value]
+        return self.get_order(cursor.lastrowid), True  # type: ignore[return-value]
+
+    def get_order(self, order_id: int) -> Order | None:
+        row = self._conn.execute("SELECT * FROM zamowienia WHERE id = ?", (order_id,)).fetchone()
+        return Order(**dict(row)) if row else None
+
+    def open_order(self, chat_id: int) -> Order | None:
+        row = self._conn.execute(
+            "SELECT * FROM zamowienia WHERE chat_id = ? AND stan = 'zgloszone'", (chat_id,)
+        ).fetchone()
+        return Order(**dict(row)) if row else None
+
+    def orders(self, *, stan: str | None = None, chat_id: int | None = None, limit: int = 20) -> list[Order]:
+        sql, params = "SELECT * FROM zamowienia WHERE 1 = 1", []
+        if stan is not None:
+            sql += " AND stan = ?"
+            params.append(stan)
+        if chat_id is not None:
+            sql += " AND chat_id = ?"
+            params.append(chat_id)
+        rows = self._conn.execute(sql + " ORDER BY id DESC LIMIT ?", [*params, limit]).fetchall()
+        return [Order(**dict(row)) for row in rows]
+
+    def confirm_order(self, order_id: int, *, admin: int, note: str | None = None) -> Order | None:
+        """Admin potwierdza otrzymaną płatność – dokładnie raz; ``None`` – już opłacone, anulowane albo brak."""
+        now = _iso(self.repo.now())
+        cursor = self._conn.execute(
+            "UPDATE zamowienia SET stan = 'oplacone', oplacono = ?, potwierdzil = ?, uwagi = ?, zmieniono = ?"
+            " WHERE id = ? AND stan = 'zgloszone'", (now, admin, (note or "")[:200] or None, now, order_id),
+        )
+        return self.get_order(order_id) if cursor.rowcount == 1 else None
+
+    def set_order_access(self, order_id: int, ends_iso: str) -> None:
+        """Do kiedy dostęp po tej płatności (dla historii zamówień)."""
+        self._conn.execute("UPDATE zamowienia SET dostep_do = ? WHERE id = ?", (ends_iso, order_id))
+
+    def cancel_order(self, order_id: int) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE zamowienia SET stan = 'anulowane', zmieniono = ? WHERE id = ? AND stan = 'zgloszone'",
+            (_iso(self.repo.now()), order_id),
+        )
+        return cursor.rowcount == 1
+
+    def last_paid_order(self, chat_id: int) -> Order | None:
+        row = self._conn.execute(
+            "SELECT * FROM zamowienia WHERE chat_id = ? AND stan = 'oplacone' ORDER BY oplacono DESC, id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        return Order(**dict(row)) if row else None
+
     # Zdarzenia pilotażu (tylko te, których nie ma w ``deliveries``) --------------------------------
 
-    def record_event(self, chat_id: int, rodzaj: str, id_sprawy: str | None = None) -> None:
+    def record_event(self, chat_id: int, rodzaj: str, id_sprawy: str | None = None,
+                     szczegoly: str | None = None) -> None:
+        """Zdarzenie do pomiaru pilotażu; ``szczegoly`` – krótki kod (np. źródło, powód), nigdy dane osobowe."""
         self._conn.execute(
-            "INSERT INTO zdarzenia (chat_id, rodzaj, id_sprawy, kiedy) VALUES (?, ?, ?, ?)",
-            (chat_id, rodzaj, id_sprawy, _iso(self.repo.now())),
+            "INSERT INTO zdarzenia (chat_id, rodzaj, id_sprawy, kiedy, szczegoly) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, rodzaj, id_sprawy, _iso(self.repo.now()), (szczegoly or "")[:40] or None),
         )
+
+    def has_event(self, chat_id: int, rodzaj: str, *, since: str = "") -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM zdarzenia WHERE chat_id = ? AND rodzaj = ? AND kiedy >= ? LIMIT 1", (chat_id, rodzaj, since)
+        ).fetchone() is not None
+
+    def events(self, since: datetime | None = None, *, kinds: Sequence[str] = (),
+               chat_id: int | None = None) -> list[Event]:
+        """Surowe zdarzenia (najstarsze pierwsze) – z nich liczy się lejek i aktywacja (definicja może się zmienić)."""
+        sql, params = "SELECT chat_id, rodzaj, id_sprawy, kiedy, szczegoly FROM zdarzenia WHERE kiedy >= ?", \
+            [_iso(since) if since else ""]
+        if chat_id is not None:
+            sql += " AND chat_id = ?"
+            params.append(chat_id)
+        if kinds:
+            sql += f" AND rodzaj IN ({','.join('?' for _ in kinds)})"
+            params += list(kinds)
+        return [Event(**dict(row)) for row in self._conn.execute(sql + " ORDER BY kiedy, id", params)]
+
+    def prune_events(self, before: datetime) -> int:
+        """Retencja: zdarzenia starsze niż ``before`` są usuwane (dane pomiaru nie leżą bez końca)."""
+        return self._conn.execute("DELETE FROM zdarzenia WHERE kiedy < ?", (_iso(before),)).rowcount
 
     def event_counts(self, since: datetime) -> dict[str, tuple[int, int]]:
         """``{rodzaj: (unikalne osoby, unikalne inwestycje)}`` od ``since``."""
@@ -807,13 +1186,17 @@ class BotStore:
         Bez listy powiatów w konfiguracji (monitorowane całe województwo) proponuje ``limit``
         powiatów z największą liczbą leadów.
         """
-        rows = self._conn.execute(
-            "SELECT powiat_teryt, max(powiat) AS nazwa, COUNT(*) AS n FROM investments"
-            " WHERE powiat_teryt IS NOT NULL GROUP BY powiat_teryt ORDER BY n DESC"
-        ).fetchall()
-        names = {row["powiat_teryt"]: row["nazwa"] for row in rows}
-        codes = list(powiat_codes) or [row["powiat_teryt"] for row in rows][:limit]
-        return [(code, _powiat_label(names.get(code), code)) for code in codes]
+        names: dict[str, tuple[int, str]] = {}  # kod → (liczba spraw z tą nazwą, nazwa) – wygrywa najczęstsza
+        totals: dict[str, int] = {}
+        for row in self._conn.execute(
+            "SELECT powiat_teryt AS kod, powiat AS nazwa, COUNT(*) AS n FROM investments"
+            " WHERE powiat_teryt IS NOT NULL AND powiat IS NOT NULL GROUP BY powiat_teryt, powiat"
+        ):
+            totals[row["kod"]] = totals.get(row["kod"], 0) + row["n"]
+            if (row["n"], row["nazwa"]) > names.get(row["kod"], (0, "")):
+                names[row["kod"]] = (row["n"], row["nazwa"])
+        codes = list(powiat_codes) or sorted(totals, key=lambda code: (-totals[code], code))[:limit]
+        return [(code, _powiat_label(names.get(code, (0, None))[1], code)) for code in codes]
 
     # Wewnętrzne ----------------------------------------------------------------------------------
 
@@ -845,6 +1228,14 @@ def _user(row) -> BotUser:
         test_koniec=row["test_koniec"],
         konfiguracja=row["konfiguracja"],
         wstrzymane=bool(row["wstrzymane"]),
+        zrodlo=row["zrodlo"],
+        firma=row["firma"],
+        prosba_o_test=row["prosba_o_test"],
+        porady=tuple(key for key in (row["porady"] or "").split(",") if key),
+        tips_enabled=bool(row["podpowiedzi"]),
+        podpowiedz_test=row["podpowiedz_test"],
+        test_przedluzono=row["test_przedluzono"],
+        test_przedluzenie_powod=row["test_przedluzenie_powod"],
     )
 
 

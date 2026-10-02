@@ -135,9 +135,11 @@ def test_after_expiry_saved_items_and_settings_stay_but_old_buttons_show_nothing
     api.sent.clear()
     api.edits.clear()
 
-    for data in (f"o:{nr}", "hp:1", "f:go", f"s0:{nr}"):
+    for data in ("hp:1", "f:go", f"s0:{nr}"):
         bot.handle_update(click(MIETEK, data))
         assert "⛔" in api.answers[-1]
+    bot.handle_update(click(MIETEK, f"o:{nr}"))  # zapisana – do wglądu w trybie archiwum, bez akcji
+    assert api.last_to(MIETEK)["text"].startswith("🗄️ <b>Twoja zapisana praca</b>")
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
 
     assert api.edits == [] and all("📊 <b>Raport" not in m["text"] for m in api.to(MIETEK))
@@ -151,8 +153,9 @@ def test_account_and_help_work_after_expiry(bot, api, repo, clock):
     clock.advance(days=8)
 
     bot.handle_update(message(MIETEK, "/konto"))
-    account = api.last_to(MIETEK)["text"]
-    assert "skończył się" in account and TRIAL_END in account and "@admin_gunb" in account
+    account = api.last_to(MIETEK)
+    assert "skończył się" in account["text"] and TRIAL_END in account["text"]
+    assert ("💬 Zapytaj o ofertę", "zm:q") in buttons(account["markup"])  # jak wrócić – bez szukania kontaktu
 
     bot.handle_update(message(MIETEK, "/pomoc"))
     assert "Jak to działa" in api.last_to(MIETEK)["text"]
@@ -202,7 +205,7 @@ def test_no_expiry_messages_at_night(bot, api, repo, clock):
     assert api.to(MIETEK) == []
     clock.utc = datetime(2026, 10, 2, 5, 0, tzinfo=timezone.utc)  # 07:00
     bot.run_due_jobs()
-    assert [m["text"][:30] for m in api.to(MIETEK)] == ["⛔ Twój abonament wygasł 01.10."]
+    assert [m["text"][:27] for m in api.to(MIETEK)] == ["⛔ Twój dostęp wygasł 01.10."]
 
 
 # --- Admin: termin, przedłużenie, odebranie ---------------------------------------------------------------
@@ -359,5 +362,5 @@ def test_access_end_notice_waits_for_the_morning_instead_of_being_lost(bot, api,
         bot.run_due_jobs()
         clock.advance(minutes=20)
 
-    notices = [m for m in api.to(MIETEK) if m["text"].startswith("⛔ Twój abonament wygasł")]
+    notices = [m for m in api.to(MIETEK) if m["text"].startswith("⛔ Twój dostęp wygasł")]
     assert len(notices) == 1

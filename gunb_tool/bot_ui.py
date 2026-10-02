@@ -6,16 +6,22 @@ i zmieniać bez dotykania logiki bota.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Callable, Sequence
 
-from .bot_store import BotUser, JobStatus, LeadFlags, Send, UserFilters, WatchItem
+from .bot_store import (BotUser, Event, JobStatus, LeadFlags, Order, Outcome, Send, UserFilters, WatchItem,
+                        location_mismatch)
 from .clock import local
-from .config import BotConfig
-from .exporter import CATEGORY_ICONS, escape_html
-from .models import Investment
-from .scoring import HOT
+from .config import BotConfig, OfferConfig, format_money
+from .demo import DEMO_LABEL
+from .funnel import OBSERVATION, Cohort
+from .exporter import CATEGORY_ICONS, TELEGRAM_LIMIT, escape_html
+from .models import BUILDING_CATEGORIES, Investment, Status
+from .scoring import score_investment
 from .stages import TRADES, Trade, get_trade
+from .text import normalize_text
 
 Markup = dict[str, Any]
 Distance = Callable[[Investment], float | None]
@@ -93,7 +99,8 @@ def welcome_text(name: str | None) -> str:
 
 def help_text(settings: BotConfig, *, admin: bool = False) -> str:
     admin_part = ("\n\n👑 <b>Admin</b>: /aktywuj &lt;chat_id&gt; &lt;dni|data&gt; · /przedluz · /odbierz · "
-                  "/trial &lt;chat_id&gt; · /nowymodel · /uzytkownicy · /status" if admin else "")
+                  "/trial &lt;chat_id&gt; · /przedluztest · /nowymodel · /uzytkownicy · /zamowienia · /zaplacone · "
+                  "/anuluj · /napisz · /firma · /status · /raport · /dane" if admin else "")
     return _help_body(settings) + admin_part
 
 
@@ -107,26 +114,227 @@ def _help_body(settings: BotConfig) -> str:
         "⚙️ <b>Ustawienia</b> – obszar i rodzaj budynków, branża, obserwowani inwestorzy i gminy, "
         f"godziny raportów (rano {settings.morning_time}, wieczorem {settings.evening_time} albo od razu), konto\n\n"
         "<b>Co oznaczają oznaczenia</b>\n"
-        "🔥 HOT / 🟡 NORMAL / ⚪ LOW – szacunek skali inwestycji według prostych reguł (kubatura, rodzaj "
-        "budynku, liczba budynków); nie mówi, czy zdobędziesz zlecenie.\n"
+        "🏗️ Skala: duża / średnia / mała – szacunek skali inwestycji według prostych reguł (kubatura, rodzaj "
+        "budynku, liczba budynków); nie mówi, czy zdobędziesz zlecenie, i nie wpływa na kolejność listy.\n"
         "📏 Odległość od Twojej bazy liczę w linii prostej – droga bywa dłuższa.\n"
         "🧰 Przypomnienia o etapie budowy to szacunek na podstawie daty decyzji – rzeczywisty etap wymaga "
         "sprawdzenia na miejscu.\n"
         "🗺️ „Lokalizacja przybliżona” – rejestr nie podał dokładnej działki, pokazuję środek obrębu.\n"
-        "💼 Inwestorów prywatnych rejestr nie ujawnia; bot nie ma ich danych kontaktowych."
+        "💼 Gdy rejestr nie podaje inwestora, bot nie zgaduje, kto to jest; nazwy z rejestru nie są "
+        "weryfikowane. Bot nie ma danych kontaktowych inwestorów.\n\n"
+        "<b>Ograniczenia danych</b>\n"
+        "W rejestrze są tylko sprawy zakończone pozytywnie, a urzędy wpisują je z opóźnieniem (nawet kilka "
+        "tygodni). To lista budów do sprawdzenia – nie zamówienia i nie gwarancja zlecenia."
     )
 
 
-def rejected_text() -> str:
-    return "⛔ Administrator nie przyznał dostępu do bota."
+def about_text(area: str) -> str:
+    """„❓ Jak to działa” przed testem – co to jest, skąd dane, czego się nie dowiesz."""
+    return (
+        "❓ <b>Jak działa Żółta Tablica</b>\n\n"
+        "📥 <b>Skąd dane:</b> publiczny rejestr GUNB – pozwolenia na budowę i zgłoszenia budowy. GUNB "
+        "aktualizuje go co noc, bot sprawdza go codziennie rano.\n"
+        f"📍 <b>Obszar:</b> {escape_html(area)}. Innych miejsc na razie nie monitoruję.\n"
+        "📋 <b>Co zobaczysz:</b> rodzaj budynku, miejscowość, datę decyzji, mapę działki (gdy rejestr ją podaje) "
+        "i to, dlaczego inwestycja pasuje do Twoich ustawień. Możesz zapisywać, dodawać notatki i przypomnienia.\n\n"
+        "⚠️ <b>Ograniczenia:</b> w rejestrze są tylko sprawy zakończone pozytywnie; urzędy wpisują je "
+        "z opóźnieniem (nawet kilka tygodni); lokalizacja bywa przybliżona; etap budowy i skala to szacunki – "
+        "trzeba je sprawdzić.\n"
+        "🚫 <b>Czego nie ma:</b> w bocie nie ma danych kontaktowych inwestorów; nie ma gwarancji zlecenia "
+        "ani pierwszeństwa przed konkurencją.\n"
+        "🔒 <b>Twoje dane:</b> imię i numer konta z Telegrama, Twoje ustawienia, zapisane inwestycje i notatki – "
+        "tylko do działania bota."
+    )
+
+
+def intro_text(name: str | None, area: str, offer: OfferConfig, *, requested_on: str | None = None) -> str:
+    """Pierwszy kontakt bez dostępu: co to jest, dla kogo, obszar, jak zacząć, ile kosztuje (gdy ustawione)."""
+    who = f", {escape_html(name)}" if name else ""
+    lines = [
+        f"👷 Cześć{who}! Tu <b>Żółta Tablica</b>.", "",
+        "🏗️ <b>Co robię:</b> codziennie sprawdzam publiczny rejestr pozwoleń na budowę i zgłoszeń (GUNB) "
+        "i pokazuję nowe inwestycje z Twojej okolicy – z mapą, datą decyzji i rodzajem budynku.",
+        "👥 <b>Dla kogo:</b> hurtownie i składy budowlane, handlowcy oraz wykonawcy (dachy, okna, instalacje…), "
+        "którzy sami szukają budów.",
+        f"📍 Obszar: {escape_html(area)}",
+        "ℹ️ To lista budów do sprawdzenia – nie zamówienia i nie kontakty do inwestorów.", "",
+    ]
+    if requested_on:
+        lines.append(f"⏳ Prośba o test wysłana {requested_on} – odezwę się tutaj, gdy test będzie gotowy.")
+    else:
+        lines.append("🙋 <b>Jak zacząć:</b> to pilotaż z ręcznym uruchomieniem. Kliknij „Chcę przetestować” – "
+                     "po akceptacji ustawisz, co oferujesz i gdzie działasz, a 7-dniowy test włączysz sam.")
+    price = offer_price_sentence(offer)
+    lines.append(f"💳 Po teście: {price}" if price else "💳 Po teście: cenę podaję w ofercie – zapytaj 👇")
+    if offer.response_time:
+        lines.append(f"🕒 Odpowiadam: {escape_html(offer.response_time)}")
+    return "\n".join(lines)
+
+
+def intro_keyboard(*, requested: bool) -> Markup:
+    first = [("👀 Zobacz przykład", "i:demo")] + ([] if requested else [("🙋 Chcę przetestować", "i:test")])
+    return inline([first, [("💳 Oferta i cena", "i:oferta"), ("❓ Jak to działa", "i:pomoc")]])
+
+
+def gate_short_text(*, requested_on: str | None) -> str:
+    """Próba użycia inwestycji bez dostępu (np. komendą) – bez sugerowania zaległości."""
+    if requested_on:
+        return (f"🔒 Inwestycje zobaczysz w teście. Prośba o test wysłana {requested_on} – odezwę się tutaj. "
+                "Tymczasem zobacz przykład 👇")
+    return "🔒 Inwestycje zobaczysz w 7-dniowym teście. Zobacz przykład albo poproś o test 👇"
+
+
+def demo_screen(leads: Sequence[Investment], card: str) -> tuple[str, Markup]:
+    """Przykład dla osób bez dostępu – fikcyjny raport i karta (bez przycisków prowadzących do bazy)."""
+    lines = [DEMO_LABEL, "", f"📊 <b>Raport</b> – {_count(len(leads), 'nowa inwestycja', 'nowe inwestycje', 'nowych inwestycji')}", ""]
+    lines += [_report_entry(position, inv) for position, inv in enumerate(leads, start=1)]
+    lines += ["", "Po kliknięciu numeru widzisz kartę inwestycji, np.:", "", card]
+    return "\n".join(lines), inline([[("🙋 Chcę przetestować", "i:test")],
+                                      [("💳 Oferta i cena", "i:oferta"), ("◀️ Na początek", "i:start")]])
+
+
+def trial_requested_text(offer: OfferConfig) -> str:
+    when = f" Odpowiadam {escape_html(offer.response_time)}." if offer.response_time else ""
+    return ("✅ <b>Prośba o test wysłana.</b> Testy uruchamiam ręcznie – dostaniesz tu wiadomość, gdy test będzie "
+            f"gotowy.{when}\nPotem dwa krótkie pytania (co oferujesz, gdzie działasz) i sam włączysz 7 dni.")
+
+
+def offer_price_sentence(offer: OfferConfig) -> str:
+    """„99 zł netto + 23% VAT = 121,77 zł do zapłaty za 30 dni”; pusta, gdy oferta niepełna."""
+    return f"{offer.price_line()} za {offer.period_days} dni" if offer.complete else ""
+
+
+def offer_text(offer: OfferConfig, area: str, *, order: Order | None = None) -> str:
+    """Pełna oferta – tylko z danych konfiguracji; niepełna → uczciwe „zapytaj o ofertę”."""
+    if not offer.complete:
+        lines = ["💳 <b>Dostęp po teście</b>",
+                 "Cenę i warunki w pilotażu podaję indywidualnie – zapytaj, a odpowiem tutaj.",
+                 f"📍 Obszar: {escape_html(area)}"]
+    else:
+        accounts = _count(offer.accounts, "konto Telegram", "konta Telegram", "kont Telegram")
+        lines = [f"💳 <b>{escape_html(offer.name)}</b>",
+                 f"📍 Obszar: {escape_html(area)}",
+                 f"👤 Dla: {accounts}",
+                 f"💰 Cena: {escape_html(offer_price_sentence(offer))}",
+                 f"🧾 Płatność: {escape_html(offer.payment)}",
+                 f"🏷️ Sprzedawca: {escape_html(offer.seller_name)} · {escape_html(offer.seller_contact)}"]
+        if offer.renewal:
+            lines.append(f"🔁 Odnowienie: {escape_html(offer.renewal)}")
+        links = [f'<a href="{url}">{label}</a>' for label, url in (("Zasady usługi", offer.terms_url),
+                                                                  ("Prywatność", offer.privacy_url)) if url]
+        if links:
+            lines.append("📄 " + " · ".join(links))
+        lines.append("ℹ️ Dostęp włączam ręcznie po otrzymaniu płatności.")
+    if order is not None:
+        lines.append(f"🛒 Masz otwarte zamówienie {order.number} – czeka na płatność.")
+    if offer.response_time:
+        lines.append(f"🕒 Odpowiadam: {escape_html(offer.response_time)}")
+    return "\n".join(lines)
+
+
+def offer_buttons(offer: OfferConfig, *, order: Order | None = None) -> list[tuple[str, str]]:
+    """Przyciski zakupu: zamówienie tylko przy kompletnej ofercie, inaczej pytanie o ofertę."""
+    if not offer.complete:
+        return [("💬 Zapytaj o ofertę", "zm:q")]
+    first = (f"🧾 Zamówienie {order.number}", "zm:new") if order else ("🛒 Zamawiam", "zm:new")
+    return [first, ("💬 Pytanie", "zm:q")]
+
+
+def offer_keyboard(offer: OfferConfig, *, order: Order | None = None, back: bool = False) -> Markup:
+    rows = [offer_buttons(offer, order=order)]
+    if back:
+        rows.append([("◀️ Na początek", "i:start")])
+    return inline(rows)
+
+
+def order_text(order: Order, offer: OfferConfig, *, again: bool = False) -> str:
+    head = (f"🛒 <b>Zamówienie {order.number} jest już przyjęte</b> – czeka na płatność" if again
+            else f"🛒 <b>Zamówienie {order.number} przyjęte</b>")
+    lines = [head, f"{escape_html(order.oferta)} · dostęp na {order.dni} dni", f"💰 {escape_html(order.opis_ceny)}"]
+    if offer.payment:
+        lines.append(f"🧾 Jak zapłacić: {escape_html(offer.payment)}")
+    if offer.seller_name:
+        lines.append(f"🏷️ Sprzedawca: {escape_html(offer.seller_name)} · {escape_html(offer.seller_contact)}")
+    lines += ["✅ Dostęp przedłużę ręcznie, gdy płatność do mnie dotrze – dostaniesz tu potwierdzenie.",
+              "ℹ️ To nie jest faktura ani potwierdzenie płatności."]
+    return "\n".join(lines)
+
+
+def payment_confirmed_text(order: Order, ends_on: str) -> str:
+    return (f"✅ <b>Płatność za zamówienie {order.number} potwierdzona.</b>\n"
+            f"Dostęp do Żółtej Tablicy ważny do <b>{ends_on}</b>. Dziękuję!")
+
+
+def order_cancelled_text(order: Order, contact_html: str) -> str:
+    return (f"✖️ Zamówienie {order.number} zostało anulowane. Jeśli to pomyłka – zamów ponownie albo napisz "
+            f"do {contact_html}.")
+
+
+def inquiry_sent_text(offer: OfferConfig) -> str:
+    when = f" ({escape_html(offer.response_time)})" if offer.response_time else ""
+    return f"✅ Pytanie przekazane – odpowiem tutaj{when}."
+
+
+def admin_message_text(text: str) -> str:
+    """Wiadomość od operatora wysłana przez bota (np. dane do przelewu, odpowiedź na pytanie)."""
+    return "✉️ <b>Wiadomość od Żółtej Tablicy</b>\n" + escape_html(text)
+
+
+def _who(user: BotUser) -> str:
+    login = f" (@{escape_html(user.username)})" if user.username else ""
+    return f"<b>{escape_html(user.imie or str(user.chat_id))}</b>{login} · ID <code>{user.chat_id}</code>"
+
+
+def admin_trial_request_card(user: BotUser, access: str) -> tuple[str, Markup]:
+    company = f" · firma: {escape_html(user.firma)}" if user.firma else ""
+    text = (f"🙋 Prośba o test: {_who(user)}\n"
+            f"źródło: {escape_html(user.zrodlo or 'brak')}{company} · dostęp: {escape_html(access)}")
+    return text, inline([[("🎁 Test 7 dni", f"adm:trial:{user.chat_id}"), ("✅ Dostęp 30 dni", f"adm:ok:{user.chat_id}"),
+                          ("⛔ Odmów", f"adm:no:{user.chat_id}")]])
+
+
+def admin_order_card(order: Order, user: BotUser, access: str) -> tuple[str, Markup]:
+    text = (f"🛒 <b>Zamówienie {order.number}</b>: {_who(user)}\n"
+            f"{escape_html(order.oferta)} · {order.dni} dni · {escape_html(order.opis_ceny)}\n"
+            f"Dostęp teraz: {escape_html(access)}\n"
+            f"Potwierdź dopiero po otrzymaniu płatności (albo /zaplacone {order.number} &lt;uwagi&gt;).")
+    return text, inline([[("✅ Płatność otrzymana", f"adm:pay:{order.id}"), ("✖️ Anuluj", f"adm:cancel:{order.id}")]])
+
+
+def admin_inquiry_text(user: BotUser, access: str) -> str:
+    return (f"💬 Pytanie o ofertę: {_who(user)}\n"
+            f"źródło: {escape_html(user.zrodlo or 'brak')} · dostęp: {escape_html(access)}\n"
+            f"Odpowiedź: /napisz {user.chat_id} &lt;tekst&gt;")
+
+
+def admin_payment_text(order: Order, user: BotUser, ends_on: str, *, delivered: bool) -> str:
+    head = f"✅ {order.number} opłacone: {escape_html(user.display_name)} ({user.chat_id}) – dostęp do {ends_on}"
+    return head if delivered else head + "\n⚠️ Nie udało się wysłać potwierdzenia (zablokował bota?)."
+
+
+def admin_orders_text(open_orders: Sequence[Order], paid: Sequence[Order], names: dict[int, str]) -> str:
+    lines = ["🧾 <b>Zamówienia</b>", "", "Czekają na płatność:"]
+    lines += [f"• {o.number} · {escape_html(names.get(o.chat_id, str(o.chat_id)))} ({o.chat_id}) · "
+              f"{format_money(Decimal(o.do_zaplaty), o.waluta)} · {_when(o.utworzono)} → /zaplacone {o.number} · "
+              f"/anuluj {o.number}" for o in open_orders] or ["brak"]
+    lines += ["", "Ostatnio opłacone:"]
+    lines += [f"• {o.number} · {escape_html(names.get(o.chat_id, str(o.chat_id)))} · {_when(o.oplacono)}"
+              f" → dostęp do {_when(o.dostep_do)}" for o in paid] or ["brak"]
+    return "\n".join(lines)
+
+
+
+def rejected_text(contact_html: str = "administratorem") -> str:
+    return (f"🙏 Dziękujemy za zainteresowanie Żółtą Tablicą. Na razie nie możemy uruchomić dla Ciebie testu. "
+            f"Jeśli masz pytania, napisz do {contact_html}.")
 
 
 # --- Abonament (paywall) i panel admina --------------------------------------------------------------
 
 TRIAL_DAYS = 7
 DEFAULT_PAID_DAYS = 30
-TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 7 dni! Zobacz, jak szybciej docierać do klientów. "
-              "Po tym czasie bot zostanie wstrzymany.")
+TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 7 dni! Sprawdź, czy inwestycje z Twojej okolicy przydadzą "
+              "się w Twojej pracy. Po tym czasie raporty się zatrzymają.")
 START_TRIAL_BUTTON = ("▶️ Zacznij 7-dniowy test", "ts")
 
 
@@ -139,18 +347,11 @@ def admin_contact_html(contact: str, admins: Sequence[int]) -> str:
     return "administratorem"
 
 
-def gate_text(contact_html: str, expired_on: str | None = None) -> str:
-    """Komunikat dla osoby bez aktywnego abonamentu (także przy każdej próbie użycia menu)."""
-    if expired_on:
-        return f"⛔ Twój abonament wygasł {expired_on}. Skontaktuj się z {contact_html}, aby go przedłużyć."
-    return f"⛔ Twój dostęp jest nieaktywny. Skontaktuj się z {contact_html}, aby opłacić abonament."
-
-
 def new_user_card(user: BotUser) -> tuple[str, Markup]:
     """Wiadomość do admina o nowej osobie – z gotowymi komendami i przyciskami."""
     login = f" (@{escape_html(user.username)})" if user.username else ""
     text = (f"🆕 Nowa osoba: <b>{escape_html(user.imie or str(user.chat_id))}</b>{login}\n"
-            f"ID: <code>{user.chat_id}</code>\n"
+            f"ID: <code>{user.chat_id}</code> · źródło: {escape_html(user.zrodlo or 'brak')}\n"
             f"Dostęp: /trial {user.chat_id} (7 dni testu – ruszą, gdy klient kliknie ▶️) "
             f"albo /aktywuj {user.chat_id} 30")
     return text, inline([[("🎁 Test 7 dni", f"adm:trial:{user.chat_id}"),
@@ -158,8 +359,9 @@ def new_user_card(user: BotUser) -> tuple[str, Markup]:
 
 
 def activated_text(ends_on: str, name: str | None, *, days: int | None = None) -> str:
-    head = f"✅ Twój abonament został aktywowany na {days} dni!" if days else "✅ Twój abonament został aktywowany!"
-    return f"{head}\nWażny do <b>{ends_on}</b>.\n\n" + welcome_text(name)
+    """Dostęp włączony ręcznie przez admina (np. pilotaż, promocja) – nie potwierdzenie płatności."""
+    head = f"✅ Dostęp do Żółtej Tablicy włączony na {days} dni" if days else "✅ Dostęp do Żółtej Tablicy włączony"
+    return f"{head} – do <b>{ends_on}</b>.\n\n" + welcome_text(name)
 
 
 def trial_offer(*, setup_done: bool = True) -> tuple[str, Markup | None]:
@@ -179,35 +381,123 @@ SETUP_RESUME_BUTTON = ("⚙️ Dokończ ustawienia", "ob:resume")
 def setup_trade_step() -> tuple[str, Markup]:
     rows = [[(trade.label, f"ob:{trade.key}")] for trade in TRADES]
     rows.append([("🏗️ Inna branża / wszystkie etapy", "ob:none")])
-    return ("<b>1/2</b> 🧰 <b>Czym się zajmujesz?</b>\n"
-            "Dam znać, gdy budowa wejdzie w orientacyjne okno Twojego etapu (szacunek od daty decyzji).",
-            inline(rows))
+    return ("<b>1/2</b> 🧰 <b>Co oferujesz?</b>\n"
+            "Od tego zależy kolejność wyników, a przy pracach na późniejszym etapie – przypomnienie, gdy budowa "
+            "wejdzie w orientacyjne okno Twojego etapu (szacunek od daty decyzji). Branża nie zawęża rodzaju "
+            "budynków – to ustawisz osobno.", inline(rows))
 
 
 def setup_area_step(options: Sequence[tuple[str, str]], region: str) -> tuple[str, Markup]:
     rows = [[(f"📌 {label}", f"oa:p:{code}")] for code, label in options]
     rows += [[("📍 W promieniu od mojej bazy", "oa:loc")], [("✏️ Wpisz miejscowość", "oa:txt")],
              [("🗺️ Cały monitorowany obszar", "oa:all")]]
-    return ("<b>2/2</b> 📍 <b>Gdzie szukać inwestycji?</b>\n"
+    return ("<b>2/2</b> 📍 <b>Gdzie działasz?</b>\n"
             f"Monitoruję: {escape_html(region)}.\n"
             "Wybierz powiat albo wpisz miejscowość – bieżącej lokalizacji nie trzeba udostępniać.", inline(rows))
 
 
-def setup_summary(user: BotUser, place: str, settings: BotConfig, *, can_start_trial: bool) -> tuple[str, Markup | None]:
+START_ANYWAY_BUTTON = ("▶️ Rozumiem – zacznij test mimo to", "ts:ok")
+TIP_OPEN = ("💡 Kliknij numer, żeby otworzyć kartę z mapą i szczegółami. Przydatną ⭐ zapisz – wrócisz do niej "
+            "w „⭐ Zapisane”.")
+TIP_SAVE = "💡 Przydatna? Kliknij ⭐ Zapisz – wrócisz do niej w „⭐ Zapisane”."
+TIP_NOTE = ("💡 Do zapisanej dodaj 📝 notatkę (np. co ustalone) albo ⏰ przypomnienie – przyjdzie rano "
+            "wybranego dnia.")
+
+
+def setup_summary(user: BotUser, place: str, settings: BotConfig, *, can_start_trial: bool, area: str,
+                  data_range: tuple[str, str] | None, freshness: str, recent: int, in_window: int,
+                  notes: Sequence[str] = (), empty: Sequence[str] = ()) -> tuple[str, Markup | None]:
+    """Podsumowanie po dwóch pytaniach: ustawienia (i gdzie je zmienić), zakres i świeżość danych, ile pasuje.
+
+    Przy pustym wyniku zamiast zwykłego startu testu: przyczyna, zmiana obszaru lub rodzaju, kontakt
+    i świadome „zacznij mimo to” – test nigdy nie startuje sam.
+    """
     trade = get_trade(user.branza)
-    lines = ["✅ <b>Gotowe!</b>",
-             f"🧰 Branża: {escape_html(trade.label) if trade else 'bez przypomnień o etapach budowy'}",
+    categories = [label for key, label in CATEGORY_CHOICES if key in user.filtry.kategorie]
+    lines = ["✅ <b>Gotowe – sprawdź ustawienia:</b>",
+             f"🧰 Oferujesz: {escape_html(_trade_label(trade))}",
              f"📍 Obszar: {escape_html(place)}",
-             f"⏰ Raport: {_mode_sentence(user.tryb, settings)} (zmienisz w ⚙️ Ustawienia)"]
-    if can_start_trial:
+             f"🏗️ Rodzaj budynków: {escape_html(', '.join(categories)) if categories else 'wszystkie'}"
+             " (zmienisz w ⚙️ Ustawienia)",
+             f"⏰ Raport: {_mode_sentence(user.tryb, settings)} (zmienisz w ⚙️ Ustawienia)", ""]
+    span = (f"; w bocie od {_pl_date(data_range[0])} do {_pl_date(data_range[1])}." if data_range
+            else "; jeszcze nic nie pobrano.")
+    lines += [f"📦 Dane: rejestr GUNB (pozwolenia i zgłoszenia), {escape_html(area)}{span}", freshness]
+    lines += list(notes)
+    found = recent or in_window
+    if found:
+        parts = [f"{_count(recent, 'inwestycja', 'inwestycje', 'inwestycji')} z ostatnich {settings.recent_days} dni"]
+        if in_window and trade is not None:
+            parts.append(f"{in_window} w orientacyjnym oknie etapu {trade.stage}")
+        lines.append("🔎 Teraz pasuje: " + "; ".join(parts) + ".")
+    else:
+        lines += ["", "⚠️ <b>Na razie nic nie pasuje.</b>", *empty]
+    if not can_start_trial:
+        return "\n".join(lines), None
+    if found:
         lines += ["", "▶️ Kliknij, aby zacząć 7-dniowy test – od tej chwili liczy się 7 dni."]
-        return "\n".join(lines), inline([[START_TRIAL_BUTTON]])
-    return "\n".join(lines), None
+        return "\n".join(lines), inline([[START_TRIAL_BUTTON], [("⚙️ Zmień obszar", "f:place")]])
+    lines += ["", "Możesz zmienić obszar albo rodzaj, napisać do nas – albo świadomie zacząć test mimo to."]
+    return "\n".join(lines), inline([[("🗺️ Zmień obszar", "f:place"), ("🏗️ Zmień rodzaj", "f:type")],
+                                      [("💬 Napisz do nas", "zm:q")], [START_ANYWAY_BUTTON]])
 
 
-def first_review_head() -> list[str]:
-    return ["🔎 <b>Na początek – przegląd ostatnich 30 dni.</b>",
-            "To historia z rejestru, nie nowości: nowe inwestycje przyjdą w raporcie."]
+def empty_reason_lines(reason: str, *, area: str, region_count: int, days: int, filters: str,
+                       places: Sequence[str] = ()) -> list[str]:
+    """Dlaczego nic nie pasuje – brak danych, miejsce spoza obszaru, zbyt wąskie ustawienia albo cisza w rejestrze."""
+    if reason == "brak_danych":
+        return ["📭 Nie mam jeszcze danych z rejestru – pierwsze pobieranie jeszcze się nie zakończyło. "
+                "To brak danych w bocie, nie brak budów na rynku."]
+    if reason == "poza_obszarem":
+        return [f"📍 Wybrane miejsce jest poza monitorowanym obszarem ({escape_html(area)}) – tam nic nie znajdę."]
+    if reason == "miejsce_bez_danych":
+        return [f"📍 Z miejsca „{escape_html(', '.join(places))}” nie ma jeszcze żadnej inwestycji w danych bota – "
+                "nowe przyjdą, gdy pojawią się w rejestrze. Możesz też poszerzyć obszar."]
+    if reason == "cisza":
+        return [f"🔎 W ostatnich {days} dniach rejestr nie pokazał nowych inwestycji w całym monitorowanym "
+                "obszarze – nowe przyjdą w raportach."]
+    return [f"🔎 W ostatnich {days} dniach w monitorowanym obszarze jest "
+            f"{_count(region_count, 'inwestycja', 'inwestycje', 'inwestycji')}, ale żadna nie pasuje do Twoich "
+            "ustawień.", filters]
+
+
+def history_gap_note(trade: Trade, oldest: str | None) -> str:
+    start = trade_window_label(trade)
+    since = f" (najstarsza w bocie: {_pl_date(oldest)})" if oldest else ""
+    return (f"🕰️ Starszych decyzji, potrzebnych do przypomnień o etapie {trade.stage} ({start} po decyzji), "
+            f"jeszcze nie ma w bocie{since} – to brak danych w bocie, nie brak budów na rynku.")
+
+
+def first_value(leads: Sequence[Investment], *, recent: int, in_window_ids: set[str], trade: Trade | None,
+                days: int, distance: Distance | None = None, tip: bool = False,
+                freshness: str = "") -> tuple[str, Markup]:
+    """Po starcie: 3–5 najlepiej dopasowanych inwestycji (bez zużywania nowości) i pełny przegląd."""
+    lines = [f"⭐ <b>Na początek – {_count(len(leads), 'najlepiej dopasowana', 'najlepiej dopasowane', 'najlepiej dopasowanych')}</b>"]
+    if in_window_ids and trade is not None:
+        lines.append(f"⏳ = w orientacyjnym oknie etapu {trade.stage} (szacunek od daty decyzji – etap trzeba "
+                     "sprawdzić na miejscu)")
+    lines.append("")
+    lines += [_report_entry(position, inv, distance, badge="⏳" if inv.id_sprawy in in_window_ids else "")
+              for position, inv in enumerate(leads, start=1)]
+    lines.append("")
+    lines.append(f"📋 Pełny przegląd: wszystkie pasujące z ostatnich {days} dni ({recent})." if recent
+                 else f"Nowych z ostatnich {days} dni brak – nowe przyjdą w raportach.")
+    if tip:
+        lines.append(TIP_OPEN)
+    if freshness:
+        lines.append(freshness)
+    rows = number_buttons([(p, inv.nr) for p, inv in enumerate(leads, start=1)])
+    if recent:
+        rows.append([(f"📋 Pełny przegląd ({recent})", "hp:0")])
+    return "\n".join(lines), inline(rows)
+
+
+def first_value_empty(explanation: Sequence[str], *, days: int, freshness: str = "") -> tuple[str, Markup]:
+    lines = [f"🔎 <b>Na początek:</b> z ostatnich {days} dni brak pasujących do Twoich ustawień.", *explanation]
+    if freshness:
+        lines.append(freshness)
+    return "\n".join(lines), inline([[("🗺️ Poszerz obszar", "f:place"), ("🏗️ Zmień rodzaj", "f:type")],
+                                      [("💬 Napisz do nas", "zm:q")]])
 
 
 def place_unknown(name: str, region: str) -> tuple[str, Markup]:
@@ -245,18 +535,38 @@ def settings_screen(user: BotUser, *, place: str, settings: BotConfig, watch_cou
              f"🧰 Branża: {_trade_label(get_trade(user.branza))}",
              f"⏰ Raporty: {_mode_label(user.tryb, settings)}",
              f"🔔 Powiadomienia: {'⏸️ wstrzymane' if user.wstrzymane else 'włączone'}",
+             f"💡 Podpowiedzi i podsumowania: {'włączone' if user.tips_enabled else 'wyłączone'}",
              f"👀 Obserwowane: {watch_count}",
              f"👤 Dostęp: {account}",
              "", "Kliknij, co chcesz zmienić 👇"]
     pause = ("▶️ Wznów powiadomienia", "st:p") if user.wstrzymane else ("⏸️ Wstrzymaj powiadomienia", "st:p")
+    tips = ("💡 Podpowiedzi: wyłącz", "st:t") if user.tips_enabled else ("💡 Podpowiedzi: włącz", "st:t")
     rows = [[("🔎 Obszar i rodzaj", "st:f"), ("🧰 Branża", "st:b")],
             [("👀 Obserwowane", "st:w"), ("⏰ Harmonogram", "st:m")],
-            [pause, ("👤 Konto", "st:k")]]
+            [pause, ("👤 Konto", "st:k")], [tips]]
     return "\n".join(lines), inline(rows)
 
 
 def trial_started_text(ends_on: str) -> str:
     return f"{TRIAL_TEXT}\nTest trwa do <b>{ends_on}</b>."
+
+
+def trial_nudge(summary: dict[str, int], ends_on: str) -> tuple[str, Markup]:
+    """Jedna spokojna podpowiedź 48 h po starcie testu bez efektów – liczby wyłącznie z bazy."""
+    opened, saved = summary.get("otwarte", 0), summary.get("zapisane", 0)
+    state = ("Nie otwarto jeszcze żadnej inwestycji." if not opened
+             else f"Otwarte inwestycje: {opened}, zapisane: {saved}.")
+    text = ("💡 <b>Jak idzie test?</b>\n" + state + "\n"
+            "Najszybciej sprawdzisz, czy to się przyda: 📊 Inwestycje → kliknij numer → ⭐ zapisz przydatną albo "
+            "ustaw 📋 wynik. Nic nie pasuje? Zmień obszar albo napisz do nas.\n"
+            f"🎁 Test trwa do {ends_on}.\n"
+            "Podpowiedzi wyłączysz w ⚙️ Ustawienia.")
+    return text, inline([[("📊 Pokaż inwestycje", "f:go"), ("🗺️ Zmień obszar", "f:place")],
+                         [("💬 Napisz do nas", "zm:q")]])
+
+
+def trial_extended_text(ends_on: str) -> str:
+    return f"🎁 Twój darmowy test został przedłużony – trwa do <b>{ends_on}</b>."
 
 
 def trial_waiting() -> tuple[str, Markup]:
@@ -265,17 +575,38 @@ def trial_waiting() -> tuple[str, Markup]:
             "od tej chwili liczy się 7 dni.", inline([[START_TRIAL_BUTTON]]))
 
 
-def access_reminder_text(ends_on: str, *, trial: bool, contact_html: str) -> str:
-    what = "Twój darmowy test" if trial else "Twój abonament"
-    return (f"⏳ {what} kończy się <b>{ends_on}</b>. Jeśli chcesz dalej dostawać inwestycje, "
-            f"skontaktuj się z {contact_html}.")
+def access_reminder_text(ends_on: str, *, trial: bool, offer: OfferConfig,
+                         summary: dict[str, int] | None = None) -> str:
+    """Dzień przed końcem: termin, (w teście) podsumowanie rzeczywistych działań i oferta dalszego dostępu."""
+    what = "Twój darmowy test" if trial else "Twój dostęp"
+    lines = [f"⏳ {what} kończy się <b>{ends_on}</b>."]
+    if summary is not None:
+        lines += ["", trial_summary_text(summary)]
+    price = offer_price_sentence(offer)
+    lines += ["", f"💳 Dalszy dostęp: {escape_html(price)}." if price
+              else "💳 Chcesz dalej dostawać inwestycje? Zapytaj o ofertę 👇"]
+    return "\n".join(lines)
 
 
-def access_ended_text(ends_on: str, *, trial: bool, contact_html: str) -> str:
+def trial_summary_text(summary: dict[str, int]) -> str:
+    """Podsumowanie testu z danych bota – wysłanie to nie przeczytanie, więc mowa o dostarczonych."""
+    if not summary.get("otwarte") and not summary.get("zapisane"):
+        return ("📋 W teście nie otwarto jeszcze żadnej inwestycji – zajrzyj do 📊 Inwestycje, zanim test minie. "
+                "Jeśli nic nie pasuje, zmień obszar w ⚙️ Ustawienia.")
+    parts = [f"dostarczone w raportach: {summary.get('dostarczone', 0)}",
+             f"otwarte szczegóły: {summary.get('otwarte', 0)}", f"zapisane: {summary.get('zapisane', 0)}",
+             f"notatki: {summary.get('notatki', 0)}", f"przypomnienia: {summary.get('przypomnienia', 0)}",
+             f"wyniki pracy: {summary.get('wyniki', 0)}"]
+    return "📋 <b>Twój test w liczbach</b> (inwestycje): " + " · ".join(parts)
+
+
+def access_ended_text(ends_on: str, *, trial: bool, offer: OfferConfig) -> str:
     """Informacja o końcu dostępu – jednorazowa i przy każdej próbie użycia danych."""
-    what = "Twój darmowy test skończył się" if trial else "Twój abonament wygasł"
-    return (f"⛔ {what} {ends_on}. Raporty i przypomnienia są wstrzymane, a zapisane inwestycje i ustawienia "
-            f"czekają na Ciebie. Skontaktuj się z {contact_html}, aby przedłużyć dostęp.")
+    what = "Twój darmowy test skończył się" if trial else "Twój dostęp wygasł"
+    price = offer_price_sentence(offer)
+    return (f"⛔ {what} {ends_on}. Raporty i przypomnienia są wstrzymane.\n"
+            "🗄️ Ustawienia, ⭐ zapisane i notatki zostają – możesz je przeglądać.\n"
+            + (f"💳 Dalszy dostęp: {escape_html(price)}." if price else "💳 Chcesz wrócić? Zapytaj o ofertę 👇"))
 
 
 def access_revoked_text(contact_html: str) -> str:
@@ -289,29 +620,39 @@ def access_term_text(ends_on: str) -> str:
             "Wszystko działa jak dotąd.")
 
 
-def account_text(*, state: str, ends_on: str | None, contact_html: str) -> str:
-    """Ekran „👤 Konto”: jaki dostęp, do kiedy i jak przedłużyć."""
+def account_text(*, state: str, ends_on: str | None, contact_html: str, offer: OfferConfig,
+                 paid: Order | None = None, open_order: Order | None = None) -> str:
+    """Ekran „👤 Konto”: jaki dostęp, do kiedy, ostatnia potwierdzona płatność i jak przedłużyć."""
     lines = {
         "admin": "👑 Jesteś administratorem – pełny dostęp bez limitu.",
         "open": "✅ Pełny dostęp (bot otwarty dla wszystkich).",
         "bez_limitu": "♾️ Pełny dostęp bez terminu (dotychczasowy użytkownik).",
         "test": f"🎁 Darmowy test trwa do <b>{ends_on}</b>.",
-        "platny": f"💳 Abonament ważny do <b>{ends_on}</b>.",
+        "platny": f"✅ Dostęp ważny do <b>{ends_on}</b>.",
         "test_dostepny": "🎁 Czeka na Ciebie 7-dniowy darmowy test – ruszy, gdy klikniesz ▶️ Zacznij.",
         "test_koniec": f"⌛ Darmowy test skończył się {ends_on}.",
-        "platny_koniec": f"⌛ Abonament wygasł {ends_on}.",
+        "platny_koniec": f"⌛ Dostęp wygasł {ends_on}.",
         "wylaczony": "⛔ Dostęp został wyłączony przez administratora. Zapisane inwestycje i ustawienia zostają.",
-        "brak": "⏳ Dostęp jeszcze nieaktywny.",
+        "brak": "🔒 Nie masz jeszcze testu ani dostępu – możesz poprosić o 7-dniowy test.",
     }
-    verb = {"brak": "uzyskać", "wylaczony": "przywrócić"}.get(state, "przedłużyć")
-    extend = ("" if state in ("admin", "open", "bez_limitu")
-              else f"\nAby {verb} dostęp, skontaktuj się z {contact_html}.")
-    return "👤 <b>Twoje konto</b>\n\n" + lines.get(state, lines["brak"]) + extend
+    text = ["👤 <b>Twoje konto</b>", "", lines.get(state, lines["brak"])]
+    if paid is not None:
+        text.append(f"💳 Ostatnia potwierdzona płatność: zamówienie {paid.number} ({_when(paid.oplacono)}).")
+    if open_order is not None:
+        text.append(f"🛒 Zamówienie {open_order.number} czeka na płatność.")
+    if state in ("admin", "open", "bez_limitu"):
+        return "\n".join(text)
+    price = offer_price_sentence(offer)
+    if price:
+        text.append(f"💳 Dalszy dostęp: {escape_html(price)}.")
+    elif state == "wylaczony":
+        text.append(f"Jeśli to pomyłka, napisz do {contact_html}.")
+    return "\n".join(text)
 
 
 def admin_granted_text(user: BotUser, ends_on: str, *, days: int | None, delivered: bool) -> str:
     who = f"<b>{escape_html(user.display_name)}</b> ({user.chat_id})"
-    head = f"✅ Aktywowano: {who} – {f'{days} dni, ' if days else ''}ważny do {ends_on}"
+    head = f"✅ Dostęp nadany ręcznie (to nie płatność): {who} – {f'{days} dni, ' if days else ''}do {ends_on}"
     return head if delivered else head + "\n⚠️ Nie udało się wysłać mu wiadomości (zablokował bota?)."
 
 
@@ -342,7 +683,10 @@ def admin_usage_text() -> str:
             "/przedluz &lt;chat_id&gt; &lt;dni albo data&gt; – to samo: dni liczone od końca obecnego dostępu\n"
             "/odbierz &lt;chat_id&gt; – wyłącz dostęp od razu\n"
             "/trial &lt;chat_id&gt; – pozwól na 7-dniowy test (ruszy, gdy osoba kliknie ▶️)\n"
-            "/nowymodel &lt;chat_id|wszyscy&gt; &lt;dni albo data&gt; – dostęp z terminem dla dotychczasowych")
+            "/przedluztest &lt;chat_id&gt; &lt;dni 1–14&gt; &lt;powód&gt; – jednorazowo przedłuż test\n"
+            "/nowymodel &lt;chat_id|wszyscy&gt; &lt;dni albo data&gt; – dostęp z terminem dla dotychczasowych\n"
+            "/zaplacone &lt;Z-nr&gt; [uwagi] – płatność otrzymana · /anuluj &lt;Z-nr&gt; · /zamowienia\n"
+            "/napisz &lt;chat_id&gt; &lt;tekst&gt; – wiadomość przez bota · /firma &lt;chat_id&gt; &lt;nazwa|-&gt;")
 
 
 def admin_unknown_user_text(chat_id: int) -> str:
@@ -444,7 +788,7 @@ def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConf
         f"🏗️ Rodzaj: {escape_html(', '.join(categories)) if categories else 'wszystkie'}",
         f"📦 Kubatura: {_volume_label(f.min_kubatura)}",
         f"💼 Inwestor: {_investor_label(f.inwestor)}",
-        f"🔥 Tylko HOT: {'tak' if user.tylko_hot else 'nie'}",
+        f"🏗️ Tylko duża skala: {'tak' if user.tylko_hot else 'nie'}",
         f"⏰ Wysyłka: {_mode_label(user.tryb, settings)}",
         f"🧰 Branża: {_trade_label(get_trade(user.branza))}",
         "",
@@ -583,11 +927,12 @@ def volume_picker(filters: UserFilters) -> tuple[str, Markup]:
 def investor_picker(filters: UserFilters) -> tuple[str, Markup]:
     rows = [
         [(("✅ " if not filters.inwestor else "") + "Dowolny", "fi:any")],
-        [(("✅ " if filters.inwestor == "firma" else "") + "Tylko firmy (jawny inwestor)", "fi:firm")],
+        [(("✅ " if filters.inwestor == "firma" else "") + "Tylko z nazwą inwestora", "fi:firm")],
         [("✏️ Wpisz nazwę inwestora", "fi:txt")],
         [("◀️ Wróć", "f:show")],
     ]
-    text = ("💼 <b>Inwestor</b>\nOsoby prywatne są w rejestrze ukryte. „Tylko firmy” = deweloperzy, spółki, gminy.")
+    text = ("💼 <b>Inwestor</b>\nRejestr podaje nazwę inwestora tylko przy części spraw (zwykle spółki, gminy). "
+            "Gdy jej nie ma, nie wiadomo, kto inwestuje. Nazwy pochodzą z rejestru i nie są weryfikowane.")
     return text, inline(rows)
 
 
@@ -616,13 +961,205 @@ def mode_screen(user: BotUser, settings: BotConfig) -> tuple[str, Markup]:
 REMINDER_DAYS: tuple[int, ...] = (7, 14, 30)
 NOTE_LIMIT = 300
 
+CATEGORY_SINGULAR: dict[str, str] = {
+    "mieszkaniowa-jednorodzinna": "Dom jednorodzinny",
+    "mieszkaniowa-wielorodzinna": "Budynek wielorodzinny",
+    "mieszana": "Budynek mieszkalno-usługowy",
+    "komercyjna": "Obiekt komercyjny (hala, sklep, biuro)",
+    "publiczna": "Obiekt publiczny",
+    "rolnicza": "Budynek rolniczy",
+    "inna": "Inny obiekt",
+}
+SCALE_LABELS: dict[str, str] = {"hot": "duża", "normal": "średnia", "low": "mała"}
+"""Skala inwestycji słowami (w danych zostają kody hot / normal / low) – to szacunek, nie gotowość do zakupu."""
+OUTCOME_LABELS: dict[str, str] = {
+    "do_sprawdzenia": "🔍 Do sprawdzenia", "sprawdzona": "✔️ Sprawdzona", "rozmowa": "💬 Rozmowa",
+    "oferta": "📄 Złożona oferta", "niepasujaca": "❌ Niepasująca",
+}
+OUTCOME_CODES: dict[str, str] = {"s": "do_sprawdzenia", "c": "sprawdzona", "r": "rozmowa", "o": "oferta",
+                                 "n": "niepasujaca"}
+REASON_LABELS: dict[str, str] = {
+    "obszar": "📍 Zły obszar", "rodzaj": "🏗️ Zły rodzaj", "moment": "⏳ Nieodpowiedni moment",
+    "brak_dzialania": "🚫 Nie mogę nic z tym zrobić", "bledne_dane": "⚠️ Błędne dane",
+}
+REASON_CODES: dict[str, str] = {"a": "obszar", "t": "rodzaj", "m": "moment", "x": "brak_dzialania", "e": "bledne_dane"}
+_WORKS = (("budowa nowego", "nowa budowa"), ("rozbudow", "rozbudowa"), ("nadbudow", "nadbudowa"),
+          ("przebudow", "przebudowa"))
+_SCORE_REASONS = {"inwestor firmowy": "nazwa inwestora w rejestrze"}
+
+
+def lead_card(inv: Investment, *, why: Sequence[str] = (), estimates: Sequence[str] = (), note: str | None = None,
+              header: tuple[str, str, str] | None = None, status_change: tuple[str, str] | None = None,
+              details: bool = False, limit: int = TELEGRAM_LIMIT) -> str:
+    """Karta inwestycji: fakty z rejestru, „dlaczego to widzisz”, szacunki i własna notatka – osobno.
+
+    Pierwszy poziom: rodzaj, opis, miejsce, data, dokładność lokalizacji. ``details`` – zamiast tego pełne
+    szczegóły urzędowe (status, kategoria, inwestor, projektant, organ, działka, numer sprawy). HTML nigdy
+    nie jest cięty: przy długich polach skracane są wartości przed escapowaniem.
+    """
+    text = ""
+    for description, field in ((600, 300), (240, 120), (80, 50)):
+        text = _render_card(inv, why, estimates, note, header, status_change, details, description, field)
+        if len(text) <= limit:
+            break
+    return text
+
+
+def _render_card(inv: Investment, why: Sequence[str], estimates: Sequence[str], note: str | None,
+                 header: tuple[str, str, str] | None, status_change: tuple[str, str] | None, details: bool,
+                 description: int, field: int) -> str:
+    lines = _card_head(inv, header, description if details else min(description, 240))
+    if status_change:
+        lines.append(escape_html(f"🔄 Zmiana statusu: {status_change[0]} → {status_change[1]}"))
+    if details:
+        lines += ["", "📋 <b>Szczegóły z rejestru GUNB</b>"] + [escape_html(_short(line, field + 40))
+                                                             for line in _official_lines(inv, field)]
+        lines.append("ℹ️ Dane z publicznego rejestru – bot ich nie weryfikuje.")
+    else:
+        lines += ["", "📋 <b>Z rejestru GUNB</b>", escape_html(_short(_place_line(inv), field)),
+                  escape_html(_date_line(inv)), escape_html(_location_line(inv))]
+        if why:
+            lines += ["", "🎯 <b>Dlaczego to widzisz:</b> " + escape_html(_short(" · ".join(why), field))]
+        if estimates:
+            lines += ["", "📐 <b>Szacunki</b> (orientacyjne)"] + [escape_html(line) for line in estimates]
+    if note:
+        lines += ["", "👤 <b>Twoje</b>", note_line(note).strip()]
+    return "\n".join(lines)
+
+
+def _card_head(inv: Investment, header: tuple[str, str, str] | None, description: int) -> list[str]:
+    lines = []
+    if header is not None:
+        icon, title, detail = header
+        lines.append(f"{icon} <b>{escape_html(title)}</b> · {escape_html(detail)}")
+    kind = CATEGORY_SINGULAR.get(inv.kategoria or "inna", "Inny obiekt")
+    source = "pozwolenie na budowę" if inv.zrodlo == "pozwolenia" else "zgłoszenie budowy"
+    work = next((label for prefix, label in _WORKS if normalize_text(inv.rodzaj_robot).startswith(prefix)), None)
+    icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+    lines.append(f"{icon} <b>{escape_html(kind)}</b> · {source}" + (f" · {work}" if work else ""))
+    lines.append(f"<b>{escape_html(_short(inv.nazwa_zamierzenia or '(brak opisu w rejestrze)', description))}</b>")
+    return lines
+
+
+def _place_line(inv: Investment) -> str:
+    place = inv.adres_opisowy or inv.miejscowosc or "brak adresu w rejestrze"
+    gmina = f" (gm. {inv.gmina})" if inv.gmina and normalize_text(inv.gmina) not in normalize_text(place) else ""
+    return f"📍 {place}{gmina}"
+
+
+def _date_line(inv: Investment) -> str:
+    if inv.data_decyzji:
+        return f"📅 Decyzja: {_pl_date(inv.data_decyzji)}"
+    if inv.data_wplywu:
+        return f"📅 {'Zgłoszenie' if inv.zrodlo == 'zgloszenia' else 'Wniosek'}: wpływ {_pl_date(inv.data_wplywu)}"
+    return "📅 Data: brak w rejestrze"
+
+
+def _location_line(inv: Investment) -> str:
+    if location_mismatch(inv):
+        return "🗺️ Mapa: lokalizacja niepewna – działka znaleziona w innej gminie niż podaje rejestr; sprawdź adres"
+    if inv.precyzja_geo == "obreb":
+        return "🗺️ Mapa: lokalizacja przybliżona – środek obrębu"
+    if inv.precyzja_geo == "dzialka":
+        return "🗺️ Mapa: lokalizacja dokładna – działka"
+    if inv.lat is None and not inv.google_maps_url:
+        return "🗺️ Mapa: brak – rejestr nie podał działki, którą da się odnaleźć"
+    return "🗺️ Mapa: punkt z danych ULDK (dokładność nieznana)"
+
+
+def _map_label(inv: Investment) -> str:
+    return "📍 Mapa (niepewna)" if location_mismatch(inv) else "📍 Mapa"
+
+
+def investor_label(inv: Investment) -> str:
+    """Inwestor bez zgadywania: brak nazwy to brak informacji (nie „osoba prywatna”), nazwa – bez weryfikacji."""
+    if not inv.inwestor:
+        return "brak informacji w rejestrze"
+    return f"{inv.inwestor} (wg rejestru, bez weryfikacji)"
+
+
+def scale_line(inv: Investment) -> str | None:
+    """„🏗️ Skala: duża (26 000 m³)” – szacunek skali (nie gotowości do zakupu); ``None`` bez oceny."""
+    label = SCALE_LABELS.get(inv.priorytet or "")
+    if label is None:
+        return None
+    basis = f"{_thousands(inv.kubatura)} m³" if inv.kubatura else "bez kubatury w rejestrze – z rodzaju i opisu"
+    return f"🏗️ Skala: {label} ({basis})"
+
+
+def _official_lines(inv: Investment, field: int) -> list[str]:
+    try:
+        status = Status(inv.status).label
+    except ValueError:
+        status = inv.status
+    lines = [f"📌 Status: {status}"]
+    if inv.kategoria_obiektu:
+        description = BUILDING_CATEGORIES.get(inv.kategoria_obiektu)
+        lines.append(f"🏷️ Kategoria obiektu: kat. {inv.kategoria_obiektu}" + (f" – {description}" if description else ""))
+    if inv.rodzaj_robot:
+        lines.append(f"🔨 Rodzaj robót: {inv.rodzaj_robot}")
+    if inv.adres_opisowy:
+        lines.append(f"📍 Adres: {inv.adres_opisowy}")
+    area = ", ".join(p for p in (f"gm. {inv.gmina}" if inv.gmina else None, inv.powiat) if p)
+    if area:
+        lines.append(f"🗺️ Gmina i powiat: {area}")
+    lines.append(f"💼 Inwestor: {_short(investor_label(inv), field + 40)}")
+    designer = ", ".join(dict.fromkeys(p for p in (inv.projektant, inv.pracownia) if p))
+    if designer:
+        lines.append(f"📐 Projektant: {designer}" + (f" (upr. {inv.projektant_uprawnienia})"
+                                                    if inv.projektant_uprawnienia else ""))
+    if inv.kubatura:
+        lines.append(f"📦 Kubatura: {_thousands(inv.kubatura)} m³")
+    dates = " · ".join(p for p in (f"decyzja {_pl_date(inv.data_decyzji)}" if inv.data_decyzji else None,
+                                   f"wpływ {_pl_date(inv.data_wplywu)}" if inv.data_wplywu else None) if p)
+    if dates:
+        lines.append(f"📅 Daty: {dates}")
+    if inv.organ:
+        lines.append(f"🏛️ Organ: {inv.organ}")
+    if inv.teryt_dzialki:
+        extra = len(inv.dzialki) - 1
+        lines.append(f"🧩 Działka: {inv.teryt_dzialki}" + (f" (+{extra})" if extra > 0 else ""))
+    lines.append(f"🔖 Sprawa: {inv.id_sprawy}")
+    if inv.priorytet in SCALE_LABELS:
+        score = score_investment(inv)
+        reasons = ", ".join(_SCORE_REASONS.get(reason, reason) for reason in score.reasons[:4])
+        lines.append(f"🏗️ Skala (szacunek): {SCALE_LABELS[inv.priorytet]}" + (f" – {reasons}" if reasons else ""))
+    return lines
+
+
+def archive_card(inv: Investment, *, flags: LeadFlags, outcome: Outcome, note: str | None,
+                 reminder_on: str | None) -> str:
+    """Karta po końcu dostępu: tylko to, co osoba już widziała i sama zapisała – bez szczegółów i nowych danych."""
+    lines = ["🗄️ <b>Twoja zapisana praca</b> – dostęp nieaktywny"] + _card_head(inv, None, 200)
+    lines += [escape_html(_short(_place_line(inv), 150)), escape_html(_date_line(inv))]
+    own = [part for part in (
+        "⭐ zapisana" if flags.saved else None,
+        f"📋 wynik: {OUTCOME_LABELS[outcome.wynik].split(' ', 1)[1].lower()}" if outcome.wynik else None,
+        f"⏰ przypomnienie {reminder_on}" if reminder_on else None,
+    ) if part]
+    if own or note:
+        lines += ["", "👤 <b>Twoje</b>"] + ([" · ".join(own)] if own else []) + ([note_line(note).strip()] if note else [])
+    lines += ["", "Nowe inwestycje i szczegóły z rejestru zobaczysz po przedłużeniu dostępu."]
+    return "\n".join(lines)
+
+
+def archive_keyboard(inv: Investment) -> Markup:
+    rows: list[list[dict[str, str]]] = []
+    if inv.google_maps_url:
+        rows.append([{"text": _map_label(inv), "url": inv.google_maps_url}])
+    rows += inline([[("💳 Przedłuż dostęp", "i:oferta")]])["inline_keyboard"]
+    return {"inline_keyboard": rows}
+
 
 def lead_keyboard(inv: Investment, *, flags: LeadFlags, watching_investor: bool, watching_gmina: bool,
-                  reminder_on: str | None = None, has_note: bool = False, view: str = "main") -> Markup:
-    """Przyciski pod inwestycją; każdy niesie docelowy stan (``s1``/``s0``), więc ponowione kliknięcie nic nie psuje.
+                  reminder_on: str | None = None, has_note: bool = False, outcome: Outcome = Outcome(),
+                  details: bool = False, view: str = "main") -> Markup:
+    """Przyciski pod inwestycją; każdy niesie docelowy stan (``s1``/``s0``, ``w:<nr>:r``), więc ponowione
+    kliknięcie nic nie psuje.
 
-    Widoki: ``main`` (oznaczenia, ⏰ Przypomnij, 📝 Notatka, ⋯ Więcej), ``remind`` (7/14/30 dni),
-    ``note`` (zmień/usuń notatkę) i ``more`` (obserwowanie, 👍/👎).
+    Widoki: ``main`` (📍 Mapa, ⭐ Zapisz, ⏰ Przypomnij, 📝 Notatka, 📋 Wynik, 🔽 Szczegóły, ⋯ Więcej),
+    ``remind`` (7/14/30 dni), ``note`` (zmień/usuń notatkę), ``more`` (✅ przejrzane, 🗑️ ukryj, obserwowanie,
+    👍/👎), ``outcome`` (wynik pracy) i ``reason`` (dlaczego niepasująca).
     """
     nr = inv.nr
     back = [("◀️ Wróć", f"bk:{nr}")]
@@ -632,27 +1169,41 @@ def lead_keyboard(inv: Investment, *, flags: LeadFlags, watching_investor: bool,
         return inline(rows)
     if view == "note":
         return inline([[("✏️ Zmień notatkę", f"nt:{nr}:e"), ("🗑️ Usuń", f"nt:{nr}:d")], back])
+    if view == "outcome":
+        rows = [[(label + (" ✓" if outcome.wynik == key else ""), f"w:{nr}:{code}")]
+                for code, key in OUTCOME_CODES.items() for label in (OUTCOME_LABELS[key],)]
+        if outcome.wynik:
+            rows.append([("✖️ Wyczyść wynik", f"w:{nr}:0")])
+        return inline(rows + [back])
+    if view == "reason":
+        rows = [[(label + (" ✓" if outcome.powod == key else ""), f"wp:{nr}:{code}")]
+                for code, key in REASON_CODES.items() for label in (REASON_LABELS[key],)]
+        return inline(rows + [[("Pomiń", f"bk:{nr}")]])
     if view == "more":
-        rows = []
+        rows = [[("✅ Przejrzany ✓", f"r0:{nr}") if flags.reviewed else ("✅ Przejrzane", f"r1:{nr}"),
+                 ("🗑️ Ukryj", f"h:{nr}")]]
         if inv.inwestor:
             rows.append([("👀 Obserwujesz inwestora ✓" if watching_investor else "👀 Obserwuj inwestora", f"wi:{nr}")])
         if inv.gmina_teryt:
             rows.append([("📌 Obserwujesz gminę ✓" if watching_gmina else "📌 Obserwuj gminę", f"wg:{nr}")])
-        rows += [[("👍 Przydatne", f"fu:{nr}:1"), ("👎 Nieprzydatne", f"fu:{nr}:0")], back]
-        return inline(rows)
+        thumbs = [("👍 Przydatne" + (" ✓" if outcome.ocena == 1 else ""), f"fu:{nr}:1"),
+                  ("👎 Nieprzydatne" + (" ✓" if outcome.ocena == -1 else ""), f"fu:{nr}:0")]
+        return inline(rows + [thumbs, back])
     keyboard: list[list[dict[str, str]]] = []
-    links = [{"text": text, "url": url} for text, url in (("📍 Mapa", inv.google_maps_url),
+    links = [{"text": text, "url": url} for text, url in ((_map_label(inv), inv.google_maps_url),
                                                           ("🏛️ Geoportal", inv.geoportal_url)) if url]
     if links:
         keyboard.append(links)
-    actions = [
-        ("⭐ Zapisany ✓", f"s0:{nr}") if flags.saved else ("⭐ Zapisz", f"s1:{nr}"),
-        ("✅ Przejrzany ✓", f"r0:{nr}") if flags.reviewed else ("✅ Przejrzane", f"r1:{nr}"),
-        ("🗑️ Ukryj", f"h:{nr}"),
+    result = (f"📋 Wynik: {OUTCOME_LABELS[outcome.wynik].split(' ', 1)[1].lower()} ✓" if outcome.wynik
+              else "📋 Wynik")
+    rows = [
+        [("⭐ Zapisany ✓", f"s0:{nr}") if flags.saved else ("⭐ Zapisz", f"s1:{nr}"),
+         (f"⏰ {reminder_on} ✓" if reminder_on else "⏰ Przypomnij", f"pr:{nr}"),
+         ("📝 Notatka ✓" if has_note else "📝 Notatka", f"nt:{nr}")],
+        [(result, f"w:{nr}"), ("🔼 Zwiń" if details else "🔽 Szczegóły", f"d:{nr}:0" if details else f"d:{nr}"),
+         ("⋯ Więcej", f"mx:{nr}")],
     ]
-    personal = [(f"⏰ {reminder_on} ✓" if reminder_on else "⏰ Przypomnij", f"pr:{nr}"),
-                ("📝 Notatka ✓" if has_note else "📝 Notatka", f"nt:{nr}")]
-    keyboard += inline([actions, personal, [("⋯ Więcej", f"mx:{nr}")]])["inline_keyboard"]
+    keyboard += inline(rows)["inline_keyboard"]
     return {"inline_keyboard": keyboard}
 
 
@@ -700,27 +1251,118 @@ def pause_text(paused: bool) -> str:
     return "▶️ Powiadomienia wznowione – zaległe przyjdą zbiorczo, bez zalewu wiadomości."
 
 
-def pilot_report(days: int, *, sent: tuple[int, int], events: dict[str, tuple[int, int]]) -> str:
-    """Raport pilotażu dla admina: unikalne osoby i inwestycje z ostatnich ``days`` dni."""
-    def investments(kind: str) -> str:
-        people, count = events.get(kind, (0, 0))
-        return (f"{_count(count, 'inwestycja', 'inwestycje', 'inwestycji')} · "
-                f"{_count(people, 'osoba', 'osoby', 'osób')}")
+def pilot_report(days: int, *, since: datetime, sent: tuple[int, int], unique: dict[str, tuple[int, int]],
+                 events: Sequence[Event], users: Sequence[BotUser], outcomes: dict[str, int], cohort: Cohort,
+                 rule: str) -> str:
+    """Raport pilotażu dla admina: lejek od wejścia do płatności z ostatnich ``days`` dni.
 
-    def people(kind: str) -> str:
-        return _count(events.get(kind, (0, 0))[0], "osoba", "osoby", "osób")
+    Osoby (unikalne) obok liczby zdarzeń; wysłanie osobno od interakcji; dostęp nadany ręcznie osobno od
+    potwierdzonej płatności; konwersje tylko w kohortach testu z zakończoną obserwacją. Kliknięć w mapy
+    i odczytów wiadomości Telegram nie zgłasza – nie są mierzone, więc ich tu nie ma.
+    """
+    def people(n: int) -> str:
+        return _count(n, "osoba", "osoby", "osób")
 
-    lines = [f"📈 <b>Pilotaż – ostatnie {days} dni</b>", "",
-             f"📤 Wysłane w raportach i alertach: {_count(sent[0], 'inwestycja', 'inwestycje', 'inwestycji')} · "
-             f"{_count(sent[1], 'osoba', 'osoby', 'osób')}",
-             f"👆 Otwarte szczegóły: {investments('szczegoly')}",
-             f"⭐ Zapisane: {investments('zapis')}",
-             f"👍 Przydatne: {events.get('przydatne', (0, 0))[1]} · 👎 Nieprzydatne: {events.get('nieprzydatne', (0, 0))[1]}",
-             f"⚙️ Ukończona konfiguracja: {people('konfiguracja')} · ▶️ Start testu: {people('test_start')}",
-             f"💳 Dostęp nadany lub przedłużony: {people('dostep_przedluzony')}",
-             "",
-             "ℹ️ Uwaga: wysłanie to nie przeczytanie – Telegram nie mówi, kto obejrzał wiadomość. Kliknięć "
-             "w mapy i Geoportal Telegram nie zgłasza botowi, więc ich nie liczymy."]
+    def who(kind: str) -> str:
+        return people(len({e.chat_id for e in events if e.rodzaj == kind}))
+
+    def times(kind: str) -> int:
+        return sum(1 for e in events if e.rodzaj == kind)
+
+    def investments(n: int) -> str:
+        return _count(n, "inwestycja", "inwestycje", "inwestycji")
+
+    starts = [e for e in events if e.rodzaj == "start"]
+    sources = Counter(e.szczegoly or "brak" for e in starts)
+    empty = Counter(e.szczegoly or "?" for e in events if e.rodzaj == "pusto")
+    anyway = sum(1 for e in events if e.rodzaj == "test_start" and e.szczegoly == "mimo_pustych")
+    opened_people, opened = unique.get("szczegoly", (0, 0))
+    saved_people, saved = unique.get("zapis", (0, 0))
+    reasons = ", ".join(f"{key.split(':', 1)[1]} {n}" for key, n in sorted(outcomes.items()) if key.startswith("powod:"))
+    observed = len(cohort.observed)
+    lines = [
+        f"📈 <b>Pilotaż – ostatnie {days} dni</b> (od {local(since):%d.%m})", "",
+        f"👥 Konta: nowe {len(starts)}" + (" · źródła: " + ", ".join(f"{escape_html(k)} {n}"
+                                                                    for k, n in sources.most_common(10))
+                                           if starts else "")
+        + f" · razem {len(users)} · firmy oznaczone: {len({u.firma for u in users if u.firma})}",
+        f"🚪 Przed testem: przykład {who('demo')} · oferta {who('oferta')} · prośba o test {who('prosba_o_test')}"
+        f" · pytanie o ofertę {who('pytanie_oferta')}",
+        f"⚙️ Konfiguracja: zaczęło {who('konfiguracja_start')} · skończyło {who('konfiguracja')}",
+        f"▶️ Start testu: {who('test_start')}" + (f" (w tym mimo pustych wyników: {anyway})" if anyway else ""),
+        f"📊 Wyniki pokazane: {who('wyniki')} · pusty wynik: {who('pusto')}"
+        + (" (" + ", ".join(f"{k} {n}" for k, n in empty.most_common()) + ")" if empty else ""),
+        f"👆 Otwarte szczegóły: {investments(opened)} · {people(opened_people)} · "
+        f"{_count(times('szczegoly'), 'otwarcie', 'otwarcia', 'otwarć')}",
+        f"⭐ Zapisane: {investments(saved)} · {people(saved_people)}",
+        f"📋 Wyniki pracy: do sprawdzenia {outcomes.get('do_sprawdzenia', 0)} · sprawdzone "
+        f"{outcomes.get('sprawdzona', 0)} · rozmowa {outcomes.get('rozmowa', 0)} · złożona oferta "
+        f"{outcomes.get('oferta', 0)} · niepasujące {outcomes.get('niepasujaca', 0)}" + (f" ({reasons})" if reasons else ""),
+        f"👍 Przydatne: {outcomes.get('ocena_plus', 0)} · 👎 Nieprzydatne: {outcomes.get('ocena_minus', 0)}",
+        f"📤 Wysłane w raportach i alertach: {investments(sent[0])} · {people(sent[1])}",
+        f"💡 Podpowiedź po 48 h bez efektów: {who('podpowiedz_test')}",
+        f"🔑 Dostęp nadany ręcznie: {who('dostep_przedluzony')} · 🎁 test przedłużony: {who('test_przedluzony')}",
+        f"🛒 Zamówienia: {who('zamowienie')} · 💳 płatności potwierdzone: {who('platnosc')}"
+        f" (odnowienia: {times('odnowienie')})",
+        f"⌛ Koniec dostępu: {who('koniec_dostepu')}", "",
+        f"🧪 <b>Kohorta testu</b> (start w tym okresie): {len(cohort.started)}",
+        f"• obserwacja zakończona: {observed}" + (f" → aktywacja {len(cohort.activated)}/{observed} · zamówienie "
+                                                  f"{len(cohort.ordered)}/{observed} · płatność {len(cohort.paid)}/{observed}"
+                                                  if observed else ""),
+        f"• trwające: {len(cohort.ongoing)} – nie liczone do konwersji (obserwacja {OBSERVATION.days} dni od startu)",
+        f"ℹ️ {rule}",
+        "ℹ️ Uwaga: wysłanie to nie przeczytanie – Telegram nie mówi, kto obejrzał wiadomość. Kliknięć "
+        "w mapy i Geoportal Telegram nie zgłasza botowi, więc ich nie liczymy.",
+    ]
+    return "\n".join(lines)
+
+
+DATA_REPORT_GMINY = 8
+"""Ile gmin z rozbieżnymi nazwami wypisać w ``/dane`` (reszta – liczbą), żeby raport zmieścił się w wiadomości."""
+
+
+def data_report(overview: dict, *, place_names: dict[str, str], freshness: str, import_note: str | None,
+                history_needed: str | None, offer_missing: Sequence[str]) -> str:
+    """``/dane`` – co jest w bazie i czego brakuje; niejednoznaczności pokazujemy, nie poprawiamy zgadywaniem."""
+    span = overview["zakres"]
+    lines = ["🧪 <b>Dane w bocie</b>",
+             f"📥 Inwestycje: {overview['inwestycje']} (z szumem: {overview['wszystkie']})"
+             + (f" · daty: {_pl_date(span[0])}–{_pl_date(span[1])}" if span else ""),
+             freshness] + ([import_note] if import_note else [])
+    lines.append("🗺️ Powiaty w danych:")
+    for code, names in overview["powiaty"].items():
+        total = sum(names.values())
+        label = place_names.get(code) or max(names, key=names.get)
+        lines.append(f"• {code} „{escape_html(label)}” – {total}")
+        if len(names) > 1:
+            listed = ", ".join(f"„{escape_html(name)}”" for name in sorted(names))
+            lines.append(f"⚠️ Kod {code} ma różne nazwy w danych: {listed} – bot niczego nie poprawia, pokazuje jedną.")
+    if not overview["powiaty"]:
+        lines.append("• brak")
+    variants = list(overview["gminy_rozne"].items())
+    for code, names in variants[:DATA_REPORT_GMINY]:
+        lines.append(f"⚠️ Gmina {code} ma różne nazwy: " + ", ".join(f"„{escape_html(_short(n, 40))}”" for n in names[:5]))
+    if len(variants) > DATA_REPORT_GMINY:
+        lines.append(f"…i {len(variants) - DATA_REPORT_GMINY} kolejnych kodów gmin z różnymi nazwami.")
+    lines.append(f"⚠️ Spoza ustawionych powiatów: {overview['spoza']} · bez kodu powiatu: {overview['bez_kodu']}")
+    other = overview["inwestycje"] - overview["dzialka"] - overview["obreb"] - overview["brak_lokalizacji"]
+    lines.append(f"📍 Lokalizacja: dokładna {overview['dzialka']} · przybliżona {overview['obreb']} · "
+                 f"brak {overview['brak_lokalizacji']}" + (f" · nieznana dokładność {other}" if other > 0 else ""))
+    lines.append(f"⚠️ Braki: bez gminy: {overview['bez_gminy']} · bez miejscowości i adresu: {overview['bez_miejsca']}")
+    lines.append(f"⚠️ Lokalizacja niepewna (działka poza gminą z rejestru): {overview['niepewne']} – karta mówi to "
+                 "wprost i nie liczy odległości; niczego nie poprawiamy zgadywaniem.")
+    oldest = overview["najstarsza_decyzja"]
+    if history_needed:
+        lines.append(f"🕰️ Najstarsza decyzja: {_pl_date(oldest) if oldest else 'brak'} – okna etapów sięgają do "
+                     f"{_pl_date(history_needed)}, więc przypomnienia o etapach mają niepełne dane. Historia: "
+                     "<code>python main.py --fetch --historical</code>")
+    else:
+        lines.append(f"🕰️ Najstarsza decyzja: {_pl_date(oldest)} – historia wystarcza do okien etapów.")
+    if offer_missing:
+        lines.append(f"⚠️ Oferta niepełna – brakuje: {', '.join(offer_missing)}. Bot pokazuje tylko „💬 Zapytaj "
+                     "o ofertę” (uzupełnij OFERTA_… w .env).")
+    else:
+        lines.append("💳 Oferta kompletna – bot pokazuje cenę i przyjmuje zamówienia.")
     return "\n".join(lines)
 
 
@@ -732,8 +1374,8 @@ def hidden_card(inv: Investment) -> tuple[str, Markup]:
 
 def watch_header(item: WatchItem, inv: Investment) -> tuple[str, str, str]:
     if item.rodzaj == "inwestor":
-        return "👀", "WATCHLISTA", "nowa inwestycja obserwowanego inwestora"
-    return "👀", "WATCHLISTA", f"nowa inwestycja w obserwowanej gminie {item.etykieta}"
+        return "👀", "Obserwowane", "nowa inwestycja obserwowanego inwestora"
+    return "👀", "Obserwowane", f"nowa inwestycja w obserwowanej gminie {item.etykieta}"
 
 
 # --- Raport ---------------------------------------------------------------------------------------
@@ -761,7 +1403,7 @@ def report(date_label: str, *, total_new: int, leads: Sequence[Investment], matc
     ]
     extra = []
     if hot:
-        extra.append(f"{hot} to 🔥 HOT (duża skala).")
+        extra.append(f"Dużej skali (szacunek): {hot}.")
     if watched:
         extra.append(_watched_text(watched) + ".")
     lines = [f"📊 <b>Raport {date_label}</b>", " ".join(summary)] + ([" ".join(extra)] if extra else [])
@@ -808,15 +1450,18 @@ def nothing_new_head(*, total_new: int, watched: int, note: str | None = None) -
 
 def history_page(leads: Sequence[Investment], *, page: int, pages: int, total: int, days: int,
                  head: Sequence[str] = (), distance: Distance | None = None,
-                 filters: str = "", freshness: str = "") -> tuple[str, Markup | None]:
+                 filters: str = "", freshness: str = "", explanation: Sequence[str] = ()) -> tuple[str, Markup | None]:
     """Przegląd historii: pasujące z ostatnich ``days`` dni, stronami „◀️ Wstecz / Dalej ▶️”.
 
     ``total`` to wszystkie pasujące – dokładnie tyle da się przejrzeć; przegląd niczego nie oznacza jako wysłane.
+    ``explanation`` – przy pustym wyniku: dlaczego (brak danych, miejsce spoza obszaru, zbyt wąskie ustawienia).
     """
     lines = list(head)
     if not total:
         lines.append(f"\n🔎 Z ostatnich {days} dni brak pasujących do Twoich filtrów.")
-        if filters:
+        if explanation:
+            lines += list(explanation)
+        elif filters:
             lines.append(filters)
         lines.append("Możesz poszerzyć obszar albo zmienić rodzaj inwestycji 👇")
         if freshness:
@@ -848,8 +1493,14 @@ def filters_summary(user: BotUser, place_names: dict[str, str]) -> str:
     if f.inwestor:
         parts.append(f"💼 {_investor_label(f.inwestor)}")  # już z escapowaniem
     if user.tylko_hot:
-        parts.append("🔥 tylko HOT")
+        parts.append("🏗️ tylko duża skala")
     return "Twoje filtry: " + " · ".join(parts)
+
+
+def archive_saved_head() -> str:
+    """Nad listą zapisanych po końcu dostępu – co jest dostępne i dlaczego nic nowego."""
+    return ("🗄️ <b>Twój dostęp jest nieaktywny</b> – zapisane inwestycje i notatki zostają do wglądu. "
+            "Nowe inwestycje i szczegóły z rejestru zobaczysz po przedłużeniu dostępu (👤 /konto).")
 
 
 def saved_list(leads: Sequence[Investment], page: int, total: int,
@@ -882,8 +1533,8 @@ def watch_screen(items: Sequence[WatchItem]) -> tuple[str, Markup | None]:
 
 def hot_only_text(enabled: bool) -> str:
     if enabled:
-        return "✅ Od teraz wysyłam tylko 🔥 HOT – inwestycje o największej skali (szacunek z kubatury i rodzaju)."
-    return "✅ Wysyłam wszystkie inwestycje pasujące do filtrów (🔥 HOT i pozostałe)."
+        return "✅ Od teraz pokazuję tylko inwestycje dużej skali (szacunek z kubatury i rodzaju budynku)."
+    return "✅ Pokazuję wszystkie inwestycje pasujące do filtrów – bez względu na skalę."
 
 
 def unknown_text() -> str:
@@ -892,8 +1543,8 @@ def unknown_text() -> str:
 
 # --- Pomocnicze ---------------------------------------------------------------------------------
 
-def _report_entry(position: int, inv: Investment, distance: Distance | None = None) -> str:
-    icon = ("🔥" if inv.priorytet == HOT else "") + CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+def _report_entry(position: int, inv: Investment, distance: Distance | None = None, badge: str = "") -> str:
+    icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•") + badge
     km = distance(inv) if distance else None
     facts = [p for p in (
         f"📏 {distance_label(km)}" if km is not None else None,
@@ -907,7 +1558,7 @@ def _report_entry(position: int, inv: Investment, distance: Distance | None = No
 
 def _stage_entry(position: int, inv: Investment, distance: Distance | None = None) -> str:
     """Pozycja przypomnienia – z pełną datą pozwolenia (bywa sprzed roku)."""
-    icon = ("🔥" if inv.priorytet == HOT else "") + CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+    icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
     km = distance(inv) if distance else None
     decided = inv.data_decyzji or inv.data_wplywu
     facts = [p for p in (
@@ -952,7 +1603,7 @@ def _investor_label(value: str | None) -> str:
     if not value:
         return "dowolny"
     if value == "firma":
-        return "tylko firmy"
+        return "tylko z nazwą inwestora"
     return f"zawiera „{escape_html(value)}”"
 
 
@@ -963,6 +1614,11 @@ def _thousands(value: float) -> str:
 def _short(text: str, limit: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _pl_date(iso_date: str) -> str:
+    """„2026-09-21” → „21.09.2026”."""
+    return f"{iso_date[8:10]}.{iso_date[5:7]}.{iso_date[:4]}" if len(iso_date) >= 10 else iso_date
 
 
 def _short_date(iso_date: str | None) -> str | None:

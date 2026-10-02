@@ -1,5 +1,6 @@
 """P1.2: uczciwe komunikaty – szacunki nazwane szacunkami, świeżość danych, „inwestycja” zamiast „lead”."""
 
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -68,7 +69,7 @@ def test_card_keeps_the_approximate_location_note(bot, api, repo):
     assert "lokalizacja przybliżona – środek obrębu" in api.last_to(MIETEK)["text"]
 
 
-def test_hot_is_a_scale_estimate_not_a_chance_of_winning(bot, api, repo):
+def test_scale_is_an_estimate_not_a_chance_of_winning(bot, api, repo):
     repo.upsert(lead("HOT/1", priorytet="hot", punkty=10, kubatura=26000.0))
     bot.handle_update(message(MIETEK, "📊 Inwestycje"))
     report = api.last_to(MIETEK)["text"]
@@ -77,8 +78,8 @@ def test_hot_is_a_scale_estimate_not_a_chance_of_winning(bot, api, repo):
     bot.handle_update(message(MIETEK, "❓ Pomoc"))
     help_text = api.last_to(MIETEK)["text"]
 
-    assert card.startswith("🔥 <b>HOT</b>") and "Skala (szacunek)" in card
-    assert "1 to 🔥 HOT (duża skala)." in report
+    assert "🏗️ Skala: duża (26 000 m³)" in card and "📐 <b>Szacunki</b> (orientacyjne)" in card
+    assert "Dużej skali (szacunek): 1." in report and "HOT" not in report + card
     assert "szacunek skali" in help_text and "nie mówi, czy zdobędziesz zlecenie" in help_text
 
 
@@ -188,3 +189,36 @@ def test_import_left_running_by_a_dead_process_is_not_called_running(bot, api, r
     bot.handle_update(message(MIETEK, "📊 Inwestycje"))
     text = api.last_to(MIETEK)["text"]
     assert "Właśnie sprawdzam" not in text and "nie zakończyło się" in text
+
+
+def test_new_sales_screens_promise_nothing_the_product_does_not_do(bot, api, repo):
+    """Opis, przykład, oferta, podsumowanie, podpowiedzi i wiadomości o dostępie: bez „lead”, bez telefonów do
+    inwestorów, bez HOT, bez gwarancji (poza zaprzeczeniem) i bez sugerowania płatności tam, gdzie jej nie było."""
+    from decimal import Decimal
+
+    from gunb_tool.config import OfferConfig
+    from gunb_tool.demo import demo_leads
+
+    offer = OfferConfig(area="Olsztyn i powiat olsztyński", price=Decimal("99"), tax="brutto", payment="przelew",
+                        seller_name="Jan", seller_contact="@jan", response_time="w dni robocze 16:00–20:00")
+    leads = demo_leads(date(2026, 9, 29))
+    user = BotStore(repo).get_user(MIETEK)
+    summary = {"dostarczone": 4, "otwarte": 2, "zapisane": 1, "notatki": 0, "przypomnienia": 0, "wyniki": 1}
+    texts = [
+        ui.intro_text("Mietek", offer.area, offer), ui.intro_text("Mietek", offer.area, OfferConfig()),
+        ui.gate_short_text(requested_on=None), ui.about_text(offer.area), ui.trial_requested_text(offer),
+        ui.offer_text(offer, offer.area), ui.offer_text(OfferConfig(), offer.area),
+        ui.demo_screen(leads, ui.lead_card(leads[0]))[0], ui.trial_nudge(summary, "06.10.2026, 07:00")[0],
+        ui.access_reminder_text("06.10.2026", trial=True, offer=offer, summary=summary),
+        ui.access_ended_text("06.10.2026", trial=True, offer=offer), ui.activated_text("29.10.2026", "Mietek", days=30),
+        ui.setup_summary(user, "Dywity", BotConfig(), can_start_trial=True, area=offer.area, data_range=None,
+                         freshness="", recent=0, in_window=0)[0],
+        ui.first_value(leads, recent=3, in_window_ids=set(), trade=None, days=30, tip=True)[0],
+        ui.TIP_OPEN, ui.TIP_SAVE, ui.TIP_NOTE, ui.rejected_text(),
+    ]
+    for text in texts:
+        lowered = text.lower()
+        assert "lead" not in lowered and "hot" not in lowered.replace("hotel", ""), text
+        assert not any(word in lowered for word in ("telefon", "zadzwo", "dzwoni")), text
+        assert all("nie" in words for words in re.findall(r"(\S+) (\S+) gwaranc", lowered)), text
+    assert "płatn" not in ui.activated_text("29.10.2026", "Mietek", days=30).lower()

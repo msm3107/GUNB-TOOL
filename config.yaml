@@ -130,6 +130,26 @@ bot:
   # Z ilu dni wstecz nowa osoba dostaje leady w pierwszym raporcie.
   welcome_backlog_days: 7
   max_leads_in_report: 20
+  # Oferta dalszego dostępu – bot pokazuje ją przed testem, na ekranie konta, przed końcem i po końcu
+  # dostępu. Wartości wpisuj w .env (repozytorium jest publiczne). Dopóki brakuje ceny, sposobu podatku,
+  # sposobu płatności albo danych sprzedawcy, bot nie pokazuje ceny ani przycisku zamówienia – tylko
+  # „💬 Zapytaj o ofertę”. Brakujące pola pokazuje adminowi /dane. Wzór: .env.example.
+  offer:
+    name: ${OFERTA_NAZWA:-Żółta Tablica}
+    area: ${OFERTA_OBSZAR:-Olsztyn i powiat olsztyński}
+    accounts: ${OFERTA_KONTA:-1}              # ile kont Telegram obejmuje jeden dostęp
+    price: ${OFERTA_CENA:-}                   # np. 99 – decyzja operatora (hipoteza pilotażu)
+    currency: ${OFERTA_WALUTA:-PLN}
+    period_days: ${OFERTA_DNI:-30}
+    tax: ${OFERTA_PODATEK:-}                  # netto_vat | brutto | bez_vat
+    vat_rate: ${OFERTA_VAT:-23}               # tylko przy netto_vat
+    payment: ${OFERTA_PLATNOSC:-}             # np. przelew – dane w potwierdzeniu zamówienia
+    seller_name: ${OFERTA_SPRZEDAWCA:-}
+    seller_contact: ${OFERTA_KONTAKT:-}
+    renewal: ${OFERTA_ODNOWIENIE:-Dostęp nie odnawia się sam – przed końcem przypomnę o przedłużeniu.}
+    terms_url: ${OFERTA_ZASADY_URL:-}
+    privacy_url: ${OFERTA_PRYWATNOSC_URL:-}
+    response_time: ${OFERTA_ODPOWIEDZ:-}      # np. w dni robocze 16:00–20:00 (puste = nie pokazuj)
 
 geocoding:
   enabled: true

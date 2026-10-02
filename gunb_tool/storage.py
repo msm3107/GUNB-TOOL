@@ -292,6 +292,53 @@ CREATE INDEX IF NOT EXISTS ix_zdarzenia_kiedy ON zdarzenia (kiedy);
 bez ruszania oznaczeń; pauza powiadomień; zdarzenia pilotażu, których nie ma w ``deliveries``."""
 
 
+_SALES_SCHEMA = """
+ALTER TABLE bot_users ADD COLUMN zrodlo TEXT;
+ALTER TABLE bot_users ADD COLUMN firma TEXT;
+ALTER TABLE bot_users ADD COLUMN prosba_o_test TEXT;
+ALTER TABLE bot_users ADD COLUMN porady TEXT NOT NULL DEFAULT '';
+ALTER TABLE bot_users ADD COLUMN podpowiedzi INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE bot_users ADD COLUMN podpowiedz_test TEXT;
+ALTER TABLE bot_users ADD COLUMN test_przedluzono TEXT;
+ALTER TABLE bot_users ADD COLUMN test_przedluzenie_powod TEXT;
+ALTER TABLE zdarzenia ADD COLUMN szczegoly TEXT;
+CREATE INDEX IF NOT EXISTS ix_zdarzenia_osoba ON zdarzenia (chat_id, rodzaj);
+
+CREATE TABLE IF NOT EXISTS wyniki (
+    chat_id   INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    id_sprawy TEXT NOT NULL REFERENCES investments (id_sprawy) ON DELETE CASCADE,
+    wynik     TEXT,
+    powod     TEXT,
+    ocena     INTEGER,
+    zmieniono TEXT NOT NULL,
+    PRIMARY KEY (chat_id, id_sprawy)
+);
+
+CREATE TABLE IF NOT EXISTS zamowienia (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     INTEGER NOT NULL REFERENCES bot_users (chat_id) ON DELETE CASCADE,
+    stan        TEXT NOT NULL DEFAULT 'zgloszone',
+    oferta      TEXT NOT NULL,
+    cena        TEXT NOT NULL,
+    waluta      TEXT NOT NULL,
+    podatek     TEXT NOT NULL,
+    do_zaplaty  TEXT NOT NULL,
+    opis_ceny   TEXT NOT NULL,
+    dni         INTEGER NOT NULL,
+    utworzono   TEXT NOT NULL,
+    zmieniono   TEXT NOT NULL,
+    oplacono    TEXT,
+    potwierdzil INTEGER,
+    uwagi       TEXT,
+    dostep_do   TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_zamowienia_otwarte ON zamowienia (chat_id) WHERE stan = 'zgloszone';
+"""
+"""v12: sprzedaż w pilotażu – źródło wejścia, firma, prośba o test, podpowiedzi, jednorazowe przedłużenie testu
+z powodem, wynik pracy na parę osoba–inwestycja, zamówienia z ręcznym potwierdzeniem płatności. Zależne tabele
+mają ``ON DELETE CASCADE`` – ręczne usunięcie osoby z ``bot_users`` usuwa też jej zamówienia i wyniki."""
+
+
 Migration = str | Callable[[sqlite3.Connection, int], None]
 
 _MIGRATIONS: tuple[Migration, ...] = (
@@ -306,6 +353,7 @@ _MIGRATIONS: tuple[Migration, ...] = (
     _trial_and_access,                                    # v9: 7-dniowy test, dostęp dotychczasowych
     _SETUP_STEP,                                          # v10: krok pierwszej konfiguracji
     _PERSONAL_SCHEMA,                                     # v11: przypomnienia, notatki, pauza, zdarzenia
+    _SALES_SCHEMA,                                        # v12: źródło, zamówienia, wyniki pracy, podpowiedzi
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

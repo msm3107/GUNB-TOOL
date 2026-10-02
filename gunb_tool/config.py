@@ -11,6 +11,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, replace
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -213,6 +214,91 @@ class SegmentConfig:
     telegram_chat_id: str = ""
 
 
+TAX_MODES: dict[str, str] = {
+    "netto_vat": "cena netto + VAT (stawka vat_rate)",
+    "brutto": "cena brutto = kwota do zapłaty",
+    "bez_vat": "sprzedawca nie dolicza VAT – cena = kwota do zapłaty",
+}
+"""Sposób prezentacji podatku – wybiera operator; kod niczego nie zakłada o statusie VAT sprzedawcy."""
+
+
+@dataclass(frozen=True)
+class OfferConfig:
+    """Oferta dalszego dostępu pokazywana w bocie (przed testem, na koncie, przed i po końcu dostępu).
+
+    Dopóki brakuje ceny, sposobu podatku, sposobu płatności albo danych sprzedawcy (:meth:`missing`), bot
+    nie pokazuje przycisku zamówienia ani ceny – tylko uczciwe „💬 Zapytaj o ofertę”. Wartości trzymaj
+    w ``.env`` (repozytorium jest publiczne): ``config.yaml`` ma dla nich placeholdery ``${OFERTA_…}``.
+
+    Attributes:
+        name / area: nazwa oferty i obsługiwany obszar (słowami).
+        accounts: ile kont Telegram obejmuje jeden dostęp.
+        price / currency / period_days: cena za okres dostępu.
+        tax / vat_rate: prezentacja podatku (:data:`TAX_MODES`); stawka tylko przy ``netto_vat``.
+        payment: jak zapłacić (np. przelew – dane w potwierdzeniu zamówienia).
+        seller_name / seller_contact: kto sprzedaje i jak się skontaktować.
+        renewal: zasady odnowienia (dostęp nie odnawia się sam).
+        terms_url / privacy_url: zasady usługi i informacja o prywatności (https).
+        response_time: kiedy operator odpowiada – pokazywane tylko, gdy ustawione.
+    """
+
+    name: str = "Żółta Tablica"
+    area: str = ""
+    accounts: int = 1
+    price: Decimal | None = None
+    currency: str = "PLN"
+    period_days: int = 30
+    tax: str = ""
+    vat_rate: int = 23
+    payment: str = ""
+    seller_name: str = ""
+    seller_contact: str = ""
+    renewal: str = ""
+    terms_url: str = ""
+    privacy_url: str = ""
+    response_time: str = ""
+
+    def missing(self) -> list[str]:
+        """Czego brakuje, żeby pokazać cenę i przyjmować zamówienia (puste – oferta kompletna)."""
+        required = (("cena", self.price is not None), ("sposób podatku", bool(self.tax)),
+                    ("sposób płatności", bool(self.payment)), ("sprzedawca", bool(self.seller_name)),
+                    ("kontakt sprzedawcy", bool(self.seller_contact)))
+        return [label for label, present in required if not present]
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing()
+
+    @property
+    def amount_due(self) -> Decimal | None:
+        """Kwota do zapłaty za jeden okres (z VAT, gdy cena jest netto)."""
+        if self.price is None:
+            return None
+        if self.tax == "netto_vat":
+            return (self.price * (100 + self.vat_rate) / 100).quantize(Decimal("0.01"), ROUND_HALF_UP)
+        return self.price
+
+    def price_line(self) -> str:
+        """Cena słowami, np. „99 zł netto + 23% VAT = 121,77 zł do zapłaty”; pusta przy niepełnej cenie."""
+        if self.price is None or self.tax not in TAX_MODES:
+            return ""
+        price = format_money(self.price, self.currency)
+        if self.tax == "netto_vat":
+            return f"{price} netto + {self.vat_rate}% VAT = {format_money(self.amount_due, self.currency)} do zapłaty"
+        if self.tax == "brutto":
+            return f"{price} brutto (kwota do zapłaty)"
+        return f"{price} – kwota do zapłaty (sprzedawca nie dolicza VAT)"
+
+
+def format_money(amount: Decimal | None, currency: str = "PLN") -> str:
+    """„99 zł”, „121,77 zł”, „1 250 zł” – polski zapis kwoty (inna waluta – jej kod)."""
+    if amount is None:
+        return "—"
+    whole = amount == amount.to_integral_value()
+    text = format(amount, ",.0f" if whole else ",.2f").replace(",", " ").replace(".", ",")
+    return f"{text} {'zł' if currency == 'PLN' else currency}"
+
+
 @dataclass(frozen=True)
 class BotConfig:
     """Interaktywny bot Telegram (``main.py --bot``).
@@ -230,6 +316,7 @@ class BotConfig:
         max_leads_in_report: najwięcej leadów wypisanych w jednym raporcie.
         recent_days: gdy nic nowego nie ma, „📊 Co nowego?” pokazuje pasujące leady z tylu ostatnich dni.
         poll_timeout: czas long pollingu Telegrama (s).
+        offer: oferta dalszego dostępu (:class:`OfferConfig`).
     """
 
     admins: tuple[int, ...] = ()
@@ -243,6 +330,7 @@ class BotConfig:
     recent_days: int = 30
     poll_timeout: int = 25
     admin_contact: str = ""
+    offer: OfferConfig = OfferConfig()
 
 
 @dataclass(frozen=True)
@@ -566,7 +654,58 @@ def _bot(data: dict[str, Any]) -> BotConfig:
         recent_days=int(_number(data, "bot", "recent_days", defaults.recent_days, minimum=1)),
         poll_timeout=int(_number(data, "bot", "poll_timeout", defaults.poll_timeout, minimum=1)),
         admin_contact=contact,
+        offer=_offer(_section(data, "offer") if "offer" in data else {}),
         **times,
+    )
+
+
+def _offer(data: dict[str, Any]) -> OfferConfig:
+    """``bot.offer``: puste wartości są dozwolone (oferta niepełna), błędne – zatrzymują start."""
+    defaults = OfferConfig()
+
+    def text(key: str, default: str = "") -> str:
+        return str(data.get(key) or default).strip()
+
+    def whole(key: str, default: int, low: int, high: int) -> int:
+        raw = text(key) or str(default)
+        if not raw.isdigit() or not low <= int(raw) <= high:
+            raise ConfigError(f"bot.offer.{key}: {raw!r} – podaj liczbę całkowitą {low}–{high}")
+        return int(raw)
+
+    price = None
+    if text("price"):
+        try:
+            price = Decimal(text("price").replace(" ", "").replace(",", "."))
+        except InvalidOperation:
+            raise ConfigError(f"bot.offer.price: {text('price')!r} nie jest kwotą (np. 99 albo 99,50)") from None
+        if not Decimal("0") < price <= Decimal("100000") or price != price.quantize(Decimal("0.01")):
+            raise ConfigError(f"bot.offer.price: {text('price')!r} – kwota musi być dodatnia, z groszami najwyżej")
+    tax = text("tax").lower()
+    if tax and tax not in TAX_MODES:
+        raise ConfigError(f"bot.offer.tax: {tax!r} – dozwolone: {', '.join(TAX_MODES)} (puste = nie pokazuj ceny)")
+    currency = text("currency", defaults.currency).upper()
+    if not re.fullmatch(r"[A-Z]{3}", currency):
+        raise ConfigError(f"bot.offer.currency: {currency!r} – podaj kod waluty, np. PLN")
+    urls = {}
+    for key in ("terms_url", "privacy_url"):
+        urls[key] = text(key)
+        if urls[key] and not re.fullmatch(r"https://[^\s<>\"']+", urls[key]):
+            raise ConfigError(f"bot.offer.{key}: {urls[key]!r} – podaj pełny adres https://…")
+    return OfferConfig(
+        name=text("name", defaults.name),
+        area=text("area"),
+        accounts=whole("accounts", defaults.accounts, 1, 100),
+        price=price,
+        currency=currency,
+        period_days=whole("period_days", defaults.period_days, 1, 366),
+        tax=tax,
+        vat_rate=whole("vat_rate", defaults.vat_rate, 0, 99),
+        payment=text("payment"),
+        seller_name=text("seller_name"),
+        seller_contact=text("seller_contact"),
+        renewal=text("renewal"),
+        response_time=text("response_time"),
+        **urls,
     )
 
 

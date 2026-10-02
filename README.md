@@ -15,9 +15,10 @@ GUNB (RWDZ – pozwolenia na budowę i zgłoszenia) dla lokalnych wykonawców bu
 - zapisuje wszystko w **SQLite** (tryb WAL) z wykrywaniem nowych spraw i **zmian statusu**,
 - wysyła powiadomienia **Telegram** (HTML, przyciski inline, raporty zbiorcze zamiast spamu, limit
   1 wiadomość/s) i **Discord**, synchronizuje **Google Sheets**,
-- ma **interaktywnego bota „Żółta Tablica”** dla wielu osób: prowadzenie krok po kroku, 7-dniowy test,
-  własne filtry, 🔥 HOT/NORMAL/LOW (szacunek skali), obserwowani inwestorzy i gminy, ⭐ zapisane,
-  ⏰ przypomnienia i notatki, raport rano lub wieczorem – wszystko przyciskami.
+- ma **interaktywnego bota „Żółta Tablica”** dla wielu osób: opis i przykład przed testem, prowadzenie krok
+  po kroku, 7-dniowy test, własne filtry, kolejność według branży, odległości i daty, skala jako szacunek,
+  obserwowani inwestorzy i gminy, ⭐ zapisane, ⏰ przypomnienia, notatki i wynik pracy, ręczne zamówienie
+  z potwierdzeniem płatności, raport lejka dla admina – wszystko przyciskami.
 
 ```
 🏗️ NOWA INWESTYCJA · pozwolenie na budowę
@@ -260,39 +261,52 @@ Interaktywny bot dla wielu osób ([@ZoltaTablicaBot](https://t.me/ZoltaTablicaBo
 Przyciski i komendy poprzedniego menu (`📊 Co nowego?`, `🔎 Filtry`, `/filtry`, `/blisko`, `/branza`,
 `/tryb`, `/tylkohot`…) działają dalej – nikt nie musi się uczyć od nowa.
 
-**Pierwsze kroki (nowa osoba, po zgodzie admina):** 1/2 branża → 2/2 obszar (powiat z listy, wpisana
-miejscowość, pinezka bazy albo cały monitorowany obszar – bot pisze wprost, co monitoruje) →
-podsumowanie z domyślnym raportem porannym i przyciskiem **▶️ Zacznij 7-dniowy test**. Zaraz potem
-bot pokazuje **przegląd ostatnich 30 dni** (historia, nie nowości – nie zużywa kolejki nowych). Gdy nic
-nie pasuje, pokazuje aktywne filtry i dwa proste wyjścia: poszerz obszar / zmień rodzaj. Filtrów nigdy
-nie czyści sam. Miejscowość spoza monitorowanych danych i pinezka daleko od nich dostają jasny komunikat.
+**Pierwszy kontakt (bez dostępu):** co robi bot, dla kogo, monitorowany obszar, jak zacząć (pilotaż z ręcznym
+uruchomieniem) i – gdy operator ją ustawił – cena. Przyciski: 👀 przykład (wyłącznie dane fikcyjne), 🙋 prośba
+o test (do admina raz), 💳 oferta, ❓ jak to działa i ograniczenia danych. Nikt nie dostaje komunikatu
+o „zaległej płatności”. `/start <kod>` zapisuje źródło wejścia (np. `strona`) – [linki](docs/TELEGRAM_PROFIL.md).
+
+**Pierwsze kroki (po zgodzie admina):** 1/2 „Co oferujesz?” (m.in. materiały budowlane; branża ustawia kolejność
+i przypomnienia o etapie, nie zawęża rodzaju budynków) → 2/2 „Gdzie działasz?” → podsumowanie: ustawienia,
+zakres danych, data sprawdzenia rejestru i ile inwestycji pasuje. Pusty wynik ma nazwaną przyczynę (brak danych
+w bocie, miejsce spoza obszaru, wieś bez spraw, zbyt wąskie ustawienia, nieaktualny import) – wtedy zamiast
+startu: zmiana obszaru lub rodzaju, kontakt albo świadome „zacznij mimo to”. Test nigdy nie startuje sam.
+Po **▶️ Zacznij 7-dniowy test** – 3–5 najlepiej dopasowanych inwestycji i pełny przegląd jednym przyciskiem;
+podpowiedzi (otwórz, zapisz, notatka) pojawiają się raz i nigdy po wykonaniu czynności.
 Przerwaną konfigurację `/start` wznawia od tego samego kroku; dotychczasowi użytkownicy jej nie powtarzają.
 
 | Funkcja | Jak działa |
 |---|---|
 | **📊 Inwestycje** | Nowe od ostatniego raportu (lista z numerami); gdy nowych brak – pełny przegląd ostatnich 30 dni stronami „◀️ Wstecz / Dalej ▶️”. Pod spodem „🕒 Rejestr GUNB sprawdzony: …”; gdy import trwa albo się nie udał, bot to mówi (z godziną ponowienia). Raport z harmonogramu przy braku nowości nie przychodzi wcale. |
 | **⚙️ Ustawienia** | 🔎 Obszar i rodzaj (powiaty, miejscowość, 📍 promień od bazy w linii prostej, rodzaj budynku, kubatura, inwestor) · 🧰 Branża · 👀 Obserwowane · ⏰ Harmonogram (od razu / rano / wieczorem) · ⏸️ Wstrzymaj powiadomienia · 👤 Konto. |
-| **Przyciski pod inwestycją** | 📍 Mapa · 🏛️ Geoportal · ⭐ Zapisz · ✅ Przejrzane · 🗑️ Ukryj (z „↩️ Przywróć”) – oznaczenia są niezależne · **⏰ Przypomnij** (7 / 14 / 30 dni, jedno na inwestycję, rano w wybranym dniu) · **📝 Notatka** (prywatna, do 300 znaków) · **⋯ Więcej** (👀 obserwuj inwestora / 📌 gminę, 👍 Przydatne / 👎 Nieprzydatne). |
+| **Karta inwestycji** | Fakty z rejestru (rodzaj, miejsce, data, dokładność lokalizacji) · 🎯 dlaczego to widzisz (Twoje ustawienia) · 📐 szacunki (odległość w linii prostej, skala, okno etapu „do sprawdzenia”) · 👤 Twoja notatka. **🔽 Szczegóły** – dane urzędowe w tej samej wiadomości. Brak inwestora = „brak informacji w rejestrze”, nazwa = „wg rejestru, bez weryfikacji”. |
+| **Przyciski pod inwestycją** | 📍 Mapa · 🏛️ Geoportal · ⭐ Zapisz · **⏰ Przypomnij** (7 / 14 / 30 dni, rano w wybranym dniu) · **📝 Notatka** (prywatna, do 300 znaków) · **📋 Wynik** (do sprawdzenia / sprawdzona / rozmowa / złożona oferta / niepasująca + powód – jeden na osobę i inwestycję) · 🔽 Szczegóły · **⋯ Więcej** (✅ Przejrzane, 🗑️ Ukryj z „↩️ Przywróć”, 👀 obserwuj inwestora / 📌 gminę, 👍 / 👎). |
 | **🧰 Przypomnienia o etapie** | Dach 4–6 mies. po decyzji, okna i drzwi 5–7, instalacje 6–9, elewacja 8–12, wykończenia 9–14, ogrodzenie i kostka 10–18 (bloki i hale ×1,5; fundamenty – od razu). Wiadomość mówi wprost: „Warto sprawdzić tę inwestycję”, „Orientacyjne okno dla Twojej branży”, „Szacunek na podstawie daty decyzji; rzeczywisty etap wymaga sprawdzenia”. |
-| **🔥 HOT / 🟡 NORMAL / ⚪ LOW** | Szacunek **skali** z prostych reguł (kubatura, rodzaj, liczba budynków, nowa budowa, inwestor-firma) – nie szansa na zlecenie. Karta pokazuje punkty i powody. |
+| **🏗️ Skala** | Duża / średnia / mała – szacunek z prostych reguł (kubatura, rodzaj, liczba budynków; w danych `hot`/`normal`/`low`). Nie szansa na zlecenie i nie wpływa na kolejność: ta wynika z okna etapu branży, odległości od bazy (pasy po 10 km) i daty. |
 | **📏 Odległość** | W linii prostej od bazy do działki (ULDK); przy lokalizacji przybliżonej karta mówi „środek obrębu”. |
 | **👀 Obserwowane** | Nowa inwestycja obserwowanego inwestora lub w obserwowanej gminie → alert od razu; więcej niż 3 naraz (np. po pauzie) – jedna wiadomość zbiorcza. |
 | **⏸️ Pauza** | Wstrzymuje wszystkie automatyczne wiadomości: raporty, „od razu”, obserwowane, przypomnienia o etapie i „⏰ Przypomnij”. Przeglądanie działa, dostęp biegnie dalej. Informacje o końcu dostępu są transakcyjne – przychodzą także w pauzie. |
 
-**Dostęp: 7-dniowy test i abonament (bez bramki płatności, sterowany ręcznie):**
+**Dostęp: 7-dniowy test, dostęp ręczny i zamówienie z ręcznym potwierdzeniem płatności:**
 
-- Nowa osoba po `/start` nie ma dostępu i dostaje: „⛔ Twój dostęp jest nieaktywny. Skontaktuj się
-  z administratorem @nick, aby opłacić abonament.” (`ADMIN_CONTACT`; bez niego – klikalny link do admina).
-  Admin dostaje kartę osoby z przyciskami **🎁 Test 7 dni / ✅ 30 dni / ⛔ Odrzuć**.
+- Nowa osoba po `/start` dostaje opis produktu (wyżej); admin – kartę osoby ze źródłem i przyciskami
+  **🎁 Test 7 dni / ✅ 30 dni / ⛔ Odrzuć**, a po „🙋 Chcę przetestować” – jedną kartę prośby o test.
+- **Oferta** (`bot.offer`, wartości z `.env`: `OFERTA_…`) – cena, sposób podatku (operator wybiera: netto + VAT,
+  brutto, bez VAT), płatność, sprzedawca. Niepełna = żadnej ceny ani zamówienia, tylko „💬 Zapytaj o ofertę”.
+- **Zamówienie**: „🛒 Zamawiam” → numer Z-n z migawką ceny → admin potwierdza **otrzymaną** płatność
+  (przycisk albo `/zaplacone Z-n`) → dostęp +30 dni od końca obecnego, dokładnie raz. Dostęp z `/aktywuj` to
+  dostęp ręczny – nigdy nie jest nazywany płatnością. Instrukcja: [docs/PILOTAZ.md](docs/PILOTAZ.md).
 - **Test 7 dni**: admin tylko pozwala; zegar rusza, gdy osoba po konfiguracji kliknie **▶️ Zacznij** –
   dokładnie 7 × 24 h, z datą i godziną końca. Jeden test na konto Telegram: `/start`, restart, zmiana
   filtrów ani odblokowanie bota go nie odnawiają.
 - Uprawnienia sprawdza jedno miejsce dla komend, przycisków i zadań w tle: konto i pomoc – zawsze;
   ustawienia – także, gdy test czeka na start; inwestycje – tylko z dostępem. Przycisk autoryzuje osoba,
   która go kliknęła (`from.id`).
-- Po końcu dostępu raporty, alerty i przypomnienia stają, stare przyciski nie pokazują nic nowego,
-  a zapisane inwestycje i ustawienia zostają. Dzień przed końcem – jedno przypomnienie, po końcu – jedna
-  informacja (obie odporne na restart, nigdy w nocy); admin dostaje listę do przedłużenia.
+- Po końcu dostępu raporty, alerty i przypomnienia stają; ⭐ Zapisane, notatki i wyniki pracy są do wglądu
+  (karta „archiwum” tylko dla własnej pracy), stare przyciski innych inwestycji nie pokazują nic nowego.
+  Dzień przed końcem – jedno przypomnienie (w teście z podsumowaniem rzeczywistych działań i ofertą), po końcu –
+  jedna informacja z ofertą (obie odporne na restart, nigdy w nocy); admin dostaje listę do przedłużenia.
+- 48 h po starcie testu bez aktywacji – jedna podpowiedź (nie w nocy, nie w pauzie, wyłączalna w ustawieniach).
 
 | Komenda admina | Działanie |
 |---|---|
@@ -303,9 +317,17 @@ Przerwaną konfigurację `/start` wznawia od tego samego kroku; dotychczasowi u�
 | `/nowymodel <chat_id\|wszyscy> <dni\|data>` | dotychczasowym użytkownikom (dostęp bez terminu sprzed abonamentów) ustawia termin |
 | `/uzytkownicy` | lista osób ze stanem dostępu |
 | `/status` | import GUNB (trwa / ok / błąd + treść, ponowienie), ostatni pełny import, wątek zadań, wysyłki z ostatniej doby |
-| `/raport [7\|30]` | pilotaż: unikalne osoby i inwestycje – wysłane, otwarte, zapisane, 👍/👎, konfiguracje, starty testu, przedłużenia (wysłanie ≠ przeczytanie; kliknięć w mapę Telegram nie zgłasza) |
+| `/raport [7\|30\|90]` | lejek pilotażu: źródła, kroki przed testem, wyniki i puste wyniki, otwarcia (osoby i zdarzenia), zapisane, wyniki pracy, dostęp ręczny osobno od płatności, kohorty testu z zakończoną obserwacją (wysłanie ≠ przeczytanie; kliknięć w mapę Telegram nie zgłasza) |
+| `/zamowienia` · `/zaplacone <Z-nr> [uwagi]` · `/anuluj <Z-nr>` | zamówienia: lista, potwierdzenie otrzymanej płatności (raz), anulowanie |
+| `/przedluztest <chat_id> <1–14> <powód>` | jednorazowe przedłużenie testu z zapisem powodu |
+| `/napisz <chat_id> <tekst>` · `/firma <chat_id> <nazwa\|->` | wiadomość przez bota (np. dane do przelewu) · firma osoby (raport liczy firmy) |
+| `/dane` | diagnostyka danych: nazwy obszarów przy kodach, sprawy spoza powiatów, dokładność lokalizacji, braki, historia do okien etapów, brakujące pola oferty |
 
 `bot.access: open` wyłącza paywall (np. darmowy pilotaż).
+
+Strona sprzedażowa do lokalnego podglądu (statyczna, bez skryptów i formularzy, z polami „DO UZUPEŁNIENIA”) oraz
+szkice zasad usługi i prywatności: [`strona/`](strona/index.html). Teksty profilu bota: [docs/TELEGRAM_PROFIL.md](docs/TELEGRAM_PROFIL.md).
+Odłożone pomysły z warunkami powrotu: [docs/BACKLOG.md](docs/BACKLOG.md).
 
 **Jak działa w środku:** proces ma dwa wątki. Główny tylko odbiera wiadomości i kliknięcia (krótkie
 limity czekania na Telegram – odpowiedź nie wisi minutami). Wątek zadań – z własnym połączeniem SQLite
