@@ -16,6 +16,7 @@ każda osoba jest obsługiwana osobno – błąd jednej nie zatrzymuje innych, n
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -31,6 +32,7 @@ from .ranking import match_reasons, ranked, stage_note
 from .bot_ui import BOT_COMMANDS, MENU_BUTTONS
 from .clock import WARSAW, at_local_time, local
 from .config import BotConfig
+from .demo import demo_leads
 from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
 from .gunb_scraper import GunbFormatError
 from .http_client import HttpError
@@ -85,7 +87,7 @@ ACCESS_REMINDER_BEFORE = timedelta(hours=24)
 ACCESS_REMINDER_JOB = "dostep_przypomnienie"
 ACCESS_END_JOB = "dostep_koniec"
 ACCESS_JOBS = (ACCESS_REMINDER_JOB, ACCESS_END_JOB)
-NO_ACCESS_TOAST = "⛔ Brak aktywnego dostępu (test albo abonament) – szczegóły: /konto"
+NO_ACCESS_TOAST = "⛔ To wymaga aktywnego testu albo dostępu – szczegóły: /konto"
 SETUP_DONE_TOAST = "✅ To już ustawione – zmienisz w ⚙️ Ustawienia"
 DB_BUSY_RETRIES = 3
 """Ile razy obsłużyć ponownie aktualizację, przy której baza była chwilowo zajęta."""
@@ -94,6 +96,10 @@ CONFLICT_PAUSE = timedelta(minutes=10)
 """Tyle po ostatnim konflikcie 409 wątek zadań nic nie wysyła (drugi bot z tym samym tokenem)."""
 WATCH_DIGEST_AFTER = 3
 """Więcej alertów obserwowanych naraz (np. po wznowieniu powiadomień) idzie jedną wiadomością."""
+INQUIRY_EVERY = timedelta(hours=24)
+"""Pytanie o ofertę trafia do admina najwyżej raz na tyle (kolejne kliknięcia – tylko potwierdzenie)."""
+_SOURCE_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+_ORDER_RE = re.compile(r"(?i)z?-?(\d{1,9})")
 
 MENU_ACTIONS: dict[str, str] = {
     "📊 Inwestycje": "_show_news",
@@ -137,6 +143,11 @@ ADMIN_COMMANDS: dict[str, str] = {
     "/nowymodel": "_cmd_new_model",  # /nowymodel <chat_id|wszyscy> <dni|data> – termin dla dotychczasowych
     "/status": "_cmd_status",  # import GUNB, wątek zadań, wysyłki z ostatniej doby
     "/raport": "_cmd_pilot_report",  # /raport [7|30] – pilotaż: unikalne osoby i inwestycje
+    "/zamowienia": "_cmd_orders",  # otwarte i ostatnio opłacone zamówienia
+    "/zaplacone": "_cmd_paid",  # /zaplacone <Z-nr> [uwagi] – płatność otrzymana (dokładnie raz)
+    "/anuluj": "_cmd_cancel_order",  # /anuluj <Z-nr>
+    "/napisz": "_cmd_write",  # /napisz <chat_id> <tekst> – wiadomość do osoby przez bota
+    "/firma": "_cmd_company",  # /firma <chat_id> <nazwa|-> – firma osoby (raport liczy firmy)
 }
 """Komendy zastrzeżone dla ``bot.admins`` (``ADMIN_CHAT_ID``); u innych działają jak nieznany tekst."""
 
@@ -484,7 +495,8 @@ class LeadBot:
             return
         user = self.store.get_user(chat_id)
         if command == "/start" or user is None:
-            self._start(chat_id, message.get("from") or {})
+            payload = text.split(maxsplit=1)[1] if command == "/start" and len(text.split()) > 1 else None
+            self._start(chat_id, message.get("from") or {}, payload)
             return
         if user.status == "zablokowany":  # odblokował bota i znów pisze – dostęp zostaje, jaki był
             self.store.set_status(chat_id, "aktywny")
@@ -541,23 +553,27 @@ class LeadBot:
 
     # === Rejestracja i admin ===================================================================
 
-    def _start(self, chat_id: int, sender: dict[str, Any]) -> None:
-        """Rejestracja: nowa osoba zapisuje się bez dostępu, admin dostaje jej kartę.
+    def _start(self, chat_id: int, sender: dict[str, Any], payload: str | None = None) -> None:
+        """Rejestracja: nowa osoba zapisuje się bez dostępu i dostaje opis produktu; admin dostaje jej kartę.
 
-        Ponowny ``/start`` niczego nie odnawia – ani testu, ani abonamentu.
+        ``payload`` – parametr z linku ``t.me/<bot>?start=<źródło>``: sprawdzony kod kampanii zapisywany tylko
+        przy pierwszym wejściu. Ponowny ``/start`` niczego nie odnawia – ani testu, ani dostępu.
         """
         existed = self.store.get_user(chat_id) is not None
+        source = campaign_source(payload)
         user = self.store.register(chat_id, sender.get("first_name"), sender.get("username"), status="aktywny",
-                                   backlog_days=self.settings.welcome_backlog_days)
+                                   backlog_days=self.settings.welcome_backlog_days, zrodlo=source)
+        if not existed:
+            self.store.record_event(chat_id, "start", szczegoly=source)
         if user.status in ("zablokowany", "oczekuje"):
             self.store.set_status(chat_id, "aktywny")
             user = self.store.get_user(chat_id)
         if user.status == "odrzucony":
-            self._send(chat_id, ui.rejected_text())
+            self._send(chat_id, ui.rejected_text(self._contact_html()))
             return
         level = self._level(user)
         if level == NONE:
-            self._send(chat_id, self._gate_text(user))
+            self._send(chat_id, *self._gate_screen(user, first=True))
         else:
             self._send(chat_id, ui.welcome_text(user.imie), ui.menu_keyboard())
             if not user.setup_done:  # pierwsze kroki – także po przerwie wracamy do tego samego pytania
@@ -574,6 +590,12 @@ class LeadBot:
         if sender not in self.settings.admins:
             return "⛔ Tylko administrator może to zrobić"
         _, decision, target = data.split(":", 2)
+        if decision in ("pay", "cancel"):  # przyciski z karty zamówienia – cel to numer zamówienia
+            order_id = int(target) if target.isdigit() else 0
+            reply = self._confirm_payment(order_id, sender) if decision == "pay" else self._cancel_order(order_id)
+            if reply.startswith("✅") or reply.startswith("✖️"):
+                self.api.edit_message_text(chat_id, message_id, reply)
+            return reply.split("\n", 1)[0][:200]
         user = self.store.get_user(int(target)) if target.lstrip("-").isdigit() else None
         if user is None:
             return "Nie ma takiej osoby"
@@ -581,11 +603,11 @@ class LeadBot:
             self.api.edit_message_text(chat_id, message_id, self._allow_trial(user))
             return "🎁 Test dostępny"
         if decision == "ok":
-            self.api.edit_message_text(chat_id, message_id, self._grant_paid(user, days=ui.DEFAULT_PAID_DAYS))
-            return "✅ Abonament aktywny"
+            self.api.edit_message_text(chat_id, message_id, self._grant_access(user, days=ui.DEFAULT_PAID_DAYS))
+            return "✅ Dostęp nadany ręcznie"
         self.store.set_status(user.chat_id, "odrzucony")
         self.store.revoke_access(user.chat_id)
-        self._send_safely(user.chat_id, ui.rejected_text())
+        self._send_safely(user.chat_id, ui.rejected_text(self._contact_html()))
         self.api.edit_message_text(chat_id, message_id, f"⛔ Odrzucono: {escape_html(user.display_name)}")
         return "⛔ Odrzucono"
 
@@ -600,7 +622,7 @@ class LeadBot:
         user = self._known_user(admin_chat, int(args[0]))
         if user is not None:
             days, until = term
-            self._send(admin_chat, self._grant_paid(user, days=days, until=until))
+            self._send(admin_chat, self._grant_access(user, days=days, until=until))
 
     def _cmd_trial(self, admin_chat: int, args: list[str]) -> None:
         """``/trial <chat_id>`` – tylko admin: pozwala na 7-dniowy test; zegar rusza, gdy klient kliknie start."""
@@ -658,19 +680,24 @@ class LeadBot:
             return (None, until) if until > self._now() else None
         return None
 
-    def _grant_paid(self, user: BotUser, *, days: int | None = None, until: datetime | None = None) -> str:
-        """Abonament do daty albo na N dni – liczone od końca trwającego dostępu (klient nie traci dni).
+    def _access_end_after(self, user: BotUser, days: int) -> datetime:
+        """Koniec dostępu po dodaniu ``days`` – od końca trwającego dostępu (klient nie traci dni) albo od teraz."""
+        now = self._now()
+        current = datetime.fromisoformat(user.subscription_ends) \
+            if user.subscription_ends and user.has_subscription(_utc_iso(now)) else now
+        return current + timedelta(days=days)
+
+    def _grant_access(self, user: BotUser, *, days: int | None = None, until: datetime | None = None) -> str:
+        """Dostęp nadany ręcznie przez admina (pilotaż, promocja, wyjątek) – do daty albo na N dni od końca
+        trwającego dostępu. To nie płatność: rodzaj ``reczny``, zdarzenie ``dostep_przedluzony``.
 
         Zastępuje dostęp bez limitu (przełączenie na nowy model); zwraca potwierdzenie dla admina.
         """
-        now = self._now()
         if until is None:
-            current = datetime.fromisoformat(user.subscription_ends) \
-                if user.subscription_ends and user.has_subscription(_utc_iso(now)) else now
-            until = current + timedelta(days=days or 0)
+            until = self._access_end_after(user, days or 0)
         ends_iso = _utc_iso(until)
-        self.store.set_access(user.chat_id, ends_iso)
-        self.store.record_event(user.chat_id, "dostep_przedluzony")
+        self.store.set_access(user.chat_id, ends_iso, kind="reczny")
+        self.store.record_event(user.chat_id, "dostep_przedluzony", szczegoly="reczny")
         if user.status != "aktywny":  # np. wcześniej odrzucony albo „zablokowany” – admin daje nową szansę
             self.store.set_status(user.chat_id, "aktywny")
         ends_on = self._local_date(ends_iso, with_time=True)
@@ -678,6 +705,182 @@ class LeadBot:
         if delivered and not user.setup_done:
             self._safely(lambda: self._show_setup_step(user))
         return ui.admin_granted_text(user, ends_on, days=days, delivered=delivered)
+
+    def _confirm_payment(self, order_id: int, admin: int | None, note: str | None = None) -> str:
+        """Admin potwierdza rzeczywiście otrzymaną płatność: dokładnie raz przedłuża dostęp o okres z zamówienia
+        (od końca trwającego dostępu) i potwierdza to klientowi. Zwraca odpowiedź dla admina."""
+        order = self.store.get_order(order_id)
+        if order is None:
+            return "🤔 Nie ma takiego zamówienia"
+        with self.repo.transaction():
+            renewal = self.store.last_paid_order(order.chat_id) is not None
+            confirmed = self.store.confirm_order(order_id, admin=admin or 0, note=note)
+            if confirmed is not None:
+                user = self.store.get_user(confirmed.chat_id)
+                ends_iso = _utc_iso(self._access_end_after(user, confirmed.dni))
+                self.store.set_access(confirmed.chat_id, ends_iso, kind="platny")
+                self.store.set_order_access(confirmed.id, ends_iso)
+                self.store.record_event(confirmed.chat_id, "platnosc", szczegoly=confirmed.number)
+                if renewal:
+                    self.store.record_event(confirmed.chat_id, "odnowienie", szczegoly=confirmed.number)
+                if user.status != "aktywny":
+                    self.store.set_status(confirmed.chat_id, "aktywny")
+        if confirmed is None:
+            state = {"oplacone": "jest już opłacone", "anulowane": "jest anulowane – nie przedłużam dostępu"}
+            return f"ℹ️ Zamówienie {order.number} {state.get(order.stan, order.stan)}"
+        ends_on = self._local_date(ends_iso, with_time=True)
+        user = self.store.get_user(confirmed.chat_id)
+        delivered = self._notify(user.chat_id, ui.payment_confirmed_text(confirmed, ends_on), ui.menu_keyboard())
+        if delivered and not user.setup_done:
+            self._safely(lambda: self._show_setup_step(user))
+        return ui.admin_payment_text(confirmed, user, ends_on, delivered=delivered)
+
+    def _cancel_order(self, order_id: int) -> str:
+        order = self.store.get_order(order_id)
+        if order is None:
+            return "🤔 Nie ma takiego zamówienia"
+        if not self.store.cancel_order(order_id):
+            return f"ℹ️ Zamówienie {order.number} jest już {'opłacone' if order.stan == 'oplacone' else 'anulowane'}"
+        self.store.record_event(order.chat_id, "zamowienie_anulowane", szczegoly=order.number)
+        self._notify(order.chat_id, ui.order_cancelled_text(order, self._contact_html()))
+        return f"✖️ Zamówienie {order.number} anulowane"
+
+    def _cmd_paid(self, admin_chat: int, args: list[str]) -> None:
+        """``/zaplacone <Z-nr> [uwagi]`` – tylko admin: płatność otrzymana (to samo co przycisk na karcie)."""
+        match = _ORDER_RE.fullmatch(args[0]) if args else None
+        if match is None:
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        self._send(admin_chat, self._confirm_payment(int(match.group(1)), admin_chat, " ".join(args[1:]) or None))
+
+    def _cmd_cancel_order(self, admin_chat: int, args: list[str]) -> None:
+        match = _ORDER_RE.fullmatch(args[0]) if len(args) == 1 else None
+        if match is None:
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        self._send(admin_chat, self._cancel_order(int(match.group(1))))
+
+    def _cmd_orders(self, admin_chat: int, args: list[str]) -> None:
+        open_orders = self.store.orders(stan="zgloszone", limit=30)
+        paid = self.store.orders(stan="oplacone", limit=10)
+        names = {o.chat_id: (self.store.get_user(o.chat_id) or BotUser(o.chat_id, None, None, "", "", False)).display_name
+                 for o in (*open_orders, *paid)}
+        self._send(admin_chat, ui.admin_orders_text(open_orders, paid, names))
+
+    def _cmd_write(self, admin_chat: int, args: list[str]) -> None:
+        """``/napisz <chat_id> <tekst>`` – tylko admin: odpowiedź na pytanie, dane do przelewu itp. przez bota."""
+        if len(args) < 2 or not _is_chat_id(args[0]):
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        user = self._known_user(admin_chat, int(args[0]))
+        if user is None:
+            return
+        text = " ".join(args[1:])[:3500]
+        delivered = self._notify(user.chat_id, ui.admin_message_text(text))
+        self._send(admin_chat, f"✉️ Wysłano do {escape_html(user.display_name)} ({user.chat_id})" if delivered
+                   else "⚠️ Nie udało się wysłać (zablokował bota?)")
+
+    def _cmd_company(self, admin_chat: int, args: list[str]) -> None:
+        """``/firma <chat_id> <nazwa>`` (``-`` czyści) – firma osoby; raport liczy wtedy firmy, nie tylko konta."""
+        if len(args) < 2 or not _is_chat_id(args[0]):
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        user = self._known_user(admin_chat, int(args[0]))
+        if user is None:
+            return
+        name = " ".join(args[1:]).strip()[:80]
+        self.store.set_company(user.chat_id, None if name == "-" else name)
+        self._send(admin_chat, f"🏢 {escape_html(user.display_name)}: firma "
+                               f"{'usunięta' if name == '-' else escape_html(name)}")
+
+    # === Wejście bez dostępu: opis, przykład, oferta, prośba o test, zamówienie ===================
+
+    def _offer_area(self) -> str:
+        return self.settings.offer.area or self._region_label()
+
+    def _gate_screen(self, user: BotUser, *, first: bool = False) -> tuple[str, dict | None]:
+        """Bez dostępu: po końcu dostępu – informacja z ofertą; nowa osoba – opis produktu (przy ``/start``)
+        albo krótka bramka z przyciskami. Nikt nie dostaje komunikatu o „zaległej płatności”."""
+        state, ends_on = self._access_state(user)
+        offer = self.settings.offer
+        if state in ("test_koniec", "platny_koniec"):
+            text = ui.access_ended_text(ends_on or "—", trial=state == "test_koniec", offer=offer)
+            return text, ui.inline([ui.offer_buttons(offer, order=self.store.open_order(user.chat_id))])
+        if state == "wylaczony":
+            return ui.access_revoked_text(self._contact_html()), None
+        requested_on = self._local_date(user.prosba_o_test) if user.prosba_o_test else None
+        markup = ui.intro_keyboard(requested=user.prosba_o_test is not None or user.trial_used)
+        if first:
+            return ui.intro_text(user.imie, self._offer_area(), offer, requested_on=requested_on), markup
+        return ui.gate_short_text(requested_on=requested_on), markup
+
+    def _cb_intro(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """Przyciski opisu produktu (dostępne bez dostępu): przykład, oferta, pomoc, prośba o test, początek."""
+        if arg == "demo":
+            self.store.record_event(user.chat_id, "demo")
+            today = local(self._now()).date()
+            leads = demo_leads(today)
+            card = ui.lead_card(leads[0], why=["Twoja okolica (przykład)"], estimates=[
+                line for line in (ui.scale_line(leads[0]), stage_note(get_trade("dach"), leads[0], today),
+                                  "📏 3 km w linii prostej od Twojej bazy (przykład)") if line])
+            self._send(user.chat_id, *ui.demo_screen(leads, card))
+        elif arg == "oferta":
+            self.store.record_event(user.chat_id, "oferta")
+            order = self.store.open_order(user.chat_id)
+            self._send(user.chat_id, ui.offer_text(self.settings.offer, self._offer_area(), order=order),
+                       ui.offer_keyboard(self.settings.offer, order=order, back=self._level(user) < FULL))
+        elif arg == "pomoc":
+            self._send(user.chat_id, ui.about_text(self._offer_area()), ui.intro_keyboard(
+                requested=user.prosba_o_test is not None or user.trial_used or self._level(user) > NONE))
+        elif arg == "test":
+            return self._request_trial(user)
+        elif arg == "start":
+            self._send(user.chat_id, *self._gate_screen(user, first=True))
+        return None
+
+    def _request_trial(self, user: BotUser) -> str | None:
+        """„🙋 Chcę przetestować” – jedno zgłoszenie do admina na osobę; testy uruchamia admin ręcznie."""
+        if self._has_access(user):
+            return "✅ Masz już dostęp – 📊 Inwestycje"
+        if user.trial_available:
+            self._send(user.chat_id, *ui.trial_offer(setup_done=user.setup_done))
+            if not user.setup_done:
+                self._show_setup_step(user)
+            return None
+        if user.trial_used:
+            self._send(user.chat_id, ui.offer_text(self.settings.offer, self._offer_area()),
+                       ui.offer_keyboard(self.settings.offer, back=True))
+            return "Darmowy test był już wykorzystany – zobacz ofertę"
+        if not self.store.request_trial(user.chat_id):
+            return f"⏳ Prośba o test jest już wysłana ({self._local_date(user.prosba_o_test)}) – odezwę się tutaj"
+        self.store.record_event(user.chat_id, "prosba_o_test", szczegoly=user.zrodlo)
+        user = self.store.get_user(user.chat_id) or user
+        for admin in self.settings.admins:
+            self._send_safely(admin, *ui.admin_trial_request_card(user, self._subscription_label(user)))
+        self._send(user.chat_id, ui.trial_requested_text(self.settings.offer))
+        return "✅ Prośba wysłana"
+
+    def _cb_order(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """``zm:new`` – zamówienie (tylko przy kompletnej ofercie); ``zm:q`` – pytanie o ofertę do admina."""
+        offer = self.settings.offer
+        if arg == "new" and offer.complete:
+            order, created = self.store.create_order(user.chat_id, offer)
+            if created:
+                self.store.record_event(user.chat_id, "zamowienie", szczegoly=order.number)
+                for admin in self.settings.admins:
+                    self._send_safely(admin, *ui.admin_order_card(order, user, self._subscription_label(user)))
+            self._send(user.chat_id, ui.order_text(order, offer, again=not created))
+            return "🛒 Zamówienie przyjęte" if created else f"🧾 {order.number} czeka na płatność"
+        if arg not in ("new", "q"):
+            return None
+        since = _utc_iso(self._now() - INQUIRY_EVERY)
+        if self.store.has_event(user.chat_id, "pytanie_oferta", since=since):
+            return "✅ Pytanie już przekazane – odpowiem tutaj"
+        self.store.record_event(user.chat_id, "pytanie_oferta")
+        for admin in self.settings.admins:
+            self._send_safely(admin, ui.admin_inquiry_text(user, self._subscription_label(user)))
+        self._send(user.chat_id, ui.inquiry_sent_text(offer))
+        return None
 
     def _allow_trial(self, user: BotUser) -> str:
         """Pozwolenie na test (raz na osobę); zwraca odpowiedź dla admina."""
@@ -818,10 +1021,18 @@ class LeadBot:
                 self._send_safely(admin, ui.admin_expired_text(entries))
 
     def _send_access_notice(self, user: BotUser, *, ended: bool) -> bool:
+        """Dzień przed końcem i po końcu dostępu: termin, oferta (zamówienie albo pytanie) i – w teście –
+        podsumowanie rzeczywistych działań z bazy. Wiadomość transakcyjna: przychodzi także w pauzie."""
         ends_on = self._local_date(user.subscription_ends, with_time=True)
-        contact = self._contact_html()
-        self._send(user.chat_id, ui.access_ended_text(ends_on, trial=user.on_trial, contact_html=contact) if ended
-                   else ui.access_reminder_text(ends_on, trial=user.on_trial, contact_html=contact))
+        offer = self.settings.offer
+        markup = ui.inline([ui.offer_buttons(offer, order=self.store.open_order(user.chat_id))])
+        if ended:
+            self.store.record_event(user.chat_id, "koniec_dostepu", szczegoly="test" if user.on_trial else "dostep")
+            self._send(user.chat_id, ui.access_ended_text(ends_on, trial=user.on_trial, offer=offer), markup)
+            return True
+        summary = self.store.work_summary(user.chat_id, user.test_start) if user.on_trial and user.test_start else None
+        self._send(user.chat_id, ui.access_reminder_text(ends_on, trial=user.on_trial, offer=offer, summary=summary),
+                   markup)
         return True
 
     def _level(self, user: BotUser) -> int:
@@ -853,7 +1064,7 @@ class LeadBot:
         if user.trial_available:
             self._send(user.chat_id, *ui.trial_waiting())
         else:
-            self._send(user.chat_id, self._gate_text(user))
+            self._send(user.chat_id, *self._gate_screen(user))
 
     def _notify(self, chat_id: int, text: str, markup: dict | None = None) -> bool:
         """Wiadomość o zmianie dostępu – błąd wysyłki nie przerywa akcji admina; zwraca, czy doszła."""
@@ -885,15 +1096,6 @@ class LeadBot:
         """Pełny dostęp – ta sama reguła co zapytanie ``BotStore.subscribers`` dla wysyłek w tle."""
         return (user.chat_id in self.settings.admins or self.settings.access == "open" or user.bez_limitu
                 or user.has_subscription(_utc_iso(self._now())))
-
-    def _gate_text(self, user: BotUser) -> str:
-        state, ends_on = self._access_state(user)
-        contact = self._contact_html()
-        if state in ("test_koniec", "platny_koniec"):
-            return ui.access_ended_text(ends_on or "—", trial=state == "test_koniec", contact_html=contact)
-        if state == "wylaczony":
-            return ui.access_revoked_text(contact)
-        return ui.gate_text(contact)
 
     def _contact_html(self) -> str:
         return ui.admin_contact_html(self.settings.admin_contact, self.settings.admins)
@@ -981,10 +1183,18 @@ class LeadBot:
 
     def _account_screen(self, user: BotUser) -> tuple[str, dict | None]:
         state, ends_on = self._access_state(user)
-        markup = None
+        order = self.store.open_order(user.chat_id)
+        text = ui.account_text(state=state, ends_on=ends_on, contact_html=self._contact_html(),
+                               offer=self.settings.offer, paid=self.store.last_paid_order(user.chat_id),
+                               open_order=order)
         if state == "test_dostepny":
-            markup = ui.inline([[ui.START_TRIAL_BUTTON if user.setup_done else ui.SETUP_RESUME_BUTTON]])
-        return ui.account_text(state=state, ends_on=ends_on, contact_html=self._contact_html()), markup
+            return text, ui.inline([[ui.START_TRIAL_BUTTON if user.setup_done else ui.SETUP_RESUME_BUTTON]])
+        if state in ("admin", "open", "bez_limitu"):
+            return text, None
+        if state == "brak":
+            return text, ui.intro_keyboard(requested=user.prosba_o_test is not None)
+        return text, ui.inline([ui.offer_buttons(self.settings.offer, order=order),
+                                [("📄 Szczegóły oferty", "i:oferta")]])
 
     def _show_settings(self, user: BotUser) -> None:
         self._send(user.chat_id, *self._settings_screen(user))
@@ -1029,12 +1239,13 @@ class LeadBot:
         """Dostęp na liście admina, np. „💳 do 29.10.2026”, „🎁 test do …”, „⌛ wygasł …”, „nieaktywny”."""
         state, ends_on = self._access_state(user)
         day = self._local_date(user.subscription_ends)
+        dated = "🔑 ręcznie do" if user.rodzaj_dostepu == "reczny" else "💳 do"
         return {
             "admin": "👑 admin", "open": "✅ otwarty", "bez_limitu": "♾️ bez terminu (dotychczasowy)",
-            "test": f"🎁 test do {ends_on}", "platny": f"💳 do {day}", "test_dostepny": "🎁 test czeka na start",
+            "test": f"🎁 test do {ends_on}", "platny": f"{dated} {day}", "test_dostepny": "🎁 test czeka na start",
             "test_koniec": f"⌛ test skończył się {day}", "platny_koniec": f"⌛ wygasł {day}",
             "wylaczony": "⛔ wyłączony",
-        }.get(state, "nieaktywny")
+        }.get(state, "🙋 prosi o test" if user.prosba_o_test else "nieaktywny")
 
     # === Kliknięcia: lead ======================================================================
 
@@ -1890,6 +2101,8 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "bk": LeadBot._cb_back,
     "fu": LeadBot._cb_feedback,
     "d": LeadBot._cb_details,
+    "i": LeadBot._cb_intro,
+    "zm": LeadBot._cb_order,
     "w": LeadBot._cb_outcome,
     "wp": LeadBot._cb_reason,
 }
@@ -1898,9 +2111,25 @@ _CALLBACK_LEVELS: dict[str, int] = {
     "ts": NONE,
     "st": NONE,  # ekran ustawień sam sprawdza poziom dla każdego przycisku
     "o": NONE,  # bez dostępu: tylko własna praca w trybie archiwum (sprawdza handler)
+    "i": NONE,  # opis produktu, przykład, oferta, prośba o test – dla każdego
+    "zm": NONE,  # zamówienie i pytanie o ofertę – także po końcu dostępu
     "sv": NONE,
 }
 """Poziom uprawnień przycisków (domyślnie pełny dostęp – inwestycje, zapisane, obserwowane)."""
+
+
+def campaign_source(payload: str | None) -> str | None:
+    """Źródło wejścia z parametru ``/start``: krótki kod kampanii (litery, cyfry, ``_``, ``-``; zaczyna się literą).
+
+    Wszystko inne – za długie, z kropką, „@”, spacją albo z ciągiem 5+ cyfr (np. numer telefonu) – zapisujemy
+    jako ``inne``: parametr kampanii nie może przemycić danych osobowych ani dowolnego tekstu.
+    """
+    if not payload:
+        return None
+    value = payload.strip().lower()
+    if not _SOURCE_RE.fullmatch(value) or re.search(r"\d{5,}", value):
+        return "inne"
+    return value
 
 
 def _is_chat_id(text: str) -> bool:

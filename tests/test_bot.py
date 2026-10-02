@@ -32,17 +32,18 @@ def test_admin_is_active_at_once_and_gets_big_menu_buttons(bot, api):
     assert welcome["markup"]["resize_keyboard"] is True
 
 
-GATE = "⛔ Twój dostęp jest nieaktywny. Skontaktuj się z administratorem @admin_gunb, aby opłacić abonament."
-TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 7 dni! Zobacz, jak szybciej docierać do klientów. "
-              "Po tym czasie bot zostanie wstrzymany.")
+GATE = "🔒 Inwestycje zobaczysz w 7-dniowym teście"  # bramka bez sugerowania zaległej płatności
+TRIAL_TEXT = "🎁 Aktywowano darmowy okres próbny na 7 dni! Sprawdź, czy inwestycje z Twojej okolicy przydadzą"
 
 
-def test_new_user_is_saved_inactive_and_told_to_contact_admin(bot, api):
+def test_new_user_is_saved_without_access_and_gets_the_product_description(bot, api):
     bot.handle_update(message(MIETEK, "/start"))
 
     user = BotStore(bot.repo).get_user(MIETEK)
     assert (user.is_active, user.subscription_ends) == (False, None)
-    assert api.last_to(MIETEK)["text"] == GATE
+    intro = api.last_to(MIETEK)["text"]
+    assert intro.startswith("👷 Cześć, Mietek! Tu <b>Żółta Tablica</b>.")
+    assert "opłac" not in intro and "abonament" not in intro  # szczegóły pierwszego kontaktu: test_bot_entry.py
     card = api.last_to(ADMIN)  # admin od razu wie, kogo aktywować
     assert "Mietek" in card["text"] and f"/trial {MIETEK}" in card["text"] and f"/aktywuj {MIETEK} 30" in card["text"]
     assert buttons(card["markup"]) == [("🎁 Test 7 dni", f"adm:trial:{MIETEK}"), ("✅ 30 dni", f"adm:ok:{MIETEK}"),
@@ -53,7 +54,7 @@ def test_new_user_is_saved_inactive_and_told_to_contact_admin(bot, api):
 def test_inactive_user_cannot_use_menu_or_commands(bot, api, text):
     bot.handle_update(message(MIETEK, "/start"))
     bot.handle_update(message(MIETEK, text))
-    assert api.last_to(MIETEK)["text"] == GATE
+    assert api.last_to(MIETEK)["text"].startswith(GATE)
 
 
 def test_inactive_user_cannot_use_buttons(bot, api):
@@ -63,7 +64,7 @@ def test_inactive_user_cannot_use_buttons(bot, api):
     bot.handle_update(click(MIETEK, "fb:dach"))
     assert api.edits == []
     assert BotStore(bot.repo).get_user(MIETEK).branza is None
-    assert "abonament" in api.answers[-1]
+    assert api.answers[-1].startswith("⛔ To wymaga aktywnego testu albo dostępu")
 
 
 def test_admin_activates_subscription_with_command(bot, api):
@@ -74,8 +75,8 @@ def test_admin_activates_subscription_with_command(bot, api):
     user = BotStore(bot.repo).get_user(MIETEK)
     assert user.is_active is True
     assert user.subscription_ends == "2026-10-29T05:00:00+00:00"  # teraz + 30 dni
-    welcome = next(m for m in api.to(MIETEK) if m["text"].startswith("✅ Twój abonament"))
-    assert welcome["text"].startswith("✅ Twój abonament został aktywowany na 30 dni!")
+    welcome = next(m for m in api.to(MIETEK) if m["text"].startswith("✅ Dostęp"))
+    assert welcome["text"].startswith("✅ Dostęp do Żółtej Tablicy włączony na 30 dni – do <b>29.10.2026")
     assert welcome["markup"]["keyboard"]  # od razu dostaje menu
     assert "29.10.2026" in api.last_to(ADMIN)["text"]
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
@@ -141,8 +142,8 @@ def test_expired_subscription_blocks_the_bot_again(bot, api, clock):
 
     bot.handle_update(message(MIETEK, "🔎 Filtry"))
 
-    assert api.last_to(MIETEK)["text"].startswith("⛔ Twój abonament wygasł")
-    assert "@admin_gunb" in api.last_to(MIETEK)["text"]
+    assert api.last_to(MIETEK)["text"].startswith("⛔ Twój dostęp wygasł")
+    assert ("💬 Zapytaj o ofertę", "zm:q") in buttons(api.last_to(MIETEK)["markup"])  # oferta niepełna
 
 
 def test_lead_rounds_reach_only_paying_users(bot, api, repo):
@@ -167,7 +168,7 @@ def test_expiry_is_announced_once_to_user_and_admin(bot, api, clock):
     clock.advance(minutes=11)
     bot.run_due_jobs()
 
-    assert [m["text"][:30] for m in api.to(MIETEK)] == ["⛔ Twój abonament wygasł 02.10."]
+    assert [m["text"][:27] for m in api.to(MIETEK)] == ["⛔ Twój dostęp wygasł 02.10."]
     assert f"/aktywuj {MIETEK} 30" in api.to(ADMIN)[-1]["text"]
 
 
@@ -190,7 +191,7 @@ def test_rejected_user_is_informed(bot, api):
     bot.handle_update(message(OBCY, "/start"))
     bot.handle_update(click(ADMIN, f"adm:no:{OBCY}"))
     assert BotStore(bot.repo).get_user(OBCY).status == "odrzucony"
-    assert "⛔" in api.last_to(OBCY)["text"]
+    assert "Dziękujemy za zainteresowanie" in api.last_to(OBCY)["text"]
 
 
 def test_open_access_lets_everyone_in_without_subscription(repo, api, clock):
@@ -672,7 +673,7 @@ def test_pin_from_user_without_subscription_is_ignored(bot, api, repo):
     bot.handle_update(message(MIETEK, "/start"))
     bot.handle_update(pin(MIETEK, *BASE))
     assert BotStore(repo).get_user(MIETEK).filtry.baza is None
-    assert api.last_to(MIETEK)["text"] == GATE
+    assert api.last_to(MIETEK)["text"].startswith(GATE)
 
 
 def test_blisko_command_works_like_the_button(bot, api):

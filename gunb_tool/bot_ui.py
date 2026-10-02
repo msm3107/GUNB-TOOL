@@ -7,11 +7,13 @@ i zmieniać bez dotykania logiki bota.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Callable, Sequence
 
-from .bot_store import BotUser, JobStatus, LeadFlags, Outcome, Send, UserFilters, WatchItem
+from .bot_store import BotUser, JobStatus, LeadFlags, Order, Outcome, Send, UserFilters, WatchItem
 from .clock import local
-from .config import BotConfig
+from .config import BotConfig, OfferConfig, format_money
+from .demo import DEMO_LABEL
 from .exporter import CATEGORY_ICONS, TELEGRAM_LIMIT, escape_html
 from .models import BUILDING_CATEGORIES, Investment, Status
 from .scoring import score_investment
@@ -94,7 +96,8 @@ def welcome_text(name: str | None) -> str:
 
 def help_text(settings: BotConfig, *, admin: bool = False) -> str:
     admin_part = ("\n\n👑 <b>Admin</b>: /aktywuj &lt;chat_id&gt; &lt;dni|data&gt; · /przedluz · /odbierz · "
-                  "/trial &lt;chat_id&gt; · /nowymodel · /uzytkownicy · /status" if admin else "")
+                  "/trial &lt;chat_id&gt; · /przedluztest · /nowymodel · /uzytkownicy · /zamowienia · /zaplacone · "
+                  "/anuluj · /napisz · /firma · /status · /raport · /dane" if admin else "")
     return _help_body(settings) + admin_part
 
 
@@ -115,20 +118,220 @@ def _help_body(settings: BotConfig) -> str:
         "sprawdzenia na miejscu.\n"
         "🗺️ „Lokalizacja przybliżona” – rejestr nie podał dokładnej działki, pokazuję środek obrębu.\n"
         "💼 Gdy rejestr nie podaje inwestora, bot nie zgaduje, kto to jest; nazwy z rejestru nie są "
-        "weryfikowane. Bot nie ma danych kontaktowych inwestorów."
+        "weryfikowane. Bot nie ma danych kontaktowych inwestorów.\n\n"
+        "<b>Ograniczenia danych</b>\n"
+        "W rejestrze są tylko sprawy zakończone pozytywnie, a urzędy wpisują je z opóźnieniem (nawet kilka "
+        "tygodni). To lista budów do sprawdzenia – nie zamówienia i nie gwarancja zlecenia."
     )
 
 
-def rejected_text() -> str:
-    return "⛔ Administrator nie przyznał dostępu do bota."
+def about_text(area: str) -> str:
+    """„❓ Jak to działa” przed testem – co to jest, skąd dane, czego się nie dowiesz."""
+    return (
+        "❓ <b>Jak działa Żółta Tablica</b>\n\n"
+        "📥 <b>Skąd dane:</b> publiczny rejestr GUNB – pozwolenia na budowę i zgłoszenia budowy. GUNB "
+        "aktualizuje go co noc, bot sprawdza go codziennie rano.\n"
+        f"📍 <b>Obszar:</b> {escape_html(area)}. Innych miejsc na razie nie monitoruję.\n"
+        "📋 <b>Co zobaczysz:</b> rodzaj budynku, miejscowość, datę decyzji, mapę działki (gdy rejestr ją podaje) "
+        "i to, dlaczego inwestycja pasuje do Twoich ustawień. Możesz zapisywać, dodawać notatki i przypomnienia.\n\n"
+        "⚠️ <b>Ograniczenia:</b> w rejestrze są tylko sprawy zakończone pozytywnie; urzędy wpisują je "
+        "z opóźnieniem (nawet kilka tygodni); lokalizacja bywa przybliżona; etap budowy i skala to szacunki – "
+        "trzeba je sprawdzić.\n"
+        "🚫 <b>Czego nie ma:</b> w bocie nie ma danych kontaktowych inwestorów; nie ma gwarancji zlecenia "
+        "ani pierwszeństwa przed konkurencją.\n"
+        "🔒 <b>Twoje dane:</b> imię i numer konta z Telegrama, Twoje ustawienia, zapisane inwestycje i notatki – "
+        "tylko do działania bota."
+    )
+
+
+def intro_text(name: str | None, area: str, offer: OfferConfig, *, requested_on: str | None = None) -> str:
+    """Pierwszy kontakt bez dostępu: co to jest, dla kogo, obszar, jak zacząć, ile kosztuje (gdy ustawione)."""
+    who = f", {escape_html(name)}" if name else ""
+    lines = [
+        f"👷 Cześć{who}! Tu <b>Żółta Tablica</b>.", "",
+        "🏗️ <b>Co robię:</b> codziennie sprawdzam publiczny rejestr pozwoleń na budowę i zgłoszeń (GUNB) "
+        "i pokazuję nowe inwestycje z Twojej okolicy – z mapą, datą decyzji i rodzajem budynku.",
+        "👥 <b>Dla kogo:</b> hurtownie i składy budowlane, handlowcy oraz wykonawcy (dachy, okna, instalacje…), "
+        "którzy sami szukają budów.",
+        f"📍 Obszar: {escape_html(area)}",
+        "ℹ️ To lista budów do sprawdzenia – nie zamówienia i nie kontakty do inwestorów.", "",
+    ]
+    if requested_on:
+        lines.append(f"⏳ Prośba o test wysłana {requested_on} – odezwę się tutaj, gdy test będzie gotowy.")
+    else:
+        lines.append("🙋 <b>Jak zacząć:</b> to pilotaż z ręcznym uruchomieniem. Kliknij „Chcę przetestować” – "
+                     "po akceptacji ustawisz, co oferujesz i gdzie działasz, a 7-dniowy test włączysz sam.")
+    price = offer_price_sentence(offer)
+    lines.append(f"💳 Po teście: {price}" if price else "💳 Po teście: cenę podaję w ofercie – zapytaj 👇")
+    if offer.response_time:
+        lines.append(f"🕒 Odpowiadam: {escape_html(offer.response_time)}")
+    return "\n".join(lines)
+
+
+def intro_keyboard(*, requested: bool) -> Markup:
+    first = [("👀 Zobacz przykład", "i:demo")] + ([] if requested else [("🙋 Chcę przetestować", "i:test")])
+    return inline([first, [("💳 Oferta i cena", "i:oferta"), ("❓ Jak to działa", "i:pomoc")]])
+
+
+def gate_short_text(*, requested_on: str | None) -> str:
+    """Próba użycia inwestycji bez dostępu (np. komendą) – bez sugerowania zaległości."""
+    if requested_on:
+        return (f"🔒 Inwestycje zobaczysz w teście. Prośba o test wysłana {requested_on} – odezwę się tutaj. "
+                "Tymczasem zobacz przykład 👇")
+    return "🔒 Inwestycje zobaczysz w 7-dniowym teście. Zobacz przykład albo poproś o test 👇"
+
+
+def demo_screen(leads: Sequence[Investment], card: str) -> tuple[str, Markup]:
+    """Przykład dla osób bez dostępu – fikcyjny raport i karta (bez przycisków prowadzących do bazy)."""
+    lines = [DEMO_LABEL, "", f"📊 <b>Raport</b> – {_count(len(leads), 'nowa inwestycja', 'nowe inwestycje', 'nowych inwestycji')}", ""]
+    lines += [_report_entry(position, inv) for position, inv in enumerate(leads, start=1)]
+    lines += ["", "Po kliknięciu numeru widzisz kartę inwestycji, np.:", "", card]
+    return "\n".join(lines), inline([[("🙋 Chcę przetestować", "i:test")],
+                                      [("💳 Oferta i cena", "i:oferta"), ("◀️ Na początek", "i:start")]])
+
+
+def trial_requested_text(offer: OfferConfig) -> str:
+    when = f" Odpowiadam {escape_html(offer.response_time)}." if offer.response_time else ""
+    return ("✅ <b>Prośba o test wysłana.</b> Testy uruchamiam ręcznie – dostaniesz tu wiadomość, gdy test będzie "
+            f"gotowy.{when}\nPotem dwa krótkie pytania (co oferujesz, gdzie działasz) i sam włączysz 7 dni.")
+
+
+def offer_price_sentence(offer: OfferConfig) -> str:
+    """„99 zł netto + 23% VAT = 121,77 zł do zapłaty za 30 dni”; pusta, gdy oferta niepełna."""
+    return f"{offer.price_line()} za {offer.period_days} dni" if offer.complete else ""
+
+
+def offer_text(offer: OfferConfig, area: str, *, order: Order | None = None) -> str:
+    """Pełna oferta – tylko z danych konfiguracji; niepełna → uczciwe „zapytaj o ofertę”."""
+    if not offer.complete:
+        lines = ["💳 <b>Dostęp po teście</b>",
+                 "Cenę i warunki w pilotażu podaję indywidualnie – zapytaj, a odpowiem tutaj.",
+                 f"📍 Obszar: {escape_html(area)}"]
+    else:
+        accounts = _count(offer.accounts, "konto Telegram", "konta Telegram", "kont Telegram")
+        lines = [f"💳 <b>{escape_html(offer.name)}</b>",
+                 f"📍 Obszar: {escape_html(area)}",
+                 f"👤 Dla: {accounts}",
+                 f"💰 Cena: {escape_html(offer_price_sentence(offer))}",
+                 f"🧾 Płatność: {escape_html(offer.payment)}",
+                 f"🏷️ Sprzedawca: {escape_html(offer.seller_name)} · {escape_html(offer.seller_contact)}"]
+        if offer.renewal:
+            lines.append(f"🔁 Odnowienie: {escape_html(offer.renewal)}")
+        links = [f'<a href="{url}">{label}</a>' for label, url in (("Zasady usługi", offer.terms_url),
+                                                                  ("Prywatność", offer.privacy_url)) if url]
+        if links:
+            lines.append("📄 " + " · ".join(links))
+        lines.append("ℹ️ Dostęp włączam ręcznie po otrzymaniu płatności.")
+    if order is not None:
+        lines.append(f"🛒 Masz otwarte zamówienie {order.number} – czeka na płatność.")
+    if offer.response_time:
+        lines.append(f"🕒 Odpowiadam: {escape_html(offer.response_time)}")
+    return "\n".join(lines)
+
+
+def offer_buttons(offer: OfferConfig, *, order: Order | None = None) -> list[tuple[str, str]]:
+    """Przyciski zakupu: zamówienie tylko przy kompletnej ofercie, inaczej pytanie o ofertę."""
+    if not offer.complete:
+        return [("💬 Zapytaj o ofertę", "zm:q")]
+    first = (f"🧾 Zamówienie {order.number}", "zm:new") if order else ("🛒 Zamawiam", "zm:new")
+    return [first, ("💬 Pytanie", "zm:q")]
+
+
+def offer_keyboard(offer: OfferConfig, *, order: Order | None = None, back: bool = False) -> Markup:
+    rows = [offer_buttons(offer, order=order)]
+    if back:
+        rows.append([("◀️ Na początek", "i:start")])
+    return inline(rows)
+
+
+def order_text(order: Order, offer: OfferConfig, *, again: bool = False) -> str:
+    head = (f"🛒 <b>Zamówienie {order.number} jest już przyjęte</b> – czeka na płatność" if again
+            else f"🛒 <b>Zamówienie {order.number} przyjęte</b>")
+    lines = [head, f"{escape_html(order.oferta)} · dostęp na {order.dni} dni", f"💰 {escape_html(order.opis_ceny)}"]
+    if offer.payment:
+        lines.append(f"🧾 Jak zapłacić: {escape_html(offer.payment)}")
+    if offer.seller_name:
+        lines.append(f"🏷️ Sprzedawca: {escape_html(offer.seller_name)} · {escape_html(offer.seller_contact)}")
+    lines += ["✅ Dostęp przedłużę ręcznie, gdy płatność do mnie dotrze – dostaniesz tu potwierdzenie.",
+              "ℹ️ To nie jest faktura ani potwierdzenie płatności."]
+    return "\n".join(lines)
+
+
+def payment_confirmed_text(order: Order, ends_on: str) -> str:
+    return (f"✅ <b>Płatność za zamówienie {order.number} potwierdzona.</b>\n"
+            f"Dostęp do Żółtej Tablicy ważny do <b>{ends_on}</b>. Dziękuję!")
+
+
+def order_cancelled_text(order: Order, contact_html: str) -> str:
+    return (f"✖️ Zamówienie {order.number} zostało anulowane. Jeśli to pomyłka – zamów ponownie albo napisz "
+            f"do {contact_html}.")
+
+
+def inquiry_sent_text(offer: OfferConfig) -> str:
+    when = f" ({escape_html(offer.response_time)})" if offer.response_time else ""
+    return f"✅ Pytanie przekazane – odpowiem tutaj{when}."
+
+
+def admin_message_text(text: str) -> str:
+    """Wiadomość od operatora wysłana przez bota (np. dane do przelewu, odpowiedź na pytanie)."""
+    return "✉️ <b>Wiadomość od Żółtej Tablicy</b>\n" + escape_html(text)
+
+
+def _who(user: BotUser) -> str:
+    login = f" (@{escape_html(user.username)})" if user.username else ""
+    return f"<b>{escape_html(user.imie or str(user.chat_id))}</b>{login} · ID <code>{user.chat_id}</code>"
+
+
+def admin_trial_request_card(user: BotUser, access: str) -> tuple[str, Markup]:
+    company = f" · firma: {escape_html(user.firma)}" if user.firma else ""
+    text = (f"🙋 Prośba o test: {_who(user)}\n"
+            f"źródło: {escape_html(user.zrodlo or 'brak')}{company} · dostęp: {escape_html(access)}")
+    return text, inline([[("🎁 Test 7 dni", f"adm:trial:{user.chat_id}"), ("✅ Dostęp 30 dni", f"adm:ok:{user.chat_id}"),
+                          ("⛔ Odmów", f"adm:no:{user.chat_id}")]])
+
+
+def admin_order_card(order: Order, user: BotUser, access: str) -> tuple[str, Markup]:
+    text = (f"🛒 <b>Zamówienie {order.number}</b>: {_who(user)}\n"
+            f"{escape_html(order.oferta)} · {order.dni} dni · {escape_html(order.opis_ceny)}\n"
+            f"Dostęp teraz: {escape_html(access)}\n"
+            f"Potwierdź dopiero po otrzymaniu płatności (albo /zaplacone {order.number} &lt;uwagi&gt;).")
+    return text, inline([[("✅ Płatność otrzymana", f"adm:pay:{order.id}"), ("✖️ Anuluj", f"adm:cancel:{order.id}")]])
+
+
+def admin_inquiry_text(user: BotUser, access: str) -> str:
+    return (f"💬 Pytanie o ofertę: {_who(user)}\n"
+            f"źródło: {escape_html(user.zrodlo or 'brak')} · dostęp: {escape_html(access)}\n"
+            f"Odpowiedź: /napisz {user.chat_id} &lt;tekst&gt;")
+
+
+def admin_payment_text(order: Order, user: BotUser, ends_on: str, *, delivered: bool) -> str:
+    head = f"✅ {order.number} opłacone: {escape_html(user.display_name)} ({user.chat_id}) – dostęp do {ends_on}"
+    return head if delivered else head + "\n⚠️ Nie udało się wysłać potwierdzenia (zablokował bota?)."
+
+
+def admin_orders_text(open_orders: Sequence[Order], paid: Sequence[Order], names: dict[int, str]) -> str:
+    lines = ["🧾 <b>Zamówienia</b>", "", "Czekają na płatność:"]
+    lines += [f"• {o.number} · {escape_html(names.get(o.chat_id, str(o.chat_id)))} ({o.chat_id}) · "
+              f"{format_money(Decimal(o.do_zaplaty), o.waluta)} · {_when(o.utworzono)} → /zaplacone {o.number} · "
+              f"/anuluj {o.number}" for o in open_orders] or ["brak"]
+    lines += ["", "Ostatnio opłacone:"]
+    lines += [f"• {o.number} · {escape_html(names.get(o.chat_id, str(o.chat_id)))} · {_when(o.oplacono)}"
+              f" → dostęp do {_when(o.dostep_do)}" for o in paid] or ["brak"]
+    return "\n".join(lines)
+
+
+
+def rejected_text(contact_html: str = "administratorem") -> str:
+    return (f"🙏 Dziękujemy za zainteresowanie Żółtą Tablicą. Na razie nie możemy uruchomić dla Ciebie testu. "
+            f"Jeśli masz pytania, napisz do {contact_html}.")
 
 
 # --- Abonament (paywall) i panel admina --------------------------------------------------------------
 
 TRIAL_DAYS = 7
 DEFAULT_PAID_DAYS = 30
-TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 7 dni! Zobacz, jak szybciej docierać do klientów. "
-              "Po tym czasie bot zostanie wstrzymany.")
+TRIAL_TEXT = ("🎁 Aktywowano darmowy okres próbny na 7 dni! Sprawdź, czy inwestycje z Twojej okolicy przydadzą "
+              "się w Twojej pracy. Po tym czasie raporty się zatrzymają.")
 START_TRIAL_BUTTON = ("▶️ Zacznij 7-dniowy test", "ts")
 
 
@@ -141,18 +344,11 @@ def admin_contact_html(contact: str, admins: Sequence[int]) -> str:
     return "administratorem"
 
 
-def gate_text(contact_html: str, expired_on: str | None = None) -> str:
-    """Komunikat dla osoby bez aktywnego abonamentu (także przy każdej próbie użycia menu)."""
-    if expired_on:
-        return f"⛔ Twój abonament wygasł {expired_on}. Skontaktuj się z {contact_html}, aby go przedłużyć."
-    return f"⛔ Twój dostęp jest nieaktywny. Skontaktuj się z {contact_html}, aby opłacić abonament."
-
-
 def new_user_card(user: BotUser) -> tuple[str, Markup]:
     """Wiadomość do admina o nowej osobie – z gotowymi komendami i przyciskami."""
     login = f" (@{escape_html(user.username)})" if user.username else ""
     text = (f"🆕 Nowa osoba: <b>{escape_html(user.imie or str(user.chat_id))}</b>{login}\n"
-            f"ID: <code>{user.chat_id}</code>\n"
+            f"ID: <code>{user.chat_id}</code> · źródło: {escape_html(user.zrodlo or 'brak')}\n"
             f"Dostęp: /trial {user.chat_id} (7 dni testu – ruszą, gdy klient kliknie ▶️) "
             f"albo /aktywuj {user.chat_id} 30")
     return text, inline([[("🎁 Test 7 dni", f"adm:trial:{user.chat_id}"),
@@ -160,8 +356,9 @@ def new_user_card(user: BotUser) -> tuple[str, Markup]:
 
 
 def activated_text(ends_on: str, name: str | None, *, days: int | None = None) -> str:
-    head = f"✅ Twój abonament został aktywowany na {days} dni!" if days else "✅ Twój abonament został aktywowany!"
-    return f"{head}\nWażny do <b>{ends_on}</b>.\n\n" + welcome_text(name)
+    """Dostęp włączony ręcznie przez admina (np. pilotaż, promocja) – nie potwierdzenie płatności."""
+    head = f"✅ Dostęp do Żółtej Tablicy włączony na {days} dni" if days else "✅ Dostęp do Żółtej Tablicy włączony"
+    return f"{head} – do <b>{ends_on}</b>.\n\n" + welcome_text(name)
 
 
 def trial_offer(*, setup_done: bool = True) -> tuple[str, Markup | None]:
@@ -267,17 +464,38 @@ def trial_waiting() -> tuple[str, Markup]:
             "od tej chwili liczy się 7 dni.", inline([[START_TRIAL_BUTTON]]))
 
 
-def access_reminder_text(ends_on: str, *, trial: bool, contact_html: str) -> str:
-    what = "Twój darmowy test" if trial else "Twój abonament"
-    return (f"⏳ {what} kończy się <b>{ends_on}</b>. Jeśli chcesz dalej dostawać inwestycje, "
-            f"skontaktuj się z {contact_html}.")
+def access_reminder_text(ends_on: str, *, trial: bool, offer: OfferConfig,
+                         summary: dict[str, int] | None = None) -> str:
+    """Dzień przed końcem: termin, (w teście) podsumowanie rzeczywistych działań i oferta dalszego dostępu."""
+    what = "Twój darmowy test" if trial else "Twój dostęp"
+    lines = [f"⏳ {what} kończy się <b>{ends_on}</b>."]
+    if summary is not None:
+        lines += ["", trial_summary_text(summary)]
+    price = offer_price_sentence(offer)
+    lines += ["", f"💳 Dalszy dostęp: {escape_html(price)}." if price
+              else "💳 Chcesz dalej dostawać inwestycje? Zapytaj o ofertę 👇"]
+    return "\n".join(lines)
 
 
-def access_ended_text(ends_on: str, *, trial: bool, contact_html: str) -> str:
+def trial_summary_text(summary: dict[str, int]) -> str:
+    """Podsumowanie testu z danych bota – wysłanie to nie przeczytanie, więc mowa o dostarczonych."""
+    if not summary.get("otwarte") and not summary.get("zapisane"):
+        return ("📋 W teście nie otwarto jeszcze żadnej inwestycji – zajrzyj do 📊 Inwestycje, zanim test minie. "
+                "Jeśli nic nie pasuje, zmień obszar w ⚙️ Ustawienia.")
+    parts = [f"dostarczone w raportach: {summary.get('dostarczone', 0)}",
+             f"otwarte szczegóły: {summary.get('otwarte', 0)}", f"zapisane: {summary.get('zapisane', 0)}",
+             f"notatki: {summary.get('notatki', 0)}", f"przypomnienia: {summary.get('przypomnienia', 0)}",
+             f"wyniki pracy: {summary.get('wyniki', 0)}"]
+    return "📋 <b>Twój test w liczbach</b> (inwestycje): " + " · ".join(parts)
+
+
+def access_ended_text(ends_on: str, *, trial: bool, offer: OfferConfig) -> str:
     """Informacja o końcu dostępu – jednorazowa i przy każdej próbie użycia danych."""
-    what = "Twój darmowy test skończył się" if trial else "Twój abonament wygasł"
-    return (f"⛔ {what} {ends_on}. Raporty i przypomnienia są wstrzymane, a zapisane inwestycje i ustawienia "
-            f"czekają na Ciebie. Skontaktuj się z {contact_html}, aby przedłużyć dostęp.")
+    what = "Twój darmowy test skończył się" if trial else "Twój dostęp wygasł"
+    price = offer_price_sentence(offer)
+    return (f"⛔ {what} {ends_on}. Raporty i przypomnienia są wstrzymane.\n"
+            "🗄️ Ustawienia, ⭐ zapisane i notatki zostają – możesz je przeglądać.\n"
+            + (f"💳 Dalszy dostęp: {escape_html(price)}." if price else "💳 Chcesz wrócić? Zapytaj o ofertę 👇"))
 
 
 def access_revoked_text(contact_html: str) -> str:
@@ -291,29 +509,39 @@ def access_term_text(ends_on: str) -> str:
             "Wszystko działa jak dotąd.")
 
 
-def account_text(*, state: str, ends_on: str | None, contact_html: str) -> str:
-    """Ekran „👤 Konto”: jaki dostęp, do kiedy i jak przedłużyć."""
+def account_text(*, state: str, ends_on: str | None, contact_html: str, offer: OfferConfig,
+                 paid: Order | None = None, open_order: Order | None = None) -> str:
+    """Ekran „👤 Konto”: jaki dostęp, do kiedy, ostatnia potwierdzona płatność i jak przedłużyć."""
     lines = {
         "admin": "👑 Jesteś administratorem – pełny dostęp bez limitu.",
         "open": "✅ Pełny dostęp (bot otwarty dla wszystkich).",
         "bez_limitu": "♾️ Pełny dostęp bez terminu (dotychczasowy użytkownik).",
         "test": f"🎁 Darmowy test trwa do <b>{ends_on}</b>.",
-        "platny": f"💳 Abonament ważny do <b>{ends_on}</b>.",
+        "platny": f"✅ Dostęp ważny do <b>{ends_on}</b>.",
         "test_dostepny": "🎁 Czeka na Ciebie 7-dniowy darmowy test – ruszy, gdy klikniesz ▶️ Zacznij.",
         "test_koniec": f"⌛ Darmowy test skończył się {ends_on}.",
-        "platny_koniec": f"⌛ Abonament wygasł {ends_on}.",
+        "platny_koniec": f"⌛ Dostęp wygasł {ends_on}.",
         "wylaczony": "⛔ Dostęp został wyłączony przez administratora. Zapisane inwestycje i ustawienia zostają.",
-        "brak": "⏳ Dostęp jeszcze nieaktywny.",
+        "brak": "🔒 Nie masz jeszcze testu ani dostępu – możesz poprosić o 7-dniowy test.",
     }
-    verb = {"brak": "uzyskać", "wylaczony": "przywrócić"}.get(state, "przedłużyć")
-    extend = ("" if state in ("admin", "open", "bez_limitu")
-              else f"\nAby {verb} dostęp, skontaktuj się z {contact_html}.")
-    return "👤 <b>Twoje konto</b>\n\n" + lines.get(state, lines["brak"]) + extend
+    text = ["👤 <b>Twoje konto</b>", "", lines.get(state, lines["brak"])]
+    if paid is not None:
+        text.append(f"💳 Ostatnia potwierdzona płatność: zamówienie {paid.number} ({_when(paid.oplacono)}).")
+    if open_order is not None:
+        text.append(f"🛒 Zamówienie {open_order.number} czeka na płatność.")
+    if state in ("admin", "open", "bez_limitu"):
+        return "\n".join(text)
+    price = offer_price_sentence(offer)
+    if price:
+        text.append(f"💳 Dalszy dostęp: {escape_html(price)}.")
+    elif state == "wylaczony":
+        text.append(f"Jeśli to pomyłka, napisz do {contact_html}.")
+    return "\n".join(text)
 
 
 def admin_granted_text(user: BotUser, ends_on: str, *, days: int | None, delivered: bool) -> str:
     who = f"<b>{escape_html(user.display_name)}</b> ({user.chat_id})"
-    head = f"✅ Aktywowano: {who} – {f'{days} dni, ' if days else ''}ważny do {ends_on}"
+    head = f"✅ Dostęp nadany ręcznie (to nie płatność): {who} – {f'{days} dni, ' if days else ''}do {ends_on}"
     return head if delivered else head + "\n⚠️ Nie udało się wysłać mu wiadomości (zablokował bota?)."
 
 
@@ -344,7 +572,10 @@ def admin_usage_text() -> str:
             "/przedluz &lt;chat_id&gt; &lt;dni albo data&gt; – to samo: dni liczone od końca obecnego dostępu\n"
             "/odbierz &lt;chat_id&gt; – wyłącz dostęp od razu\n"
             "/trial &lt;chat_id&gt; – pozwól na 7-dniowy test (ruszy, gdy osoba kliknie ▶️)\n"
-            "/nowymodel &lt;chat_id|wszyscy&gt; &lt;dni albo data&gt; – dostęp z terminem dla dotychczasowych")
+            "/przedluztest &lt;chat_id&gt; &lt;dni 1–14&gt; &lt;powód&gt; – jednorazowo przedłuż test\n"
+            "/nowymodel &lt;chat_id|wszyscy&gt; &lt;dni albo data&gt; – dostęp z terminem dla dotychczasowych\n"
+            "/zaplacone &lt;Z-nr&gt; [uwagi] – płatność otrzymana · /anuluj &lt;Z-nr&gt; · /zamowienia\n"
+            "/napisz &lt;chat_id&gt; &lt;tekst&gt; – wiadomość przez bota · /firma &lt;chat_id&gt; &lt;nazwa|-&gt;")
 
 
 def admin_unknown_user_text(chat_id: int) -> str:
