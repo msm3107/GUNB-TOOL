@@ -336,7 +336,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_zamowienia_otwarte ON zamowienia (chat_id) 
 """
 """v12: sprzedaż w pilotażu – źródło wejścia, firma, prośba o test, podpowiedzi, jednorazowe przedłużenie testu
 z powodem, wynik pracy na parę osoba–inwestycja, zamówienia z ręcznym potwierdzeniem płatności. Zależne tabele
-mają ``ON DELETE CASCADE`` – ręczne usunięcie osoby z ``bot_users`` usuwa też jej zamówienia i wyniki."""
+mają ``ON DELETE CASCADE`` – usunięcie osoby z ``bot_users`` usuwa też jej zamówienia i wyniki, o ile połączenie ma
+``PRAGMA foreign_keys = ON`` (bot ma; konsola ``sqlite3`` domyślnie nie – polecenie w ``docs/PILOTAZ.md``)."""
 
 
 Migration = str | Callable[[sqlite3.Connection, int], None]
@@ -490,9 +491,15 @@ class LeadRepository:
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        """Transakcja (zagnieżdżone wywołania dołączają do zewnętrznej)."""
+        """Transakcja zapisu (zagnieżdżone wywołania dołączają do zewnętrznej).
+
+        ``BEGIN IMMEDIATE`` bierze blokadę zapisu od razu: transakcja, która najpierw czyta, a potem pisze, nie
+        dostaje „database is locked”, gdy drugi wątek (bot i zadania mają osobne połączenia) zapisze coś
+        w międzyczasie – w trybie WAL takiej transakcji nie da się już podnieść do zapisu i nie pomaga
+        ``busy_timeout``. Drugi wątek czeka na blokadę do ``busy_timeout``.
+        """
         if self._depth == 0:
-            self._conn.execute("BEGIN")
+            self._conn.execute("BEGIN IMMEDIATE")
         self._depth += 1
         try:
             yield

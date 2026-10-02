@@ -134,6 +134,16 @@ def test_data_diagnostics_flag_inconsistent_names_codes_and_missing_offer(repo, 
     assert "--historical" in text  # brak starszych decyzji do okien etapów
 
 
+def test_data_diagnostics_name_a_broken_offer_value(repo, api, clock):
+    offer = OfferConfig(tax="brutto", payment="przelew", seller_name="Jan", seller_contact="@jan",
+                        problems=("OFERTA_CENA='99 zł' – podaj samą kwotę",))
+    bot = make_bot(repo, api, clock, offer=offer)
+    bot.handle_update(message(ADMIN, "/dane"))
+    text = api.last_to(ADMIN)["text"]
+    assert "Oferta wyłączona" in text and "OFERTA_CENA='99 zł' – podaj samą kwotę" in text
+    assert "Oferta kompletna" not in text
+
+
 def test_old_events_are_removed_by_the_nightly_cleanup(bot, api, repo, clock):
     store = BotStore(repo)
     store.record_event(MIETEK, "demo")

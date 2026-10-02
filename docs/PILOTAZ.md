@@ -33,6 +33,9 @@ OFERTA_ODPOWIEDZ=w dni robocze 16:00–20:00
 Dopóki brakuje ceny, sposobu podatku, płatności albo danych sprzedawcy, bot **nie pokazuje ceny ani przycisku
 zamówienia** – tylko „💬 Zapytaj o ofertę” (pytanie trafia do Ciebie). `/dane` mówi, czego brakuje.
 
+Błędna wartość (np. `OFERTA_CENA=99 zł` zamiast `99`) **nie zatrzymuje bota** – wyłącza tylko ofertę (jak wyżej).
+Przy starcie dostajesz alert, a `/dane` pokazuje, którą zmienną poprawić; po poprawce zrestartuj bota.
+
 ## 3. Zamówienie i płatność krok po kroku
 
 1. Klient klika **🛒 Zamawiam** (oferta, konto, przypomnienie przed końcem albo informacja po końcu).
@@ -42,6 +45,9 @@ zamówienia** – tylko „💬 Zapytaj o ofertę” (pytanie trafia do Ciebie).
    Dostęp przedłuża się o 30 dni od końca obecnego (dni testu nie przepadają), klient dostaje potwierdzenie.
    Drugie kliknięcie niczego nie przedłuża.
 4. Pomyłka albo rezygnacja: **✖️ Anuluj** albo `/anuluj Z-7` (anulowanego nie da się opłacić).
+5. Klient zapłacił **bez** „🛒 Zamawiam” (np. po rozmowie): `/wplata <chat_id> [uwagi]` – bot potwierdza jego
+   otwarte zamówienie albo zakłada nowe z bieżącą ceną i od razu je potwierdza. Każde `/wplata` to jedna wpłata.
+   `/aktywuj` zostaw na dostęp **bez** płatności (promocja, wyjątek) – inaczej `/raport` nie policzy płatności.
 
 Bot nie wystawia faktur i nie przyjmuje pieniędzy – tylko zapisuje, co zamówiono i kiedy potwierdziłeś wpłatę.
 
@@ -51,6 +57,7 @@ Bot nie wystawia faktur i nie przyjmuje pieniędzy – tylko zapisuje, co zamów
 |---|---|
 | `/zamowienia` | otwarte (czekają na płatność) i ostatnio opłacone |
 | `/zaplacone <Z-nr> [uwagi]` · `/anuluj <Z-nr>` | płatność otrzymana (raz) · anulowanie |
+| `/wplata <chat_id> [uwagi]` | płatność bez zamówienia w bocie – zakłada je z bieżącej oferty i potwierdza |
 | `/napisz <chat_id> <tekst>` | wiadomość do osoby przez bota (np. dane do przelewu, odpowiedź na pytanie) |
 | `/trial <chat_id>` | pozwala na 7-dniowy test (to samo co 🎁 na karcie prośby) |
 | `/przedluztest <chat_id> <1–14> <powód>` | jednorazowe przedłużenie testu z zapisem powodu |
@@ -119,3 +126,17 @@ runuser -u gunb -- .venv/bin/python main.py --config config.yaml --zdrowie
 - Profil bota u BotFathera: [teksty](TELEGRAM_PROFIL.md).
 
 Podgląd strony lokalnie: otwórz `strona/index.html` w przeglądarce (bez serwera, bez internetu poza linkiem do Telegrama).
+
+## 9. Usunięcie osoby na jej prośbę
+
+Bot nie przyjmuje takich próśb sam (odpowiada tylko na przyciski i komendy) – przychodzą do Ciebie. Jedno polecenie
+na serwerze usuwa konto razem z ustawieniami, zapisanymi, notatkami, przypomnieniami, wynikami, zamówieniami,
+zdarzeniami i kolejką wysyłek (`CHAT_ID` – numer z `/uzytkownicy`):
+
+```bash
+cd /opt/gunb-tool && runuser -u gunb -- .venv/bin/python -c "import sqlite3,sys; c=sqlite3.connect('data/gunb_leads.sqlite'); c.execute('PRAGMA foreign_keys=ON'); [c.execute(f'DELETE FROM {t} WHERE chat_id=?', (int(sys.argv[1]),)) for t in ('wysylki','zdarzenia','bot_users')]; c.commit()" CHAT_ID
+```
+
+`PRAGMA foreign_keys=ON` jest konieczne – bez niego (np. samo `DELETE FROM bot_users` w konsoli `sqlite3`) notatki,
+zamówienia i reszta danych tej osoby zostałyby w bazie. Dane zostają jeszcze w kopiach bazy (`data/backups`, także
+kopie `*-przed-v*` sprzed aktualizacji, i kopie poza serwerem), dopóki tych kopii nie usuniesz.

@@ -85,12 +85,20 @@ def escape_html(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def telegram_length(text: str) -> int:
+    """Długość wiadomości tak, jak liczy ją Telegram przy limicie 4096: w jednostkach UTF-16 – większość emoji
+    (🏠, 📊, 👍) to 2, polskie litery – 1. Liczona dla całego HTML, więc z zapasem: Telegram liczy sam tekst."""
+    return len(text.encode("utf-16-le")) // 2
+
+
 def escape_discord(text: str) -> str:
     """Escapuje znaki formatowania Markdown Discorda."""
     return _DISCORD_RESERVED_RE.sub(r"\\\1", text)
 
 
 class _HtmlStyle:
+    length = staticmethod(telegram_length)
+
     @staticmethod
     def text(value: str) -> str:
         return escape_html(value)
@@ -109,6 +117,8 @@ class _HtmlStyle:
 
 
 class _DiscordStyle:
+    length = staticmethod(len)
+
     @staticmethod
     def text(value: str) -> str:
         return escape_discord(value)
@@ -194,7 +204,7 @@ class MessageFormatter:
         text = ""
         for description_limit, field_limit in ((self.description_limit, 400), (200, 150), (80, 60), (40, 30)):
             text = self._render(inv, change, style, description_limit, links_in_text, header, field_limit)
-            if len(text) <= limit:
+            if style.length(text) <= limit:
                 return text
         return text  # nieosiągalne dla rozsądnego limitu: ~20 krótkich wierszy
 
@@ -287,18 +297,18 @@ class MessageFormatter:
         newest_first = sorted(leads, key=lambda inv: inv.data_aktualizacji or "", reverse=True)
         ordered = sorted(newest_first, key=lambda inv: _category_rank(inv.kategoria))
         summary = self._digest_summary(leads, changes, style)
-        budget = limit - _DIGEST_HEADER_RESERVE - len(summary)
+        budget = limit - _DIGEST_HEADER_RESERVE - style.length(summary)
 
         chunks: list[list[tuple[str, str]]] = []
         current: list[tuple[str, str]] = []
         size = 0
         for inv in ordered:
             entry = self._digest_entry(inv, changes.get(inv.id_sprawy), style)
-            if current and size + len(entry) + 2 > budget:
+            if current and size + style.length(entry) + 2 > budget:
                 chunks.append(current)
                 current, size = [], 0
             current.append((inv.id_sprawy, entry))
-            size += len(entry) + 2
+            size += style.length(entry) + 2
         chunks.append(current)
 
         messages = []

@@ -20,4 +20,6 @@ def repo(clock):
 
 @pytest.fixture
 def api():
-    return FakeApi()
+    fake = FakeApi()
+    yield fake
+    assert not fake.rejected, f"Telegram odrzuciłby wiadomości: {fake.rejected}"

@@ -319,6 +319,7 @@ Przerwaną konfigurację `/start` wznawia od tego samego kroku; dotychczasowi u�
 | `/status` | import GUNB (trwa / ok / błąd + treść, ponowienie), ostatni pełny import, wątek zadań, wysyłki z ostatniej doby |
 | `/raport [7\|30\|90]` | lejek pilotażu: źródła, kroki przed testem, wyniki i puste wyniki, otwarcia (osoby i zdarzenia), zapisane, wyniki pracy, dostęp ręczny osobno od płatności, kohorty testu z zakończoną obserwacją (wysłanie ≠ przeczytanie; kliknięć w mapę Telegram nie zgłasza) |
 | `/zamowienia` · `/zaplacone <Z-nr> [uwagi]` · `/anuluj <Z-nr>` | zamówienia: lista, potwierdzenie otrzymanej płatności (raz), anulowanie |
+| `/wplata <chat_id> [uwagi]` | płatność bez „🛒 Zamawiam” (np. po rozmowie): potwierdza otwarte zamówienie albo zakłada je z bieżącej oferty – liczy się jako płatność, nie dostęp ręczny |
 | `/przedluztest <chat_id> <1–14> <powód>` | jednorazowe przedłużenie testu z zapisem powodu |
 | `/napisz <chat_id> <tekst>` · `/firma <chat_id> <nazwa\|->` | wiadomość przez bota (np. dane do przelewu) · firma osoby (raport liczy firmy) |
 | `/dane` | diagnostyka danych: nazwy obszarów przy kodach, sprawy spoza powiatów, dokładność lokalizacji, braki, historia do okien etapów, brakujące pola oferty |

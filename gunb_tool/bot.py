@@ -34,7 +34,7 @@ from .clock import WARSAW, at_local_time, local
 from .config import BotConfig
 from .demo import demo_leads
 from .funnel import ACTIVATION, activation_time, trial_cohort
-from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
+from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html, telegram_length
 from .gunb_scraper import GunbFormatError
 from .http_client import HttpError
 from .models import Investment
@@ -158,8 +158,9 @@ ADMIN_COMMANDS: dict[str, str] = {
     "/dane": "_cmd_data",  # diagnostyka danych: nazwy i kody obszarów, lokalizacja, braki, historia, oferta
     "/zamowienia": "_cmd_orders",  # otwarte i ostatnio opłacone zamówienia
     "/zaplacone": "_cmd_paid",  # /zaplacone <Z-nr> [uwagi] – płatność otrzymana (dokładnie raz)
+    "/wplata": "_cmd_payment",  # /wplata <chat_id> [uwagi] – płatność bez „🛒 Zamawiam” (np. po rozmowie)
     "/anuluj": "_cmd_cancel_order",  # /anuluj <Z-nr>
-    "/napisz": "_cmd_write",  # /napisz <chat_id> <tekst> – wiadomość do osoby przez bota
+    "/napisz": "_cmd_write",  # /napisz <chat_id> <tekst> – wiadomość do osoby przez bota (z podziałem na linie)
     "/firma": "_cmd_company",  # /firma <chat_id> <nazwa|-> – firma osoby (raport liczy firmy)
 }
 """Komendy zastrzeżone dla ``bot.admins`` (``ADMIN_CHAT_ID``); u innych działają jak nieznany tekst."""
@@ -512,7 +513,9 @@ class LeadBot:
         text = (message.get("text") or "").strip()
         command = text.split()[0].split("@")[0].lower() if text.startswith("/") else None
         if command in ADMIN_COMMANDS and chat_id in self.settings.admins:  # działa też bez /start admina
-            getattr(self, ADMIN_COMMANDS[command])(chat_id, text.split()[1:])
+            # /napisz: treść zostaje tak, jak ją napisano (linie, odstępy) – np. dane do przelewu
+            args = text.split(maxsplit=2)[1:] if command == "/napisz" else text.split()[1:]
+            getattr(self, ADMIN_COMMANDS[command])(chat_id, args)
             return
         user = self.store.get_user(chat_id)
         if command == "/start" or user is None:
@@ -781,23 +784,54 @@ class LeadBot:
             return
         self._send(admin_chat, self._cancel_order(int(match.group(1))))
 
-    def _cmd_orders(self, admin_chat: int, args: list[str]) -> None:
-        open_orders = self.store.orders(stan="zgloszone", limit=30)
-        paid = self.store.orders(stan="oplacone", limit=10)
-        names = {o.chat_id: (self.store.get_user(o.chat_id) or BotUser(o.chat_id, None, None, "", "", False)).display_name
-                 for o in (*open_orders, *paid)}
-        self._send(admin_chat, ui.admin_orders_text(open_orders, paid, names))
+    def _cmd_payment(self, admin_chat: int, args: list[str]) -> None:
+        """``/wplata <chat_id> [uwagi]`` – tylko admin: płatność otrzymana bez „🛒 Zamawiam” (np. po rozmowie).
 
-    def _cmd_write(self, admin_chat: int, args: list[str]) -> None:
-        """``/napisz <chat_id> <tekst>`` – tylko admin: odpowiedź na pytanie, dane do przelewu itp. przez bota."""
-        if len(args) < 2 or not _is_chat_id(args[0]):
+        Potwierdza otwarte zamówienie tej osoby, a bez niego zakłada zamówienie z bieżącej oferty (migawka ceny
+        i okresu) i od razu je potwierdza. Każde wywołanie to jedna wpłata. Dzięki temu płatność nie trafia do
+        dostępu ręcznego (``/aktywuj``) i ``/raport`` liczy ją jako płatność.
+        """
+        if not args or not _is_chat_id(args[0]):
             self._send(admin_chat, ui.admin_usage_text())
             return
         user = self._known_user(admin_chat, int(args[0]))
         if user is None:
             return
-        text = " ".join(args[1:])[:3500]
-        delivered = self._notify(user.chat_id, ui.admin_message_text(text))
+        order = self.store.open_order(user.chat_id)
+        if order is None:
+            offer = self.settings.offer
+            if not offer.complete:
+                self._send(admin_chat, ui.admin_payment_needs_offer_text(user, [*offer.problems, *offer.missing()]))
+                return
+            order, created = self.store.create_order(user.chat_id, offer)
+            if created:
+                self.store.record_event(user.chat_id, "zamowienie", szczegoly=f"{order.number} od admina")
+        self._send(admin_chat, self._confirm_payment(order.id, admin_chat, " ".join(args[1:]) or None))
+
+    def _cmd_orders(self, admin_chat: int, args: list[str]) -> None:
+        open_orders = self.store.orders(stan="zgloszone", limit=30)
+        paid = self.store.orders(stan="oplacone", limit=10)
+        names = {o.chat_id: (self.store.get_user(o.chat_id) or BotUser(o.chat_id, None, None, "", "", False)).display_name
+                 for o in (*open_orders, *paid)}
+        self._send_long(admin_chat, ui.admin_orders_text(open_orders, paid, names))
+
+    def _cmd_write(self, admin_chat: int, args: list[str]) -> None:
+        """``/napisz <chat_id> <tekst>`` – tylko admin: odpowiedź na pytanie, dane do przelewu itp. przez bota.
+
+        Tekst idzie tak, jak go napisano (z podziałem na linie). Za długi wraca do admina – ucięte dane do przelewu
+        byłyby gorsze niż żadne.
+        """
+        if len(args) < 2 or not _is_chat_id(args[0]) or not args[1].strip():
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        user = self._known_user(admin_chat, int(args[0]))
+        if user is None:
+            return
+        text = ui.admin_message_text(args[1].strip())
+        if telegram_length(text) > TELEGRAM_LIMIT:
+            self._send(admin_chat, ui.admin_message_too_long_text(telegram_length(text)))
+            return
+        delivered = self._notify(user.chat_id, text)
         self._send(admin_chat, f"✉️ Wysłano do {escape_html(user.display_name)} ({user.chat_id})" if delivered
                    else "⚠️ Nie udało się wysłać (zablokował bota?)")
 
@@ -1131,7 +1165,8 @@ class LeadBot:
         if ended:
             entries = [(user, self._local_date(user.subscription_ends, with_time=True)) for user in ended]
             for admin in admins:
-                self._send_safely(admin, ui.admin_expired_text(entries))
+                for part in ui.split_lines(ui.admin_expired_text(entries)):
+                    self._send_safely(admin, part)
 
     def notify_trial_nudges(self) -> None:
         """Jedna podpowiedź na test: 48 h po starcie, gdy osoba wciąż się nie aktywowała (definicja w ``funnel``).
@@ -1251,7 +1286,7 @@ class LeadBot:
         since = now - timedelta(days=days)
         events = self.store.events(since)
         users = self.store.all_users()
-        self._send(admin_chat, ui.pilot_report(
+        self._send_long(admin_chat, ui.pilot_report(
             days, since=since, sent=self.store.delivery_counts(since), unique=self.store.event_counts(since),
             events=events, users=users, outcomes=self.store.outcome_counts(since),
             cohort=trial_cohort(users, events, since=since, now=now), rule=ACTIVATION.describe(),
@@ -1262,16 +1297,17 @@ class LeadBot:
         overview = self.store.data_overview(self.powiat_codes)
         oldest = overview["najstarsza_decyzja"]
         needed = (local(self._now()).date() - timedelta(days=LONGEST_WINDOW_DAYS)).isoformat()
-        self._send(admin_chat, ui.data_report(
+        self._send_long(admin_chat, ui.data_report(
             overview, place_names=self._place_names(), freshness=self._freshness(), import_note=self._import_note(),
             history_needed=needed if not oldest or oldest > needed else None, offer_missing=self.settings.offer.missing(),
+            offer_problems=self.settings.offer.problems,
         ))
 
     def _cmd_status(self, admin_chat: int, args: list[str]) -> None:
         """``/status`` – tylko admin: stan importu GUNB, wątku zadań i wysyłek z ostatniej doby."""
         now = self._now()
         day_ago = now - timedelta(hours=24)
-        self._send(admin_chat, ui.status_text(
+        self._send_long(admin_chat, ui.status_text(
             now=now, import_status=self.store.job_status(IMPORT_JOB), last_import=self.store.job_time(LAST_IMPORT_JOB),
             retry_at=self.store.job_time(FETCH_RETRY_JOB), heartbeat=self.store.job_time(HEARTBEAT_JOB),
             sends=self.store.send_counts(day_ago), failed=self.store.failed_sends(day_ago),
@@ -1423,7 +1459,7 @@ class LeadBot:
             self._send(user.chat_id, ui.unknown_text(), ui.menu_keyboard())
             return
         everyone = [u for status in ("aktywny", "oczekuje", "zablokowany", "odrzucony") for u in self.store.users(status)]
-        self._send(user.chat_id, ui.users_list(everyone, self._subscription_label))
+        self._send_long(user.chat_id, ui.users_list(everyone, self._subscription_label))
 
     def _subscription_label(self, user: BotUser) -> str:
         """Dostęp na liście admina, np. „💳 do 29.10.2026”, „🎁 test do …”, „⌛ wygasł …”, „nieaktywny”."""
@@ -1452,7 +1488,7 @@ class LeadBot:
             return None
         text, markup = self._card(user, inv)
         if self._take_tip(user, "zapisz", done=self.store.saved_count(user.chat_id) > 0):
-            text, markup = self._card(user, inv, limit=TELEGRAM_LIMIT - len(ui.TIP_SAVE) - 2)
+            text, markup = self._card(user, inv, limit=TELEGRAM_LIMIT - telegram_length(ui.TIP_SAVE) - 2)
             text += "\n\n" + ui.TIP_SAVE
         self._send(user.chat_id, text, markup)
         self.store.record_event(user.chat_id, "szczegoly", inv.id_sprawy)
@@ -1896,7 +1932,7 @@ class LeadBot:
         while start < len(items):
             count = min(self.settings.max_leads_in_report, len(items) - start)
             text, markup = build(items[start:start + count])
-            while len(text) > TELEGRAM_LIMIT and count > 1:
+            while telegram_length(text) > TELEGRAM_LIMIT and count > 1:
                 count = max(1, count - 3)
                 text, markup = build(items[start:start + count])
             self._send(chat_id, text, markup)
@@ -1952,7 +1988,7 @@ class LeadBot:
 
         shown = min(len(leads), self.settings.max_leads_in_report)
         text, markup = build(shown)
-        while len(text) > TELEGRAM_LIMIT and shown > 1:  # długie opisy/adresy – mniej pozycji na liście
+        while telegram_length(text) > TELEGRAM_LIMIT and shown > 1:  # długie opisy/adresy – mniej pozycji na liście
             shown = max(1, shown - 3)
             text, markup = build(shown)
         self._send(user.chat_id, text, markup)
@@ -2036,7 +2072,7 @@ class LeadBot:
         distance = filters.distance_km if filters.baza else None
         shown = min(len(due), self.settings.max_leads_in_report)
         text, markup = ui.stage_reminder(trade, due[:shown], len(due), distance)
-        while len(text) > TELEGRAM_LIMIT and shown > 1:
+        while telegram_length(text) > TELEGRAM_LIMIT and shown > 1:
             shown = max(1, shown - 3)
             text, markup = ui.stage_reminder(trade, due[:shown], len(due), distance)
         self._send(user.chat_id, text, markup)
@@ -2176,6 +2212,12 @@ class LeadBot:
 
     def _send(self, chat_id: int, text: str, markup: dict | None = None) -> None:
         self.api.send_message(chat_id, text, markup)
+
+    def _send_long(self, chat_id: int, text: str, markup: dict | None = None) -> None:
+        """Lista albo raport admina dłuższy niż limit Telegrama – w kilku wiadomościach (przyciski pod ostatnią)."""
+        parts = ui.split_lines(text)
+        for index, part in enumerate(parts, start=1):
+            self._send(chat_id, part, markup if index == len(parts) else None)
 
     def _send_safely(self, chat_id: int, text: str, markup: dict | None = None) -> None:
         try:

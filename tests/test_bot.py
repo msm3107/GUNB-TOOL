@@ -187,6 +187,19 @@ def test_users_list_shows_subscriptions(bot, api):
     assert "do 29.10.2026" in text and "nieaktywny" in text
 
 
+def test_long_users_list_comes_in_several_messages_telegram_accepts(bot, api):
+    """Każde wejście ze strony to konto – lista ponad ~55 osób przekraczała 4096 znaków i Telegram ją odrzucał."""
+    bot.handle_update(message(ADMIN, "/start"))
+    people = [5_000_000_000 + n for n in range(120)]
+    for n, chat_id in enumerate(people):  # imię w Telegramie ma najwyżej 64 znaki
+        bot.handle_update(message(chat_id, "/start", first_name=f"Przedsiębiorstwo Budowlane {n:03d} " + "x" * 30))
+    api.sent.clear()
+    bot.handle_update(message(ADMIN, "/uzytkownicy"))
+    parts = [m["text"] for m in api.to(ADMIN)]
+    assert len(parts) > 1 and parts[0].startswith("👥 <b>Użytkownicy</b>")
+    assert all(f"({chat_id})" in "\n".join(parts) for chat_id in people)
+
+
 def test_rejected_user_is_informed(bot, api):
     bot.handle_update(message(OBCY, "/start"))
     bot.handle_update(click(ADMIN, f"adm:no:{OBCY}"))
@@ -960,3 +973,42 @@ def test_no_results_means_really_nothing_matches(bot, api, repo):
     assert "brak pasujących" in text.lower()
     assert "Gdańsk" in text  # pokazane aktywne filtry, bez kasowania
     assert BotStore(repo).get_user(MIETEK).filtry.miejsca == ("Gdańsk",)
+
+
+def test_report_card_and_stage_reminder_with_emoji_fit_telegram(bot, api, repo, clock):
+    """Emoji (np. w notatce) liczą się u Telegrama podwójnie – raport, karta i przypomnienie skracają się do limitu
+    liczonego tak samo, a nie do liczby znaków w Pythonie (atrapa API odrzuca to, co odrzuci Telegram)."""
+    activate(bot, api, MIETEK)
+    BotStore(repo).set_trade(MIETEK, "dach")
+    for n in range(20):
+        repo.upsert(lead(f"E/{n}", nazwa_zamierzenia="🏠" * 300, adres_opisowy="🏗️" * 150, inwestor="🏢" * 300,
+                         projektant="📐" * 300, organ="🏛️" * 150, data_decyzji="2026-05-01",
+                         data_aktualizacji="2026-09-28"))
+    bot.handle_update(message(MIETEK, "📊 Inwestycje"))
+    report = api.last_to(MIETEK)
+    assert report["text"].startswith("📊 <b>Raport")
+    nr = int(report["markup"]["inline_keyboard"][0][0]["callback_data"].split(":")[1])
+    bot.handle_update(click(MIETEK, f"nt:{nr}"))
+    bot.handle_update(message(MIETEK, "👍" * 300))
+    bot.handle_update(click(MIETEK, f"o:{nr}"))
+    bot.handle_update(click(MIETEK, f"d:{nr}"))
+    bot.send_stage_reminder(BotStore(repo).get_user(MIETEK), on_demand=True)
+    assert api.edits and api.last_to(MIETEK)["text"].startswith("⏰ <b>")
+
+
+def test_lists_without_shrinking_stay_within_the_limit_even_with_a_very_long_address(bot, api, repo):
+    """Przegląd historii, „Na początek” i zapisane nie skracają listy – długość pozycji musi być ograniczona
+    także wtedy, gdy rejestr poda bardzo długi adres (dziś najwyżej ~50 znaków, ale to dane z zewnątrz)."""
+    from tests.bot_helpers import telegram_rejects
+
+    activate(bot, api, MIETEK)
+    for n in range(12):
+        repo.upsert(lead(f"L/{n}", adres_opisowy="Dywity, działki nr " + ", ".join(f"{k}/{n}" for k in range(400))))
+    bot.handle_update(click(MIETEK, "hp:0"))  # przegląd historii (edycja wiadomości)
+    assert "Pasujące do Twoich filtrów" in api.edits[-1]["text"]
+    for n in range(12):
+        bot.handle_update(click(MIETEK, f"s1:{repo.get(f'L/{n}').nr}"))
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert api.last_to(MIETEK)["text"].startswith("⭐ <b>Zapisane</b> (12)")
+    text, _ = bot._first_value(BotStore(repo).get_user(MIETEK))
+    assert text.startswith("⭐ <b>Na początek") and telegram_rejects(text) is None

@@ -94,8 +94,11 @@ def test_rules_and_privacy_are_marked_as_drafts(name):
 
 def test_privacy_draft_matches_what_the_bot_really_stores():
     text = " ".join(" ".join(parse("prywatnosc.html").text).split()).lower()
-    for fact in ("id czatu", "notatki", "źródło wejścia", "13 miesięcy", "nie przyjmuje płatności", "nie wysyła reklam"):
+    for fact in ("id czatu", "notatki", "źródło wejścia", "13 miesięcy", "nie przyjmuje płatności", "nie wysyła reklam",
+                 "nazwa firmy", "kopie zapasowe bazy (na serwerze"):
         assert fact in text, fact
+    # bot nie przekazuje zwykłych wiadomości operatorowi („🤔 Nie rozumiem”) – prośba o usunięcie idzie do operatora
+    assert "przez bota" not in text
 
 
 def section(markdown: str, name: str) -> str:

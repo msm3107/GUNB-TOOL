@@ -6,6 +6,7 @@ i zmieniać bez dotykania logiki bota.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -17,7 +18,7 @@ from .clock import local
 from .config import BotConfig, OfferConfig, format_money
 from .demo import DEMO_LABEL
 from .funnel import OBSERVATION, Cohort
-from .exporter import CATEGORY_ICONS, TELEGRAM_LIMIT, escape_html
+from .exporter import CATEGORY_ICONS, TELEGRAM_LIMIT, escape_html, telegram_length
 from .models import BUILDING_CATEGORIES, Investment, Status
 from .scoring import score_investment
 from .stages import TRADES, Trade, get_trade
@@ -100,7 +101,7 @@ def welcome_text(name: str | None) -> str:
 def help_text(settings: BotConfig, *, admin: bool = False) -> str:
     admin_part = ("\n\n👑 <b>Admin</b>: /aktywuj &lt;chat_id&gt; &lt;dni|data&gt; · /przedluz · /odbierz · "
                   "/trial &lt;chat_id&gt; · /przedluztest · /nowymodel · /uzytkownicy · /zamowienia · /zaplacone · "
-                  "/anuluj · /napisz · /firma · /status · /raport · /dane" if admin else "")
+                  "/wplata · /anuluj · /napisz · /firma · /status · /raport · /dane" if admin else "")
     return _help_body(settings) + admin_part
 
 
@@ -278,6 +279,19 @@ def inquiry_sent_text(offer: OfferConfig) -> str:
 def admin_message_text(text: str) -> str:
     """Wiadomość od operatora wysłana przez bota (np. dane do przelewu, odpowiedź na pytanie)."""
     return "✉️ <b>Wiadomość od Żółtej Tablicy</b>\n" + escape_html(text)
+
+
+def admin_message_too_long_text(length: int) -> str:
+    return (f"✂️ Wiadomość jest za długa: {length} znaków po przygotowaniu do wysłania (limit Telegrama: "
+            f"{TELEGRAM_LIMIT}). Do klienta nic nie poszło – skróć ją albo wyślij w dwóch częściach.")
+
+
+def admin_payment_needs_offer_text(user: BotUser, missing: Sequence[str]) -> str:
+    """``/wplata`` bez ustawionej oferty – nie wiadomo, za ile i na ile dni, więc płatności nie zapisujemy."""
+    return (f"ℹ️ Nie zapiszę płatności od {escape_html(user.display_name)} ({user.chat_id}): oferta nie jest "
+            f"ustawiona ({escape_html('; '.join(missing))}), więc nie wiadomo, za ile i na ile dni. Uzupełnij "
+            f"OFERTA_… w .env i zrestartuj bota – albo daj dostęp bez płatności: /aktywuj {user.chat_id} "
+            f"{DEFAULT_PAID_DAYS}.")
 
 
 def _who(user: BotUser) -> str:
@@ -664,7 +678,12 @@ def admin_trial_allowed_text(user: BotUser, *, delivered: bool) -> str:
 
 def admin_trial_used_text(user: BotUser, ended_on: str) -> str:
     return (f"ℹ️ {escape_html(user.display_name)} ({user.chat_id}) wykorzystał już darmowy test (do {ended_on}). "
-            f"Dostęp: /aktywuj {user.chat_id} {DEFAULT_PAID_DAYS}")
+            f"{_renewal_hint(user.chat_id)}")
+
+
+def _renewal_hint(chat_id: int) -> str:
+    """Płatność (liczona w /raport jako płatność) osobno od dostępu nadanego bez płatności."""
+    return f"Płatność: /wplata {chat_id} · bez płatności: /aktywuj {chat_id} {DEFAULT_PAID_DAYS}"
 
 
 def admin_revoked_text(user: BotUser) -> str:
@@ -686,6 +705,7 @@ def admin_usage_text() -> str:
             "/przedluztest &lt;chat_id&gt; &lt;dni 1–14&gt; &lt;powód&gt; – jednorazowo przedłuż test\n"
             "/nowymodel &lt;chat_id|wszyscy&gt; &lt;dni albo data&gt; – dostęp z terminem dla dotychczasowych\n"
             "/zaplacone &lt;Z-nr&gt; [uwagi] – płatność otrzymana · /anuluj &lt;Z-nr&gt; · /zamowienia\n"
+            "/wplata &lt;chat_id&gt; [uwagi] – płatność bez zamówienia w bocie (np. po rozmowie)\n"
             "/napisz &lt;chat_id&gt; &lt;tekst&gt; – wiadomość przez bota · /firma &lt;chat_id&gt; &lt;nazwa|-&gt;")
 
 
@@ -698,8 +718,8 @@ def trial_skipped_text(user: BotUser, ends_on: str) -> str:
 
 
 def admin_expired_text(entries: Sequence[tuple[BotUser, str]]) -> str:
-    lines = [f"• {escape_html(user.display_name)} ({user.chat_id}) – {'test' if user.on_trial else 'abonament'} "
-             f"do {ends_on} · przedłuż: /aktywuj {user.chat_id} {DEFAULT_PAID_DAYS}" for user, ends_on in entries]
+    lines = [f"• {escape_html(user.display_name)} ({user.chat_id}) – {'test' if user.on_trial else 'dostęp'} "
+             f"do {ends_on} · {_renewal_hint(user.chat_id)}" for user, ends_on in entries]
     return "⌛ <b>Koniec dostępu</b>\n" + "\n".join(lines)
 
 
@@ -715,7 +735,7 @@ def users_list(users: Sequence[BotUser], subscription: Callable[[BotUser], str])
 
 JOB_LABELS = {"raport_rano": "Raport poranny", "raport_wieczor": "Raport wieczorny",
               "przypomnienia_etap": "Przypomnienia o etapie budowy", "dostep_przypomnienie": "Przypomnienie o końcu dostępu",
-              "dostep_koniec": "Informacja o końcu dostępu"}
+              "dostep_koniec": "Informacja o końcu dostępu", "podpowiedz_test": "Podpowiedź po 48 h testu"}
 SEND_STATE_LABELS = {"wyslano": "wysłano", "pusto": "bez nowości", "oczekuje": "czeka na ponowienie",
                      "wysylanie": "w trakcie", "pominieto": "pominięto", "zablokowany": "zablokowali bota",
                      "blad": "❌ nieudane"}
@@ -1000,7 +1020,7 @@ def lead_card(inv: Investment, *, why: Sequence[str] = (), estimates: Sequence[s
     text = ""
     for description, field in ((600, 300), (240, 120), (80, 50)):
         text = _render_card(inv, why, estimates, note, header, status_change, details, description, field)
-        if len(text) <= limit:
+        if telegram_length(text) <= limit:
             break
     return text
 
@@ -1322,7 +1342,7 @@ DATA_REPORT_GMINY = 8
 
 
 def data_report(overview: dict, *, place_names: dict[str, str], freshness: str, import_note: str | None,
-                history_needed: str | None, offer_missing: Sequence[str]) -> str:
+                history_needed: str | None, offer_missing: Sequence[str], offer_problems: Sequence[str] = ()) -> str:
     """``/dane`` – co jest w bazie i czego brakuje; niejednoznaczności pokazujemy, nie poprawiamy zgadywaniem."""
     span = overview["zakres"]
     lines = ["🧪 <b>Dane w bocie</b>",
@@ -1358,10 +1378,13 @@ def data_report(overview: dict, *, place_names: dict[str, str], freshness: str, 
                      "<code>python main.py --fetch --historical</code>")
     else:
         lines.append(f"🕰️ Najstarsza decyzja: {_pl_date(oldest)} – historia wystarcza do okien etapów.")
+    if offer_problems:
+        lines.append("⛔ Oferta wyłączona – błędne wartości w .env: " + "; ".join(escape_html(p) for p in offer_problems)
+                     + ". Bot pokazuje tylko „💬 Zapytaj o ofertę”; popraw i zrestartuj bota.")
     if offer_missing:
         lines.append(f"⚠️ Oferta niepełna – brakuje: {', '.join(offer_missing)}. Bot pokazuje tylko „💬 Zapytaj "
                      "o ofertę” (uzupełnij OFERTA_… w .env).")
-    else:
+    if not offer_problems and not offer_missing:
         lines.append("💳 Oferta kompletna – bot pokazuje cenę i przyjmuje zamówienia.")
     return "\n".join(lines)
 
@@ -1381,6 +1404,9 @@ def watch_header(item: WatchItem, inv: Investment) -> tuple[str, str, str]:
 # --- Raport ---------------------------------------------------------------------------------------
 
 HISTORY_PAGE_SIZE = 10
+ENTRY_PLACE_LIMIT = 80
+"""Adres w pozycji listy – skracany, bo przegląd, zapisane i „Na początek” nie zmniejszają liczby pozycji
+(w danych GUNB adres ma dziś najwyżej ~50 znaków, ale to dane z zewnątrz)."""
 
 
 def _watched_text(watched: int) -> str:
@@ -1548,7 +1574,7 @@ def _report_entry(position: int, inv: Investment, distance: Distance | None = No
     km = distance(inv) if distance else None
     facts = [p for p in (
         f"📏 {distance_label(km)}" if km is not None else None,
-        inv.adres_opisowy or inv.miejscowosc,
+        _short(inv.adres_opisowy or inv.miejscowosc or "", ENTRY_PLACE_LIMIT) or None,
         f"{_thousands(inv.kubatura)} m³" if inv.kubatura else None,
         _short_date(inv.data_aktualizacji),
     ) if p]
@@ -1563,7 +1589,7 @@ def _stage_entry(position: int, inv: Investment, distance: Distance | None = Non
     decided = inv.data_decyzji or inv.data_wplywu
     facts = [p for p in (
         f"📏 {distance_label(km)}" if km is not None else None,
-        inv.adres_opisowy or inv.miejscowosc,
+        _short(inv.adres_opisowy or inv.miejscowosc or "", ENTRY_PLACE_LIMIT) or None,
         f"{_thousands(inv.kubatura)} m³" if inv.kubatura else None,
         f"decyzja {decided[8:10]}.{decided[5:7]}.{decided[:4]}" if decided and len(decided) >= 10 else None,
     ) if p]
@@ -1614,6 +1640,39 @@ def _thousands(value: float) -> str:
 def _short(text: str, limit: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def split_lines(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
+    """Długa lista albo raport admina w kilku wiadomościach do ``limit`` (liczonego jak u Telegrama, w UTF-16).
+
+    Tnie tylko między liniami – w tych tekstach znacznik HTML nigdy nie przechodzi przez koniec linii. Pojedyncza
+    linia dłuższa niż limit (w listach admina się nie zdarza) traci znaczniki i jest skracana przed encją.
+    """
+    parts: list[str] = []
+    current, size = "", 0
+    for line in text.split("\n"):
+        if telegram_length(line) > limit:
+            line = re.sub(r"&[#\w]*$", "", _utf16_prefix(re.sub(r"<[^<>]*>", "", line), limit - 1)) + "…"
+        length = telegram_length(line)
+        if current and size + 1 + length > limit:
+            parts.append(current)
+            current, size = line, length
+        elif current:
+            current, size = f"{current}\n{line}", size + 1 + length
+        else:
+            current, size = line, length
+    parts.append(current)
+    return [part.strip("\n") for part in parts if part.strip()] or [text]
+
+
+def _utf16_prefix(text: str, units: int) -> str:
+    """Najdłuższy początek ``text`` mieszczący się w ``units`` jednostkach UTF-16 (emoji spoza BMP – 2)."""
+    used = 0
+    for index, char in enumerate(text):
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > units:
+            return text[:index]
+    return text
 
 
 def _pl_date(iso_date: str) -> str:

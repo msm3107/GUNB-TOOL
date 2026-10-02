@@ -47,19 +47,37 @@ def test_values_come_from_env_so_seller_data_stays_out_of_the_public_repository(
     assert offer.price == Decimal("99.50") and offer.seller_name == "Jan"
 
 
-@pytest.mark.parametrize("key, value, message", [
-    ("price", "dużo", "bot.offer.price"),
-    ("price", "-5", "bot.offer.price"),
-    ("tax", "vat", "bot.offer.tax"),
-    ("vat_rate", "230", "bot.offer.vat_rate"),
-    ("period_days", "0", "bot.offer.period_days"),
-    ("accounts", "0", "bot.offer.accounts"),
-    ("currency", "złotówki", "bot.offer.currency"),
-    ("terms_url", "http://niebezpieczny.example", "bot.offer.terms_url"),
+@pytest.mark.parametrize("key, value, variable", [
+    ("price", "dużo", "OFERTA_CENA"),
+    ("price", "-5", "OFERTA_CENA"),
+    ("price", "99 zł", "OFERTA_CENA"),
+    ("price", "NaN", "OFERTA_CENA"),
+    ("price", "0,001", "OFERTA_CENA"),
+    ("tax", "vat", "OFERTA_PODATEK"),
+    ("vat_rate", "230", "OFERTA_VAT"),
+    ("period_days", "0", "OFERTA_DNI"),
+    ("accounts", "0", "OFERTA_KONTA"),
+    ("currency", "złotówki", "OFERTA_WALUTA"),
+    ("terms_url", "http://niebezpieczny.example", "OFERTA_ZASADY_URL"),
 ])
-def test_invalid_offer_values_are_rejected_at_start(tmp_path, key, value, message):
-    with pytest.raises(ConfigError, match=message):
-        load_config(write_config(tmp_path, offer_yaml(**{key: value})), env={})
+def test_invalid_offer_value_turns_the_offer_off_instead_of_stopping_the_bot(tmp_path, key, value, variable):
+    """Literówka w cenie nie może wyłączyć bota wszystkim (błąd konfiguracji = kod 2, systemd go nie wznawia):
+    oferta jest wtedy wyłączona – bez ceny i zamówień – a problem nazywa zmienną z ``.env``."""
+    offer = load_config(write_config(tmp_path, offer_yaml(**{**FULL, key: value})), env={}).bot.offer
+    assert not offer.complete
+    assert any(variable in problem and repr(value) in problem for problem in offer.problems), offer.problems
+    assert offer.seller_name == "Jan Przykładowy"  # poprawne pola zostają
+
+
+def test_valid_offer_has_no_problems(tmp_path):
+    offer = load_config(write_config(tmp_path, offer_yaml(**FULL, terms_url="https://example.com/zasady")),
+                        env={}).bot.offer
+    assert offer.complete and offer.problems == () and offer.terms_url == "https://example.com/zasady"
+
+
+def test_other_config_errors_still_stop_the_start(tmp_path):
+    with pytest.raises(ConfigError, match="bot.access"):
+        load_config(write_config(tmp_path, "gunb:\n  voivodeships: ['28']\nbot:\n  access: wszyscy\n"), env={})
 
 
 def test_repository_config_keeps_the_offer_in_env_placeholders():
