@@ -535,3 +535,27 @@ def test_code_older_than_the_database_refuses_to_run(tmp_path, clock):
 
     with pytest.raises(SchemaTooNew, match=f"v{SCHEMA_VERSION + 1}"):
         LeadRepository(path, now=clock)
+
+
+def test_transaction_takes_the_write_lock_at_the_start(tmp_path):
+    """Transakcja, która najpierw czyta, potem pisze (potwierdzenie płatności, strona importu), nie może paść na
+    „database is locked”, bo drugi wątek coś zapisał w międzyczasie (WAL nie czeka wtedy na blokadę): blokadę
+    zapisu bierze od razu, a drugi wątek czeka na nią (``busy_timeout``)."""
+    import sqlite3
+
+    path = tmp_path / "baza.sqlite"
+    first, second = LeadRepository(path), LeadRepository(path)
+    second.connection.execute("PRAGMA busy_timeout = 0")  # w teście bez czekania 5 s
+    try:
+        with first.transaction():
+            first.connection.execute("SELECT COUNT(*) FROM investments").fetchone()
+            try:
+                second.connection.execute("INSERT INTO zadania (nazwa, ostatnio) VALUES ('drugi', 'x')")
+            except sqlite3.OperationalError:
+                pass  # drugi wątek poczeka na swoją kolej
+            first.connection.execute("INSERT INTO zadania (nazwa, ostatnio) VALUES ('pierwszy', 'x')")
+        names = {row[0] for row in first.connection.execute("SELECT nazwa FROM zadania")}
+        assert "pierwszy" in names
+    finally:
+        first.close()
+        second.close()

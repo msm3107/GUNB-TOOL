@@ -491,9 +491,15 @@ class LeadRepository:
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        """Transakcja (zagnieżdżone wywołania dołączają do zewnętrznej)."""
+        """Transakcja zapisu (zagnieżdżone wywołania dołączają do zewnętrznej).
+
+        ``BEGIN IMMEDIATE`` bierze blokadę zapisu od razu: transakcja, która najpierw czyta, a potem pisze, nie
+        dostaje „database is locked”, gdy drugi wątek (bot i zadania mają osobne połączenia) zapisze coś
+        w międzyczasie – w trybie WAL takiej transakcji nie da się już podnieść do zapisu i nie pomaga
+        ``busy_timeout``. Drugi wątek czeka na blokadę do ``busy_timeout``.
+        """
         if self._depth == 0:
-            self._conn.execute("BEGIN")
+            self._conn.execute("BEGIN IMMEDIATE")
         self._depth += 1
         try:
             yield
