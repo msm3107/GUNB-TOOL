@@ -62,6 +62,8 @@ RECEIVE_RETRY_MAX = 60
 """Najdłuższa przerwa (s) między próbami odbioru, gdy Telegram długo nie odpowiada (5, 10, 20, 40, 60…)."""
 REPORT_JOBS: dict[str, str] = {"raport_rano": "rano", "raport_wieczor": "wieczor"}
 """Zadanie raportu → tryb użytkowników, którzy go dostają."""
+PLACE_CONFIRM = "miejsce?:"
+"""``oczekuje_na`` z nazwą spoza danych, która czeka na „✅ Tak, zapisz” (albo na inną wpisaną nazwę)."""
 CLEANUP_JOB, CLEANUP_TIME = "porzadki", "03:30"
 SENDS_KEPT = timedelta(days=35)
 """Zakończone wysyłki starsze niż tyle są usuwane (``/status`` pokazuje ostatnią dobę, ``/raport`` – z ``deliveries``)."""
@@ -1212,6 +1214,25 @@ class LeadBot:
         # wybór powiatów zastępuje promień „📍 Blisko mnie” (baza zostaje zapamiętana)
         return self._update_filters(user, replace(user.filtry, powiaty=powiaty, promien_km=None), message_id, "place")
 
+    def _cb_place_confirm(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """„✅ Tak, zapisz” pod nazwą, której nie ma jeszcze w danych – czeka na nią ``oczekuje_na``."""
+        pending = user.oczekuje_na or ""
+        if not pending.startswith(PLACE_CONFIRM):
+            return "⌛ Ten przycisk jest już nieaktualny – wpisz nazwę jeszcze raz"
+        self.store.set_awaiting(user.chat_id, None)
+        self._save_place(user, pending[len(PLACE_CONFIRM):])
+        return None
+
+    def _save_place(self, user: BotUser, value: str) -> None:
+        filters = user.filtry
+        if user.konfiguracja == "obszar":  # pierwsze kroki: dokładnie ta miejscowość
+            self.store.set_filters(user.chat_id, replace(filters, miejsca=(value,), powiaty=(), promien_km=None))
+            self._finish_setup(user)
+            return
+        filters = replace(filters, miejsca=tuple(dict.fromkeys((*filters.miejsca, value))), promien_km=None)
+        self.store.set_filters(user.chat_id, filters)
+        self._show_filters(self.store.get_user(user.chat_id), prefix=escape_html(f"✅ Dodano miejsce: {value}\n\n"))
+
     def _cb_trade(self, user: BotUser, arg: str, message_id: int) -> str | None:
         trade = get_trade(arg)
         if trade is None and arg != "none":
@@ -1314,19 +1335,20 @@ class LeadBot:
             return
         filters = user.filtry
         value = " ".join(text.split())[:60]
-        if what == "miejsce":
-            # spoza monitorowanego obszaru albo literówka; bez żadnych danych (świeża instalacja) nie ma z czym
-            # porównać – wtedy przyjmujemy nazwę, a nietrafioną widać potem w podsumowaniu filtrów
-            if self.store.has_investments() and not self.store.place_is_known(value):
+        if what == "miejsce" or (what or "").startswith(PLACE_CONFIRM):
+            # literówka, spoza obszaru albo wieś, z której jeszcze nic nie wpłynęło – zapis dopiero po „✅ Tak”
+            # (albo wpisz inną nazwę); bez żadnych danych (świeża instalacja) nie ma z czym porównać – przyjmujemy
+            value = value.strip(" .,;:!?\"'")
+            if not value:
                 self.store.set_awaiting(user.chat_id, "miejsce")
-                self._send(user.chat_id, ui.place_unknown_text(value, self._region_label()))
+                self._send(user.chat_id, "🤔 Wpisz nazwę miejscowości, np. <b>Dywity</b>.")
                 return
-            if user.konfiguracja == "obszar":  # pierwsze kroki: dokładnie ta miejscowość
-                self.store.set_filters(user.chat_id, replace(filters, miejsca=(value,), powiaty=(), promien_km=None))
-                self._finish_setup(user)
+            if self.store.has_investments() and not self.store.place_is_known(value):
+                self.store.set_awaiting(user.chat_id, PLACE_CONFIRM + value)
+                self._send(user.chat_id, *ui.place_unknown(value, self._region_label()))
                 return
-            filters = replace(filters, miejsca=tuple(dict.fromkeys((*filters.miejsca, value))), promien_km=None)
-            note = f"✅ Dodano miejsce: {value}\n\n"
+            self._save_place(user, value)
+            return
         elif what == "inwestor":
             filters = replace(filters, inwestor=value)
             note = f"✅ Szukam inwestorów: „{value}”\n\n"
@@ -1773,6 +1795,7 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "f": LeadBot._cb_filters,
     "fp": LeadBot._cb_place,
     "fpr": LeadBot._cb_place_remove,
+    "mz": LeadBot._cb_place_confirm,
     "fr": LeadBot._cb_radius,
     "fb": LeadBot._cb_trade,
     "ft": LeadBot._cb_type,
@@ -1792,7 +1815,7 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "fu": LeadBot._cb_feedback,
 }
 _CALLBACK_LEVELS: dict[str, int] = {
-    **{prefix: SETUP for prefix in ("f", "fp", "fpr", "fr", "fb", "ft", "fv", "fi", "m", "ob", "oa")},
+    **{prefix: SETUP for prefix in ("f", "fp", "fpr", "mz", "fr", "fb", "ft", "fv", "fi", "m", "ob", "oa")},
     "ts": NONE,
     "st": NONE,  # ekran ustawień sam sprawdza poziom dla każdego przycisku
 }

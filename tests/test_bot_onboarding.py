@@ -82,9 +82,10 @@ def test_typed_place_outside_the_monitored_area_is_explained(bot, api, repo):
     bot.handle_update(click(MIETEK, "oa:txt"))
     bot.handle_update(message(MIETEK, "Gdańsk"))
 
-    reply = api.last_to(MIETEK)["text"]
-    assert "Gdańsk" in reply and "monitorowanym obszarze" in reply
-    assert user(repo).filtry.miejsca == ()  # nieznanej nazwy nie dopisujemy
+    reply = api.last_to(MIETEK)
+    assert "Gdańsk" in reply["text"] and "monitorowanym obszarze" in reply["text"]
+    assert ("✅ Tak, zapisz „Gdańsk”", "mz") in buttons(reply["markup"])
+    assert user(repo).filtry.miejsca == ()  # nieznanej nazwy nie dopisujemy bez potwierdzenia
     bot.handle_update(message(MIETEK, "Olsztyn"))  # można od razu wpisać inną
     assert user(repo).filtry.miejsca == ("Olsztyn",)
     assert "Gotowe" in api.last_to(MIETEK)["text"]
@@ -227,3 +228,50 @@ def test_typed_place_is_accepted_while_there_is_no_data_yet(repo, api, clock):
     bot.handle_update(message(MIETEK, "Dywity"))
     assert user(repo).filtry.miejsca == ("Dywity",)
     assert "Gotowe" in api.last_to(MIETEK)["text"]
+
+
+def test_real_village_without_investments_yet_can_be_saved_after_confirming(bot, api, repo):
+    """Po pierwszym pobraniu w bazie są tylko ostatnie tygodnie – wieś bez spraw to nie literówka."""
+    allowed(bot, api)
+    bot.handle_update(click(MIETEK, "ob:none"))
+    bot.handle_update(click(MIETEK, "oa:txt"))
+    bot.handle_update(message(MIETEK, "Gady"))
+    assert user(repo).filtry.miejsca == ()
+
+    bot.handle_update(click(MIETEK, "mz"))
+
+    assert user(repo).filtry.miejsca == ("Gady",)
+    assert user(repo).setup_done and "Gotowe" in api.last_to(MIETEK)["text"]
+
+
+def test_unknown_place_confirmed_in_settings_is_added_to_the_filters(bot, api, repo):
+    activate(bot, api, MIETEK)
+    bot.handle_update(click(MIETEK, "fp:txt"))
+    bot.handle_update(message(MIETEK, "Gady"))
+    bot.handle_update(click(MIETEK, "mz"))
+
+    assert user(repo).filtry.miejsca == ("Gady",)
+    assert "Dodano miejsce: Gady" in api.last_to(MIETEK)["text"]
+
+
+def test_stale_confirm_button_changes_nothing(bot, api, repo):
+    activate(bot, api, MIETEK)
+    bot.handle_update(click(MIETEK, "fp:txt"))
+    bot.handle_update(message(MIETEK, "Gady"))
+    bot.handle_update(message(MIETEK, "Olsztyn"))  # zamiast potwierdzić – wpisał znaną nazwę
+    bot.handle_update(click(MIETEK, "mz"))
+
+    assert user(repo).filtry.miejsca == ("Olsztyn",)
+    assert "nieaktualny" in (api.answers[-1] or "")
+
+
+def test_punctuation_around_a_typed_town_is_ignored(bot, api, repo):
+    activate(bot, api, MIETEK)
+    bot.handle_update(click(MIETEK, "fp:txt"))
+    bot.handle_update(message(MIETEK, " Olsztyn. "))
+
+    assert user(repo).filtry.miejsca == ("Olsztyn",)
+    bot.handle_update(click(MIETEK, "fp:txt"))
+    bot.handle_update(message(MIETEK, "."))
+    assert user(repo).filtry.miejsca == ("Olsztyn",)  # pustej nazwy nie zapisujemy
+    assert "mz" not in str(api.last_to(MIETEK).get("markup"))

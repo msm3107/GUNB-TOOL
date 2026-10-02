@@ -60,6 +60,29 @@ def test_example_filter_warsaw_multi_family_over_10000():
                                                    powiat="powiat poznański", powiat_teryt="3021"))
 
 
+OLSZTYNEK = dict(adres_opisowy="Olsztynek, ul. Mrongowiusza", miejscowosc="Olsztynek", gmina="Olsztynek",
+                 powiat="olsztyński", powiat_teryt="2814", gmina_teryt="2814085")
+DYWITY = dict(adres_opisowy="Dywity, ul. Olsztyńska", miejscowosc="Dywity", gmina="Dywity", powiat="olsztyński",
+              powiat_teryt="2814", gmina_teryt="2814032")
+
+
+def test_typed_town_matches_whole_words_not_similar_names():
+    """„Olsztyn” to miasto – nie Olsztynek, nie cały powiat olsztyński ani ulica Olsztyńska w Dywitach."""
+    olsztyn = UserFilters(miejsca=("Olsztyn",))
+    assert olsztyn.matches(lead(adres_opisowy="Olsztyn, ul. Kętrzyńskiego", miejscowosc="Olsztyn", gmina="Olsztyn",
+                                powiat="Olsztyn", powiat_teryt="2862"))
+    assert not olsztyn.matches(lead(**OLSZTYNEK))
+    assert not olsztyn.matches(lead(**DYWITY))
+    assert UserFilters(miejsca=("olsztynek",)).matches(lead(**OLSZTYNEK))  # wielkość liter i ogonki bez znaczenia
+    assert UserFilters(miejsca=("Nowe Kawkowo",)).matches(lead(miejscowosc="Nowe Kawkowo", gmina="Jonkowo"))
+
+
+def test_known_place_uses_whole_words(store, repo):
+    repo.upsert(lead("OLK/1", **OLSZTYNEK))
+    assert store.place_is_known("Olsztynek") and store.place_is_known("olsztynek")
+    assert not store.place_is_known("Olsztyn")
+
+
 def test_min_volume_excludes_leads_with_unknown_volume():
     assert not UserFilters(min_kubatura=1000).matches(lead(kubatura=None))
 

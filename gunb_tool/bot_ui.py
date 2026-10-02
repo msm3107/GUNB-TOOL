@@ -210,10 +210,12 @@ def first_review_head() -> list[str]:
             "To historia z rejestru, nie nowości: nowe inwestycje przyjdą w raporcie."]
 
 
-def place_unknown_text(name: str, region: str) -> str:
-    return (f"🤔 W monitorowanym obszarze ({escape_html(region)}) nie ma inwestycji z miejscowości "
-            f"„{escape_html(name)}”. Bot pokazuje tylko ten obszar – wpisz inną nazwę albo wybierz powiat "
-            "(⚙️ Ustawienia → 🔎 Obszar i rodzaj).")
+def place_unknown(name: str, region: str) -> tuple[str, Markup]:
+    """Nazwa bez żadnej inwestycji w danych: literówka, spoza obszaru albo wieś, z której jeszcze nic nie wpłynęło."""
+    text = (f"🤔 W monitorowanym obszarze ({escape_html(region)}) nie widzę jeszcze inwestycji z miejscowości "
+            f"„{escape_html(name)}”.\n\nJeśli to wieś z tego obszaru – zapisz ją, a nowe budowy przyjdą, "
+            "gdy tylko się pojawią. Jeśli to literówka albo miejsce spoza obszaru – po prostu wpisz inną nazwę.")
+    return text, inline([[(f"✅ Tak, zapisz „{name}”", "mz")]])
 
 
 def base_far_text(km: float | None, region: str) -> str:

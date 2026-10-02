@@ -25,6 +25,11 @@ _STATE_FLAG = {"zapisany": "saved", "przejrzany": "reviewed", "ukryty": "hidden"
 WATCH_KINDS: tuple[str, ...] = ("inwestor", "gmina")
 
 
+def mentions_place(place: str, name: str) -> bool:
+    """Czy znormalizowany opis miejsca zawiera nazwę całymi słowami („Olsztyn” to nie „Olsztynek” ani „olsztyński”)."""
+    wanted = normalize_text(name)
+    return bool(wanted) and re.search(rf"(?<!\w){re.escape(wanted)}(?!\w)", place) is not None
+
 @dataclass(frozen=True)
 class LeadFlags:
     """Oznaczenia inwestycji przez użytkownika – niezależne: zapisana, przejrzana, ukryta."""
@@ -96,7 +101,7 @@ class UserFilters:
         elif self.powiaty or self.miejsca:
             place = normalize_text(" ".join(p for p in (inv.gmina, inv.miejscowosc, inv.adres_opisowy, inv.powiat) if p))
             in_powiat = inv.powiat_teryt in self.powiaty
-            in_place = any(normalize_text(m) in place for m in self.miejsca if normalize_text(m))
+            in_place = any(mentions_place(place, m) for m in self.miejsca)
             if not (in_powiat or in_place):
                 return False
         if self.kategorie and inv.kategoria not in self.kategorie:
@@ -426,13 +431,12 @@ class BotStore:
 
     def place_is_known(self, name: str) -> bool:
         """Czy w danych (monitorowany obszar) jest inwestycja z tej miejscowości lub gminy."""
-        wanted = normalize_text(name)
-        if not wanted:
+        if not normalize_text(name):
             return False
         rows = self._conn.execute(
             "SELECT DISTINCT gmina, miejscowosc, adres_opisowy, powiat FROM investments WHERE is_noise = 0"
         ).fetchall()
-        return any(wanted in normalize_text(" ".join(value for value in row if value)) for row in rows)
+        return any(mentions_place(normalize_text(" ".join(value for value in row if value)), name) for row in rows)
 
     def nearest_investment_km(self, point: tuple[float, float]) -> float | None:
         """Odległość (w linii prostej) od punktu do najbliższej inwestycji w danych; ``None`` – brak danych."""
