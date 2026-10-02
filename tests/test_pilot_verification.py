@@ -164,3 +164,51 @@ def test_repeated_reminder_and_note_clicks_are_harmless(nasty_bot, api, repo):
         nasty_bot.handle_update(click(MIETEK, f"nt:{nr}:d"))
     assert repo.connection.execute("SELECT COUNT(*) FROM przypomnienia").fetchone()[0] == 1
     assert BotStore(repo).note(MIETEK, "X/1") is None
+
+
+def test_deletion_command_from_the_operator_guide_removes_every_trace_of_one_person(tmp_path, clock):
+    """Polecenie z docs/PILOTAZ.md (sekcja 9) – uruchomione dokładnie tak, jak je skopiuje operator – usuwa osobę
+    ze wszystkich tabel z ``chat_id``, a drugiej osoby nie rusza."""
+    import re
+    import subprocess
+    import sys
+    from decimal import Decimal
+    from pathlib import Path
+
+    from gunb_tool.config import OfferConfig
+    from tests.bot_helpers import ADMIN, FakeApi, configured
+
+    guide = (Path(__file__).resolve().parent.parent / "docs" / "PILOTAZ.md").read_text(encoding="utf-8")
+    code = re.search(r'\.venv/bin/python -c "(.+?)" CHAT_ID', guide).group(1)
+    (tmp_path / "data").mkdir()
+    repo = LeadRepository(tmp_path / "data" / "gunb_leads.sqlite", now=clock.now_utc)
+    api = FakeApi()
+    offer = OfferConfig(price=Decimal("99"), tax="brutto", payment="przelew", seller_name="Jan", seller_contact="@jan")
+    bot = make_bot(repo, api, clock, offer=offer)
+    repo.upsert(lead("A/1"))
+    nr = repo.get("A/1").nr
+    for chat_id in (MIETEK, OBCY):
+        bot.handle_update(message(chat_id, "/start strona"))
+        configured(bot, chat_id)
+        bot.handle_update(click(ADMIN, f"adm:trial:{chat_id}"))
+        bot.handle_update(click(chat_id, "ts"))
+        for data in (f"o:{nr}", f"s1:{nr}", f"pr:{nr}:7", f"w:{nr}:r", f"wg:{nr}", "zm:new"):
+            bot.handle_update(click(chat_id, data))
+        bot.handle_update(click(chat_id, f"nt:{nr}"))
+        bot.handle_update(message(chat_id, "zadzwonić w piątek"))
+    bot.handle_update(message(ADMIN, f"/wplata {MIETEK}"))
+    bot.run_due_jobs()
+    repo.close()
+
+    subprocess.run([sys.executable, "-c", code, str(MIETEK)], cwd=tmp_path, check=True)
+
+    conn = sqlite3.connect(tmp_path / "data" / "gunb_leads.sqlite")
+    tables = [name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+              if any(column[1] == "chat_id" for column in conn.execute(f"PRAGMA table_info({name})"))]
+    assert {"bot_users", "user_leads", "notatki", "przypomnienia", "wyniki", "zamowienia", "zdarzenia",
+            "watchlist"} <= set(tables)
+    left = {name: conn.execute(f"SELECT COUNT(*) FROM {name} WHERE chat_id = ?", (MIETEK,)).fetchone()[0]
+            for name in tables}
+    assert sum(left.values()) == 0, left
+    assert conn.execute("SELECT COUNT(*) FROM notatki WHERE chat_id = ?", (OBCY,)).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM zamowienia WHERE chat_id = ?", (OBCY,)).fetchone()[0] == 1

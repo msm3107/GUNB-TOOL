@@ -336,7 +336,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_zamowienia_otwarte ON zamowienia (chat_id) 
 """
 """v12: sprzedaż w pilotażu – źródło wejścia, firma, prośba o test, podpowiedzi, jednorazowe przedłużenie testu
 z powodem, wynik pracy na parę osoba–inwestycja, zamówienia z ręcznym potwierdzeniem płatności. Zależne tabele
-mają ``ON DELETE CASCADE`` – ręczne usunięcie osoby z ``bot_users`` usuwa też jej zamówienia i wyniki."""
+mają ``ON DELETE CASCADE`` – usunięcie osoby z ``bot_users`` usuwa też jej zamówienia i wyniki, o ile połączenie ma
+``PRAGMA foreign_keys = ON`` (bot ma; konsola ``sqlite3`` domyślnie nie – polecenie w ``docs/PILOTAZ.md``)."""
 
 
 Migration = str | Callable[[sqlite3.Connection, int], None]
