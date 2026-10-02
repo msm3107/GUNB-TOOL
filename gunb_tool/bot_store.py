@@ -445,6 +445,9 @@ class BotStore:
         )
         return cursor.rowcount == 1
 
+    def all_users(self) -> list[BotUser]:
+        return [_user(row) for row in self._conn.execute("SELECT * FROM bot_users ORDER BY chat_id").fetchall()]
+
     def users(self, status: str = "aktywny", tryb: str | None = None) -> list[BotUser]:
         sql, params = "SELECT * FROM bot_users WHERE status = ?", [status]
         if tryb is not None:
@@ -593,6 +596,36 @@ class BotStore:
             "SELECT DISTINCT gmina, miejscowosc, adres_opisowy, powiat FROM investments WHERE is_noise = 0"
         ).fetchall()
         return any(mentions_place(normalize_text(" ".join(value for value in row if value)), name) for row in rows)
+
+    def data_overview(self, powiat_codes: Sequence[str]) -> dict[str, object]:
+        """Diagnostyka danych dla admina: liczby, nazwy obszarów przy kodach (niespójne – do wglądu, bez
+        poprawiania), sprawy spoza ustawionych powiatów, dokładność lokalizacji i braki pól."""
+        q = self._conn.execute
+        powiaty: dict[str, dict[str, int]] = {}
+        for row in q("SELECT powiat_teryt AS kod, powiat AS nazwa, COUNT(*) AS n FROM investments WHERE is_noise = 0"
+                     " AND powiat_teryt IS NOT NULL GROUP BY powiat_teryt, powiat ORDER BY powiat_teryt"):
+            powiaty.setdefault(row["kod"], {})[row["nazwa"] or "—"] = row["n"]
+        gminy: dict[str, set[str]] = {}
+        for row in q("SELECT DISTINCT gmina_teryt AS kod, gmina FROM investments WHERE is_noise = 0"
+                     " AND gmina_teryt IS NOT NULL AND gmina IS NOT NULL"):
+            gminy.setdefault(row["kod"], set()).add(row["gmina"])
+        marks = ",".join("?" for _ in powiat_codes)
+        outside = q(f"SELECT COUNT(*) FROM investments WHERE is_noise = 0 AND powiat_teryt NOT IN ({marks})",
+                    list(powiat_codes)).fetchone()[0] if powiat_codes else 0
+        row = q("SELECT COUNT(*) AS n, sum(precyzja_geo = 'dzialka') AS dzialka, sum(precyzja_geo = 'obreb') AS obreb,"
+                " sum(lat IS NULL) AS brak, sum(powiat_teryt IS NULL) AS bez_kodu,"
+                " sum(coalesce(gmina, '') = '') AS bez_gminy,"
+                " sum(coalesce(miejscowosc, '') = '' AND coalesce(adres_opisowy, '') = '') AS bez_miejsca,"
+                " min(coalesce(data_decyzji, data_wplywu)) AS najstarsza FROM investments WHERE is_noise = 0").fetchone()
+        return {
+            "wszystkie": q("SELECT COUNT(*) FROM investments").fetchone()[0], "inwestycje": row["n"],
+            "zakres": self.data_range(), "powiaty": powiaty,
+            "gminy_rozne": {kod: sorted(names) for kod, names in sorted(gminy.items()) if len(names) > 1},
+            "spoza": outside, "bez_kodu": row["bez_kodu"] or 0,
+            "dzialka": row["dzialka"] or 0, "obreb": row["obreb"] or 0, "brak_lokalizacji": row["brak"] or 0,
+            "bez_gminy": row["bez_gminy"] or 0, "bez_miejsca": row["bez_miejsca"] or 0,
+            "najstarsza_decyzja": row["najstarsza"],
+        }
 
     def nearest_investment_km(self, point: tuple[float, float]) -> float | None:
         """Odległość (w linii prostej) od punktu do najbliższej inwestycji w danych; ``None`` – brak danych."""

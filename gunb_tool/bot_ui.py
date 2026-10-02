@@ -6,14 +6,16 @@ i zmieniać bez dotykania logiki bota.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Sequence
 
-from .bot_store import BotUser, JobStatus, LeadFlags, Order, Outcome, Send, UserFilters, WatchItem
+from .bot_store import BotUser, Event, JobStatus, LeadFlags, Order, Outcome, Send, UserFilters, WatchItem
 from .clock import local
 from .config import BotConfig, OfferConfig, format_money
 from .demo import DEMO_LABEL
+from .funnel import OBSERVATION, Cohort
 from .exporter import CATEGORY_ICONS, TELEGRAM_LIMIT, escape_html
 from .models import BUILDING_CATEGORIES, Investment, Status
 from .scoring import score_investment
@@ -1242,27 +1244,108 @@ def pause_text(paused: bool) -> str:
     return "▶️ Powiadomienia wznowione – zaległe przyjdą zbiorczo, bez zalewu wiadomości."
 
 
-def pilot_report(days: int, *, sent: tuple[int, int], events: dict[str, tuple[int, int]]) -> str:
-    """Raport pilotażu dla admina: unikalne osoby i inwestycje z ostatnich ``days`` dni."""
-    def investments(kind: str) -> str:
-        people, count = events.get(kind, (0, 0))
-        return (f"{_count(count, 'inwestycja', 'inwestycje', 'inwestycji')} · "
-                f"{_count(people, 'osoba', 'osoby', 'osób')}")
+def pilot_report(days: int, *, since: datetime, sent: tuple[int, int], unique: dict[str, tuple[int, int]],
+                 events: Sequence[Event], users: Sequence[BotUser], outcomes: dict[str, int], cohort: Cohort,
+                 rule: str) -> str:
+    """Raport pilotażu dla admina: lejek od wejścia do płatności z ostatnich ``days`` dni.
 
-    def people(kind: str) -> str:
-        return _count(events.get(kind, (0, 0))[0], "osoba", "osoby", "osób")
+    Osoby (unikalne) obok liczby zdarzeń; wysłanie osobno od interakcji; dostęp nadany ręcznie osobno od
+    potwierdzonej płatności; konwersje tylko w kohortach testu z zakończoną obserwacją. Kliknięć w mapy
+    i odczytów wiadomości Telegram nie zgłasza – nie są mierzone, więc ich tu nie ma.
+    """
+    def people(n: int) -> str:
+        return _count(n, "osoba", "osoby", "osób")
 
-    lines = [f"📈 <b>Pilotaż – ostatnie {days} dni</b>", "",
-             f"📤 Wysłane w raportach i alertach: {_count(sent[0], 'inwestycja', 'inwestycje', 'inwestycji')} · "
-             f"{_count(sent[1], 'osoba', 'osoby', 'osób')}",
-             f"👆 Otwarte szczegóły: {investments('szczegoly')}",
-             f"⭐ Zapisane: {investments('zapis')}",
-             f"👍 Przydatne: {events.get('przydatne', (0, 0))[1]} · 👎 Nieprzydatne: {events.get('nieprzydatne', (0, 0))[1]}",
-             f"⚙️ Ukończona konfiguracja: {people('konfiguracja')} · ▶️ Start testu: {people('test_start')}",
-             f"💳 Dostęp nadany lub przedłużony: {people('dostep_przedluzony')}",
-             "",
-             "ℹ️ Uwaga: wysłanie to nie przeczytanie – Telegram nie mówi, kto obejrzał wiadomość. Kliknięć "
-             "w mapy i Geoportal Telegram nie zgłasza botowi, więc ich nie liczymy."]
+    def who(kind: str) -> str:
+        return people(len({e.chat_id for e in events if e.rodzaj == kind}))
+
+    def times(kind: str) -> int:
+        return sum(1 for e in events if e.rodzaj == kind)
+
+    def investments(n: int) -> str:
+        return _count(n, "inwestycja", "inwestycje", "inwestycji")
+
+    starts = [e for e in events if e.rodzaj == "start"]
+    sources = Counter(e.szczegoly or "brak" for e in starts)
+    empty = Counter(e.szczegoly or "?" for e in events if e.rodzaj == "pusto")
+    anyway = sum(1 for e in events if e.rodzaj == "test_start" and e.szczegoly == "mimo_pustych")
+    opened_people, opened = unique.get("szczegoly", (0, 0))
+    saved_people, saved = unique.get("zapis", (0, 0))
+    reasons = ", ".join(f"{key.split(':', 1)[1]} {n}" for key, n in sorted(outcomes.items()) if key.startswith("powod:"))
+    observed = len(cohort.observed)
+    lines = [
+        f"📈 <b>Pilotaż – ostatnie {days} dni</b> (od {local(since):%d.%m})", "",
+        f"👥 Konta: nowe {len(starts)}" + (" · źródła: " + ", ".join(f"{k} {n}" for k, n in sources.most_common())
+                                           if starts else "")
+        + f" · razem {len(users)} · firmy oznaczone: {len({u.firma for u in users if u.firma})}",
+        f"🚪 Przed testem: przykład {who('demo')} · oferta {who('oferta')} · prośba o test {who('prosba_o_test')}"
+        f" · pytanie o ofertę {who('pytanie_oferta')}",
+        f"⚙️ Konfiguracja: zaczęło {who('konfiguracja_start')} · skończyło {who('konfiguracja')}",
+        f"▶️ Start testu: {who('test_start')}" + (f" (w tym mimo pustych wyników: {anyway})" if anyway else ""),
+        f"📊 Wyniki pokazane: {who('wyniki')} · pusty wynik: {who('pusto')}"
+        + (" (" + ", ".join(f"{k} {n}" for k, n in empty.most_common()) + ")" if empty else ""),
+        f"👆 Otwarte szczegóły: {investments(opened)} · {people(opened_people)} · "
+        f"{_count(times('szczegoly'), 'otwarcie', 'otwarcia', 'otwarć')}",
+        f"⭐ Zapisane: {investments(saved)} · {people(saved_people)}",
+        f"📋 Wyniki pracy: do sprawdzenia {outcomes.get('do_sprawdzenia', 0)} · sprawdzone "
+        f"{outcomes.get('sprawdzona', 0)} · rozmowa {outcomes.get('rozmowa', 0)} · złożona oferta "
+        f"{outcomes.get('oferta', 0)} · niepasujące {outcomes.get('niepasujaca', 0)}" + (f" ({reasons})" if reasons else ""),
+        f"👍 Przydatne: {outcomes.get('ocena_plus', 0)} · 👎 Nieprzydatne: {outcomes.get('ocena_minus', 0)}",
+        f"📤 Wysłane w raportach i alertach: {investments(sent[0])} · {people(sent[1])}",
+        f"💡 Podpowiedź po 48 h bez efektów: {who('podpowiedz_test')}",
+        f"🔑 Dostęp nadany ręcznie: {who('dostep_przedluzony')} · 🎁 test przedłużony: {who('test_przedluzony')}",
+        f"🛒 Zamówienia: {who('zamowienie')} · 💳 płatności potwierdzone: {who('platnosc')}"
+        f" (odnowienia: {times('odnowienie')})",
+        f"⌛ Koniec dostępu: {who('koniec_dostepu')}", "",
+        f"🧪 <b>Kohorta testu</b> (start w tym okresie): {len(cohort.started)}",
+        f"• obserwacja zakończona: {observed}" + (f" → aktywacja {len(cohort.activated)}/{observed} · zamówienie "
+                                                  f"{len(cohort.ordered)}/{observed} · płatność {len(cohort.paid)}/{observed}"
+                                                  if observed else ""),
+        f"• trwające: {len(cohort.ongoing)} – nie liczone do konwersji (obserwacja {OBSERVATION.days} dni od startu)",
+        f"ℹ️ {rule}",
+        "ℹ️ Uwaga: wysłanie to nie przeczytanie – Telegram nie mówi, kto obejrzał wiadomość. Kliknięć "
+        "w mapy i Geoportal Telegram nie zgłasza botowi, więc ich nie liczymy.",
+    ]
+    return "\n".join(lines)
+
+
+def data_report(overview: dict, *, place_names: dict[str, str], freshness: str, import_note: str | None,
+                history_needed: str | None, offer_missing: Sequence[str]) -> str:
+    """``/dane`` – co jest w bazie i czego brakuje; niejednoznaczności pokazujemy, nie poprawiamy zgadywaniem."""
+    span = overview["zakres"]
+    lines = ["🧪 <b>Dane w bocie</b>",
+             f"📥 Inwestycje: {overview['inwestycje']} (z szumem: {overview['wszystkie']})"
+             + (f" · daty: {_pl_date(span[0])}–{_pl_date(span[1])}" if span else ""),
+             freshness] + ([import_note] if import_note else [])
+    lines.append("🗺️ Powiaty w danych:")
+    for code, names in overview["powiaty"].items():
+        total = sum(names.values())
+        label = place_names.get(code) or max(names, key=names.get)
+        lines.append(f"• {code} „{escape_html(label)}” – {total}")
+        if len(names) > 1:
+            listed = ", ".join(f"„{escape_html(name)}”" for name in sorted(names))
+            lines.append(f"⚠️ Kod {code} ma różne nazwy w danych: {listed} – bot niczego nie poprawia, pokazuje jedną.")
+    if not overview["powiaty"]:
+        lines.append("• brak")
+    for code, names in overview["gminy_rozne"].items():
+        lines.append(f"⚠️ Gmina {code} ma różne nazwy: " + ", ".join(f"„{escape_html(n)}”" for n in names))
+    lines.append(f"⚠️ Spoza ustawionych powiatów: {overview['spoza']} · bez kodu powiatu: {overview['bez_kodu']}")
+    other = overview["inwestycje"] - overview["dzialka"] - overview["obreb"] - overview["brak_lokalizacji"]
+    lines.append(f"📍 Lokalizacja: dokładna {overview['dzialka']} · przybliżona {overview['obreb']} · "
+                 f"brak {overview['brak_lokalizacji']}" + (f" · nieznana dokładność {other}" if other > 0 else ""))
+    lines.append(f"⚠️ Braki: bez gminy: {overview['bez_gminy']} · bez miejscowości i adresu: {overview['bez_miejsca']}")
+    oldest = overview["najstarsza_decyzja"]
+    if history_needed:
+        lines.append(f"🕰️ Najstarsza decyzja: {_pl_date(oldest) if oldest else 'brak'} – okna etapów sięgają do "
+                     f"{_pl_date(history_needed)}, więc przypomnienia o etapach mają niepełne dane. Historia: "
+                     "<code>python main.py --fetch --historical</code>")
+    else:
+        lines.append(f"🕰️ Najstarsza decyzja: {_pl_date(oldest)} – historia wystarcza do okien etapów.")
+    if offer_missing:
+        lines.append(f"⚠️ Oferta niepełna – brakuje: {', '.join(offer_missing)}. Bot pokazuje tylko „💬 Zapytaj "
+                     "o ofertę” (uzupełnij OFERTA_… w .env).")
+    else:
+        lines.append("💳 Oferta kompletna – bot pokazuje cenę i przyjmuje zamówienia.")
     return "\n".join(lines)
 
 

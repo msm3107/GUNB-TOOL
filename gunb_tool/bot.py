@@ -33,7 +33,7 @@ from .bot_ui import BOT_COMMANDS, MENU_BUTTONS
 from .clock import WARSAW, at_local_time, local
 from .config import BotConfig
 from .demo import demo_leads
-from .funnel import activation_time
+from .funnel import ACTIVATION, activation_time, trial_cohort
 from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
 from .gunb_scraper import GunbFormatError
 from .http_client import HttpError
@@ -67,6 +67,8 @@ REPORT_JOBS: dict[str, str] = {"raport_rano": "rano", "raport_wieczor": "wieczor
 PLACE_CONFIRM = "miejsce?:"
 """``oczekuje_na`` z nazwą spoza danych, która czeka na „✅ Tak, zapisz” (albo na inną wpisaną nazwę)."""
 CLEANUP_JOB, CLEANUP_TIME = "porzadki", "03:30"
+EVENTS_KEPT = timedelta(days=395)
+"""Retencja zdarzeń pilotażu (13 miesięcy) – starsze usuwa nocne sprzątanie; zamówienia zostają z kontem."""
 SENDS_KEPT = timedelta(days=35)
 """Zakończone wysyłki starsze niż tyle są usuwane (``/status`` pokazuje ostatnią dobę, ``/raport`` – z ``deliveries``)."""
 
@@ -152,7 +154,8 @@ ADMIN_COMMANDS: dict[str, str] = {
     "/nowymodel": "_cmd_new_model",  # /nowymodel <chat_id|wszyscy> <dni|data> – termin dla dotychczasowych
     "/przedluztest": "_cmd_extend_trial",  # /przedluztest <chat_id> <dni 1–14> <powód> – raz na osobę
     "/status": "_cmd_status",  # import GUNB, wątek zadań, wysyłki z ostatniej doby
-    "/raport": "_cmd_pilot_report",  # /raport [7|30] – pilotaż: unikalne osoby i inwestycje
+    "/raport": "_cmd_pilot_report",  # /raport [7|30] – pilotaż: lejek, kohorty testu, płatności
+    "/dane": "_cmd_data",  # diagnostyka danych: nazwy i kody obszarów, lokalizacja, braki, historia, oferta
     "/zamowienia": "_cmd_orders",  # otwarte i ostatnio opłacone zamówienia
     "/zaplacone": "_cmd_paid",  # /zaplacone <Z-nr> [uwagi] – płatność otrzymana (dokładnie raz)
     "/anuluj": "_cmd_cancel_order",  # /anuluj <Z-nr>
@@ -351,6 +354,7 @@ class LeadBot:
         if self._due(CLEANUP_JOB, now, CLEANUP_TIME):  # raz dziennie: kopia bazy, kolejka wysyłek nie rośnie
             self.store.set_job_time(CLEANUP_JOB, now)
             self.store.prune_sends(now - SENDS_KEPT)
+            self.store.prune_events(now - EVENTS_KEPT)
             self._run_maintenance()
         self.process_sends()
         self.deliver_personal_reminders()
@@ -1240,11 +1244,28 @@ class LeadBot:
         return True
 
     def _cmd_pilot_report(self, admin_chat: int, args: list[str]) -> None:
-        """``/raport [dni]`` – tylko admin: wysłane (z ``deliveries``) i zdarzenia z ostatnich 7/30 dni."""
+        """``/raport [dni]`` – tylko admin: lejek od wejścia do płatności z ostatnich 1–90 dni: osoby obok zdarzeń,
+        dostarczenie osobno od interakcji, dostęp ręczny osobno od płatności, kohorty testu z zakończoną obserwacją."""
         days = int(args[0]) if args and args[0].isdigit() and 1 <= int(args[0]) <= 90 else 7
-        since = self._now() - timedelta(days=days)
-        self._send(admin_chat, ui.pilot_report(days, sent=self.store.delivery_counts(since),
-                                               events=self.store.event_counts(since)))
+        now = self._now()
+        since = now - timedelta(days=days)
+        events = self.store.events(since)
+        users = self.store.all_users()
+        self._send(admin_chat, ui.pilot_report(
+            days, since=since, sent=self.store.delivery_counts(since), unique=self.store.event_counts(since),
+            events=events, users=users, outcomes=self.store.outcome_counts(since),
+            cohort=trial_cohort(users, events, since=since, now=now), rule=ACTIVATION.describe(),
+        ))
+
+    def _cmd_data(self, admin_chat: int, args: list[str]) -> None:
+        """``/dane`` – tylko admin: co jest w bazie i czego brakuje (bez poprawiania danych zgadywaniem)."""
+        overview = self.store.data_overview(self.powiat_codes)
+        oldest = overview["najstarsza_decyzja"]
+        needed = (local(self._now()).date() - timedelta(days=LONGEST_WINDOW_DAYS)).isoformat()
+        self._send(admin_chat, ui.data_report(
+            overview, place_names=self._place_names(), freshness=self._freshness(), import_note=self._import_note(),
+            history_needed=needed if not oldest or oldest > needed else None, offer_missing=self.settings.offer.missing(),
+        ))
 
     def _cmd_status(self, admin_chat: int, args: list[str]) -> None:
         """``/status`` – tylko admin: stan importu GUNB, wątku zadań i wysyłek z ostatniej doby."""
