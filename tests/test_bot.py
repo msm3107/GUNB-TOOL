@@ -994,3 +994,21 @@ def test_report_card_and_stage_reminder_with_emoji_fit_telegram(bot, api, repo, 
     bot.handle_update(click(MIETEK, f"d:{nr}"))
     bot.send_stage_reminder(BotStore(repo).get_user(MIETEK), on_demand=True)
     assert api.edits and api.last_to(MIETEK)["text"].startswith("⏰ <b>")
+
+
+def test_lists_without_shrinking_stay_within_the_limit_even_with_a_very_long_address(bot, api, repo):
+    """Przegląd historii, „Na początek” i zapisane nie skracają listy – długość pozycji musi być ograniczona
+    także wtedy, gdy rejestr poda bardzo długi adres (dziś najwyżej ~50 znaków, ale to dane z zewnątrz)."""
+    from tests.bot_helpers import telegram_rejects
+
+    activate(bot, api, MIETEK)
+    for n in range(12):
+        repo.upsert(lead(f"L/{n}", adres_opisowy="Dywity, działki nr " + ", ".join(f"{k}/{n}" for k in range(400))))
+    bot.handle_update(click(MIETEK, "hp:0"))  # przegląd historii (edycja wiadomości)
+    assert "Pasujące do Twoich filtrów" in api.edits[-1]["text"]
+    for n in range(12):
+        bot.handle_update(click(MIETEK, f"s1:{repo.get(f'L/{n}').nr}"))
+    bot.handle_update(message(MIETEK, "⭐ Zapisane"))
+    assert api.last_to(MIETEK)["text"].startswith("⭐ <b>Zapisane</b> (12)")
+    text, _ = bot._first_value(BotStore(repo).get_user(MIETEK))
+    assert text.startswith("⭐ <b>Na początek") and telegram_rejects(text) is None

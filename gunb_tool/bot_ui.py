@@ -1404,6 +1404,9 @@ def watch_header(item: WatchItem, inv: Investment) -> tuple[str, str, str]:
 # --- Raport ---------------------------------------------------------------------------------------
 
 HISTORY_PAGE_SIZE = 10
+ENTRY_PLACE_LIMIT = 80
+"""Adres w pozycji listy – skracany, bo przegląd, zapisane i „Na początek” nie zmniejszają liczby pozycji
+(w danych GUNB adres ma dziś najwyżej ~50 znaków, ale to dane z zewnątrz)."""
 
 
 def _watched_text(watched: int) -> str:
@@ -1571,7 +1574,7 @@ def _report_entry(position: int, inv: Investment, distance: Distance | None = No
     km = distance(inv) if distance else None
     facts = [p for p in (
         f"📏 {distance_label(km)}" if km is not None else None,
-        inv.adres_opisowy or inv.miejscowosc,
+        _short(inv.adres_opisowy or inv.miejscowosc or "", ENTRY_PLACE_LIMIT) or None,
         f"{_thousands(inv.kubatura)} m³" if inv.kubatura else None,
         _short_date(inv.data_aktualizacji),
     ) if p]
@@ -1586,7 +1589,7 @@ def _stage_entry(position: int, inv: Investment, distance: Distance | None = Non
     decided = inv.data_decyzji or inv.data_wplywu
     facts = [p for p in (
         f"📏 {distance_label(km)}" if km is not None else None,
-        inv.adres_opisowy or inv.miejscowosc,
+        _short(inv.adres_opisowy or inv.miejscowosc or "", ENTRY_PLACE_LIMIT) or None,
         f"{_thousands(inv.kubatura)} m³" if inv.kubatura else None,
         f"decyzja {decided[8:10]}.{decided[5:7]}.{decided[:4]}" if decided and len(decided) >= 10 else None,
     ) if p]
