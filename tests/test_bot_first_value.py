@@ -7,7 +7,7 @@ from datetime import date, timedelta
 import pytest
 
 from gunb_tool.bot import IMPORT_JOB, LAST_IMPORT_JOB
-from gunb_tool.bot_store import BotStore, UserFilters
+from gunb_tool.bot_store import BotStore
 from gunb_tool.config import OfferConfig
 from tests.bot_helpers import ADMIN, MIETEK, buttons, click, lead, make_bot, message
 

@@ -1,7 +1,7 @@
 """P1: pomiar od wejścia do płatności – aktywacja z surowych zdarzeń, kohorty z zakończoną obserwacją
 w mianowniku, osoby obok zdarzeń, przyznanie dostępu osobno od płatności; diagnostyka danych i retencja."""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest

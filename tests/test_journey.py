@@ -93,7 +93,7 @@ def test_buyer_from_first_contact_to_paid_access(bot, api, repo, clock):
 
     bot.handle_update(message(MIETEK, "/konto"))
     bot.handle_update(click(MIETEK, "zm:new"))
-    order = store.orders()[0]
+    assert len(store.orders()) == 1
     card = next(m for m in api.to(ADMIN) if m["text"].startswith("🛒 <b>Zamówienie"))
     bot.handle_update(click(ADMIN, dict(buttons(card["markup"]))["✅ Płatność otrzymana"]))
 

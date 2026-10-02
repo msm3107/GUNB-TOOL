@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from gunb_tool.bot_store import BotStore, Outcome, UserFilters
-from tests.bot_helpers import ADMIN, MIETEK, OBCY, activate, buttons, click, lead, make_bot, message
+from tests.bot_helpers import MIETEK, OBCY, activate, buttons, click, lead, make_bot, message
 
 BASE = (53.7784, 20.4801)  # Olsztyn
 DYWITY = dict(adres_opisowy="Dywity, ul. Polna 5", miejscowosc="Dywity", gmina="Dywity", powiat="olsztyński",
