@@ -33,6 +33,7 @@ from .bot_ui import BOT_COMMANDS, MENU_BUTTONS
 from .clock import WARSAW, at_local_time, local
 from .config import BotConfig
 from .demo import demo_leads
+from .funnel import activation_time
 from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
 from .gunb_scraper import GunbFormatError
 from .http_client import HttpError
@@ -87,6 +88,10 @@ ACCESS_REMINDER_BEFORE = timedelta(hours=24)
 ACCESS_REMINDER_JOB = "dostep_przypomnienie"
 ACCESS_END_JOB = "dostep_koniec"
 ACCESS_JOBS = (ACCESS_REMINDER_JOB, ACCESS_END_JOB)
+TRIAL_NUDGE_JOB = "podpowiedz_test"
+TRIAL_NUDGE_AFTER = timedelta(hours=48)
+"""Po tylu godzinach testu bez aktywacji – jedna spokojna podpowiedź (nie częściej, nie w nocy, nie w pauzie)."""
+TRIAL_EXTENSION_MAX_DAYS = 14
 NO_ACCESS_TOAST = "⛔ To wymaga aktywnego testu albo dostępu – szczegóły: /konto"
 SETUP_DONE_TOAST = "✅ To już ustawione – zmienisz w ⚙️ Ustawienia"
 DB_BUSY_RETRIES = 3
@@ -145,6 +150,7 @@ ADMIN_COMMANDS: dict[str, str] = {
     "/odbierz": "_cmd_revoke",  # /odbierz <chat_id> – wyłącza dostęp od razu
     "/trial": "_cmd_trial",  # /trial <chat_id> – pozwala na 7-dniowy test (startuje klient)
     "/nowymodel": "_cmd_new_model",  # /nowymodel <chat_id|wszyscy> <dni|data> – termin dla dotychczasowych
+    "/przedluztest": "_cmd_extend_trial",  # /przedluztest <chat_id> <dni 1–14> <powód> – raz na osobę
     "/status": "_cmd_status",  # import GUNB, wątek zadań, wysyłki z ostatniej doby
     "/raport": "_cmd_pilot_report",  # /raport [7|30] – pilotaż: unikalne osoby i inwestycje
     "/zamowienia": "_cmd_orders",  # otwarte i ostatnio opłacone zamówienia
@@ -354,6 +360,7 @@ class LeadBot:
             self.store.set_job_time("natychmiast", now)
             if self.settings.access != "open":
                 self.notify_access_changes()  # co kilka minut – przypomnienie i koniec dostępu bez opóźnień
+                self.notify_trial_nudges()
                 self.process_sends()
             self.deliver_instant()
             ran.append("natychmiast")
@@ -411,6 +418,8 @@ class LeadBot:
         try:
             if job == STAGE_REMINDER_JOB:
                 delivered = self.send_stage_reminder(user)
+            elif job == TRIAL_NUDGE_JOB:
+                delivered = self._send_trial_nudge(user)
             elif job in ACCESS_JOBS:
                 delivered = self._send_access_notice(user, ended=job == ACCESS_END_JOB)
             else:
@@ -443,6 +452,10 @@ class LeadBot:
             return "brak dostępu"
         if user.wstrzymane:
             return "powiadomienia wstrzymane"
+        if job == TRIAL_NUDGE_JOB and not user.tips_enabled:
+            return "podpowiedzi wyłączone"
+        if job == TRIAL_NUDGE_JOB and self._activated(user):
+            return "test już przynosi efekty"
         if job in REPORT_JOBS and user.tryb != REPORT_JOBS[job]:
             return "zmieniony tryb raportów"
         now = self._now()
@@ -1116,6 +1129,58 @@ class LeadBot:
             for admin in admins:
                 self._send_safely(admin, ui.admin_expired_text(entries))
 
+    def notify_trial_nudges(self) -> None:
+        """Jedna podpowiedź na test: 48 h po starcie, gdy osoba wciąż się nie aktywowała (definicja w ``funnel``).
+
+        Nie w nocy, nie w pauzie, nie po wyłączeniu podpowiedzi; przez kolejkę wysyłek (restart nie dubluje).
+        """
+        now = self._now()
+        if self._quiet(now):
+            return
+        for user in self.store.trial_nudge_candidates(now - TRIAL_NUDGE_AFTER, now):
+            with self.repo.transaction():
+                self.store.mark_trial_nudged(user.chat_id, user.test_start or "")
+                if not self._activated(user):
+                    self.store.enqueue_sends(f"{TRIAL_NUDGE_JOB}:{user.test_start}", [user.chat_id])
+
+    def _activated(self, user: BotUser) -> bool:
+        if not user.test_start:
+            return False
+        start = datetime.fromisoformat(user.test_start)
+        return activation_time(self.store.events(start, chat_id=user.chat_id), start) is not None
+
+    def _send_trial_nudge(self, user: BotUser) -> bool:
+        summary = self.store.work_summary(user.chat_id, user.test_start or "")
+        self._send(user.chat_id, *ui.trial_nudge(summary, self._local_date(user.subscription_ends, with_time=True)))
+        self.store.record_event(user.chat_id, "podpowiedz_test")
+        return True
+
+    def _cmd_extend_trial(self, admin_chat: int, args: list[str]) -> None:
+        """``/przedluztest <chat_id> <dni 1–14> <powód>`` – tylko admin: jednorazowe przedłużenie testu z zapisem
+        powodu (np. urlop klienta). Osoba sama testu nie odnowi: ani ``/start``, ani prośbą o test."""
+        days = int(args[1]) if len(args) >= 2 and args[1].isdigit() else 0
+        reason = " ".join(args[2:]).strip()
+        if not args or not _is_chat_id(args[0]) or not 1 <= days <= TRIAL_EXTENSION_MAX_DAYS or len(reason) < 3:
+            self._send(admin_chat, ui.admin_usage_text())
+            return
+        user = self._known_user(admin_chat, int(args[0]))
+        if user is None:
+            return
+        if not user.trial_used or not user.on_trial:
+            self._send(admin_chat, f"ℹ️ {escape_html(user.display_name)} nie jest w teście "
+                                   f"({escape_html(self._subscription_label(user))}) – przedłużam tylko test.")
+            return
+        ends_iso = _utc_iso(self._access_end_after(user, days))
+        if user.test_przedluzono or not self.store.extend_trial(user.chat_id, datetime.fromisoformat(ends_iso), reason):
+            self._send(admin_chat, f"ℹ️ Test {escape_html(user.display_name)} już był przedłużany "
+                                   f"(powód: {escape_html(user.test_przedluzenie_powod or '—')}) – drugi raz się nie da.")
+            return
+        self.store.record_event(user.chat_id, "test_przedluzony", szczegoly=f"{days}d")
+        ends_on = self._local_date(ends_iso, with_time=True)
+        self._notify(user.chat_id, ui.trial_extended_text(ends_on), ui.menu_keyboard())
+        self._send(admin_chat, f"🎁 Test {escape_html(user.display_name)} ({user.chat_id}) przedłużony o {days} dni – "
+                               f"do {ends_on} (powód: {escape_html(reason)}).")
+
     def _send_access_notice(self, user: BotUser, *, ended: bool) -> bool:
         """Dzień przed końcem i po końcu dostępu: termin, oferta (zamówienie albo pytanie) i – w teście –
         podsumowanie rzeczywistych działań z bazy. Wiadomość transakcyjna: przychodzi także w pauzie."""
@@ -1313,6 +1378,11 @@ class LeadBot:
             "k": (NONE, lambda: self._account_screen(user)),
             "0": (NONE, lambda: self._settings_screen(user)),
         }
+        if arg == "t":  # 💡 podpowiedzi i podsumowania testu – usługowe dodatki ponad raporty
+            self.store.set_tips_enabled(user.chat_id, not user.tips_enabled)
+            user = self.store.get_user(user.chat_id) or user
+            self.api.edit_message_text(user.chat_id, message_id, *self._settings_screen(user))
+            return "💡 Podpowiedzi włączone" if user.tips_enabled else "💡 Podpowiedzi wyłączone"
         if arg == "p":  # ⏸️ / ▶️ – pauza wszystkich automatycznych wiadomości (dostęp biegnie dalej)
             self.store.set_paused(user.chat_id, not user.wstrzymane)
             user = self.store.get_user(user.chat_id) or user

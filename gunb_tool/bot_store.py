@@ -416,6 +416,17 @@ class BotStore:
         """Podpowiedzi i podsumowania testu (wiadomości usługowe ponad raporty) – włączone domyślnie."""
         self._update(chat_id, podpowiedzi=int(value))
 
+    def trial_nudge_candidates(self, started_before: datetime, now: datetime) -> list[BotUser]:
+        """Osoby w trwającym teście (start przed ``started_before``) bez zaplanowanej podpowiedzi do tego testu,
+        z włączonymi podpowiedziami i bez pauzy."""
+        rows = self._conn.execute(
+            "SELECT * FROM bot_users WHERE status = 'aktywny' AND rodzaj_dostepu = 'test' AND is_active = 1"
+            " AND subscription_ends > ? AND test_start IS NOT NULL AND test_start <= ?"
+            " AND podpowiedz_test IS NOT test_start AND podpowiedzi = 1 AND wstrzymane = 0 ORDER BY chat_id",
+            (_iso(now), _iso(started_before)),
+        ).fetchall()
+        return [_user(row) for row in rows]
+
     def mark_trial_nudged(self, chat_id: int, test_start: str) -> None:
         """Podpowiedź po starcie testu bez efektów zaplanowana – raz na dany test."""
         self._conn.execute("UPDATE bot_users SET podpowiedz_test = ? WHERE chat_id = ?", (test_start, chat_id))
@@ -883,10 +894,14 @@ class BotStore:
             "SELECT 1 FROM zdarzenia WHERE chat_id = ? AND rodzaj = ? AND kiedy >= ? LIMIT 1", (chat_id, rodzaj, since)
         ).fetchone() is not None
 
-    def events(self, since: datetime | None = None, *, kinds: Sequence[str] = ()) -> list[Event]:
+    def events(self, since: datetime | None = None, *, kinds: Sequence[str] = (),
+               chat_id: int | None = None) -> list[Event]:
         """Surowe zdarzenia (najstarsze pierwsze) – z nich liczy się lejek i aktywacja (definicja może się zmienić)."""
         sql, params = "SELECT chat_id, rodzaj, id_sprawy, kiedy, szczegoly FROM zdarzenia WHERE kiedy >= ?", \
             [_iso(since) if since else ""]
+        if chat_id is not None:
+            sql += " AND chat_id = ?"
+            params.append(chat_id)
         if kinds:
             sql += f" AND rodzaj IN ({','.join('?' for _ in kinds)})"
             params += list(kinds)

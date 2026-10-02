@@ -532,18 +532,38 @@ def settings_screen(user: BotUser, *, place: str, settings: BotConfig, watch_cou
              f"🧰 Branża: {_trade_label(get_trade(user.branza))}",
              f"⏰ Raporty: {_mode_label(user.tryb, settings)}",
              f"🔔 Powiadomienia: {'⏸️ wstrzymane' if user.wstrzymane else 'włączone'}",
+             f"💡 Podpowiedzi i podsumowania: {'włączone' if user.tips_enabled else 'wyłączone'}",
              f"👀 Obserwowane: {watch_count}",
              f"👤 Dostęp: {account}",
              "", "Kliknij, co chcesz zmienić 👇"]
     pause = ("▶️ Wznów powiadomienia", "st:p") if user.wstrzymane else ("⏸️ Wstrzymaj powiadomienia", "st:p")
+    tips = ("💡 Podpowiedzi: wyłącz", "st:t") if user.tips_enabled else ("💡 Podpowiedzi: włącz", "st:t")
     rows = [[("🔎 Obszar i rodzaj", "st:f"), ("🧰 Branża", "st:b")],
             [("👀 Obserwowane", "st:w"), ("⏰ Harmonogram", "st:m")],
-            [pause, ("👤 Konto", "st:k")]]
+            [pause, ("👤 Konto", "st:k")], [tips]]
     return "\n".join(lines), inline(rows)
 
 
 def trial_started_text(ends_on: str) -> str:
     return f"{TRIAL_TEXT}\nTest trwa do <b>{ends_on}</b>."
+
+
+def trial_nudge(summary: dict[str, int], ends_on: str) -> tuple[str, Markup]:
+    """Jedna spokojna podpowiedź 48 h po starcie testu bez efektów – liczby wyłącznie z bazy."""
+    opened, saved = summary.get("otwarte", 0), summary.get("zapisane", 0)
+    state = ("Nie otwarto jeszcze żadnej inwestycji." if not opened
+             else f"Otwarte inwestycje: {opened}, zapisane: {saved}.")
+    text = ("💡 <b>Jak idzie test?</b>\n" + state + "\n"
+            "Najszybciej sprawdzisz, czy to się przyda: 📊 Inwestycje → kliknij numer → ⭐ zapisz przydatną albo "
+            "ustaw 📋 wynik. Nic nie pasuje? Zmień obszar albo napisz do nas.\n"
+            f"🎁 Test trwa do {ends_on}.\n"
+            "Podpowiedzi wyłączysz w ⚙️ Ustawienia.")
+    return text, inline([[("📊 Pokaż inwestycje", "f:go"), ("🗺️ Zmień obszar", "f:place")],
+                         [("💬 Napisz do nas", "zm:q")]])
+
+
+def trial_extended_text(ends_on: str) -> str:
+    return f"🎁 Twój darmowy test został przedłużony – trwa do <b>{ends_on}</b>."
 
 
 def trial_waiting() -> tuple[str, Markup]:
