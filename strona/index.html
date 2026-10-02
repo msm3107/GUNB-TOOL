@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Żółta Tablica – nowe budowy z Olsztyna i powiatu w Telegramie</title>
+  <meta name="description" content="Bot Telegram: codziennie nowe pozwolenia na budowę z rejestru GUNB dla Olsztyna i powiatu olsztyńskiego – dla składów budowlanych, handlowców i wykonawców.">
+  <meta name="theme-color" content="#ffd400">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="pl_PL">
+  <meta property="og:title" content="Żółta Tablica – nowe budowy z Olsztyna i powiatu w Telegramie">
+  <meta property="og:description" content="Codziennie nowe pozwolenia na budowę z publicznego rejestru GUNB – z mapą, datą decyzji i rodzajem budynku. Pilotaż z 7-dniowym testem.">
+  <link rel="stylesheet" href="styl.css">
+  <!--
+    Przed publikacją uzupełnij wszystkie miejsca oznaczone „DO UZUPEŁNIENIA” (cena, dane sprzedawcy, kontakt)
+    tymi samymi wartościami, które są w .env bota (OFERTA_…). Niczego nie wymyślaj: bez opinii, liczników
+    klientów i wyników, których nie było. Strona nie ma formularzy – jedyne wezwanie to link do bota.
+  -->
+</head>
+<body>
+  <a class="pomin" href="#tresc">Przejdź do treści</a>
+
+  <header class="gora">
+    <div class="kontener">
+      <a class="logo" href="index.html" aria-label="Żółta Tablica – strona główna"><span class="tablica" aria-hidden="true"></span>Żółta Tablica</a>
+      <nav class="menu" aria-label="Sekcje strony">
+        <a href="#przyklad">Przykład</a>
+        <a href="#jak">Jak to działa</a>
+        <a href="#oferta">Oferta</a>
+        <a href="#pytania">Pytania</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="tresc">
+    <div class="hero">
+      <div class="kontener">
+        <h1>Nowe budowy z Olsztyna i powiatu – codziennie w Telegramie</h1>
+        <p class="wstep">Żółta Tablica sprawdza publiczny rejestr pozwoleń na budowę i zgłoszeń (GUNB) i pokazuje inwestycje pasujące do tego, co sprzedajesz – z mapą, datą decyzji i rodzajem budynku. To lista budów do sprawdzenia, nie gotowe zamówienia.</p>
+        <a class="przycisk" href="https://t.me/ZoltaTablicaBot?start=strona">Poproś o 7-dniowy test w Telegramie</a>
+        <p class="drobne">Pilotaż: testy uruchamiamy ręcznie. Po kliknięciu otworzy się rozmowa z botem – zobaczysz przykład i opis, zanim o cokolwiek poprosisz.</p>
+      </div>
+    </div>
+
+    <section aria-labelledby="dla-kogo">
+      <div class="kontener">
+        <h2 id="dla-kogo">Dla kogo i gdzie</h2>
+        <div class="siatka">
+          <div class="karta">
+            <h3>Składy i hurtownie budowlane</h3>
+            <p>Nowe pozwolenia to budowy, które w kolejnych miesiącach będą potrzebować materiałów – sprawdź je i zaplanuj kontakt.</p>
+          </div>
+          <div class="karta">
+            <h3>Handlowcy</h3>
+            <p>Lista budów w Twoim rejonie, posortowana według odległości i daty, z notatkami i przypomnieniami w jednym miejscu.</p>
+          </div>
+          <div class="karta">
+            <h3>Wykonawcy</h3>
+            <p>Dachy, okna, instalacje, elewacje: bot przypomni, gdy budowa wejdzie w orientacyjne okno Twojego etapu (szacunek).</p>
+          </div>
+        </div>
+        <p class="uwaga"><strong>Obszar:</strong> Olsztyn i powiat olsztyński. Innych miejsc na razie nie monitorujemy.</p>
+      </div>
+    </section>
+
+    <section id="przyklad" aria-labelledby="przyklad-tytul">
+      <div class="kontener">
+        <h2 id="przyklad-tytul">Tak wygląda raport</h2>
+        <div class="telefon" role="img" aria-label="Przykładowy raport bota w Telegramie z trzema fikcyjnymi inwestycjami">
+          <span class="etykieta-przyklad">PRZYKŁAD – dane fikcyjne</span>
+          <div class="dymek">
+            <strong>📊 Raport 02.10</strong><br>
+            Znaleziono 3 nowe inwestycje. 3 spełniają Twoje filtry.
+            <p class="pozycja">1. 🏠 <strong>Budowa budynku mieszkalnego jednorodzinnego z garażem</strong>
+              <span class="fakty">📏 3 km · Przykładowo, ul. Lipowa · 820 m³ · 29.09</span></p>
+            <p class="pozycja">2. 🏭 <strong>Budowa hali magazynowej z częścią biurową</strong>
+              <span class="fakty">📏 9 km · Wzorcowo, ul. Przemysłowa · 9 400 m³ · 26.09</span></p>
+            <p class="pozycja">3. 🏢 <strong>Budowa budynku wielorodzinnego z 12 lokalami</strong>
+              <span class="fakty">📏 12 km · Testowice · 5 600 m³ · 23.09</span></p>
+            <div class="przyciski-tg" aria-hidden="true"><span>1</span><span>2</span><span>3</span></div>
+          </div>
+          <div class="dymek">
+            🏠 <strong>Dom jednorodzinny</strong> · pozwolenie na budowę · nowa budowa<br>
+            📍 Przykładowo, ul. Lipowa · 📅 Decyzja: 29.09<br>
+            🗺️ Mapa: lokalizacja dokładna – działka<br>
+            🎯 <strong>Dlaczego to widzisz:</strong> Twoja okolica, domy jednorodzinne<br>
+            📐 <strong>Szacunki:</strong> skala średnia · etap dachu orientacyjnie za 4–6 mies. – trzeba sprawdzić na miejscu
+            <div class="przyciski-tg" aria-hidden="true"><span>📍 Mapa</span><span>⭐ Zapisz</span><span>⏰ Przypomnij</span><span>📝 Notatka</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="jak" aria-labelledby="jak-tytul">
+      <div class="kontener">
+        <h2 id="jak-tytul">Jak to działa</h2>
+        <ol class="kroki">
+          <li><strong>Poproś o test w Telegramie.</strong> Bot pokaże przykład i opis; test uruchamiamy ręcznie.</li>
+          <li><strong>Odpowiedz na dwa pytania:</strong> co oferujesz i gdzie działasz. Zobaczysz, ile inwestycji pasuje i z jakiego okresu są dane.</li>
+          <li><strong>Włącz 7-dniowy test, kiedy chcesz.</strong> Od razu dostaniesz najlepiej dopasowane inwestycje, potem raport rano albo wieczorem.</li>
+          <li><strong>Pracuj z listą:</strong> zapisuj przydatne, dodawaj notatki i przypomnienia, oznaczaj wynik (rozmowa, złożona oferta, niepasująca).</li>
+        </ol>
+      </div>
+    </section>
+
+    <section aria-labelledby="funkcje">
+      <div class="kontener">
+        <h2 id="funkcje">Co dostajesz</h2>
+        <div class="siatka">
+          <div class="karta"><h3>Codzienny raport</h3><p>Nowe sprawy z rejestru, raz dziennie o wybranej porze albo od razu.</p></div>
+          <div class="karta"><h3>Kolejność pod Ciebie</h3><p>Według Twojej branży, odległości od bazy i daty – nie według wielkości inwestycji.</p></div>
+          <div class="karta"><h3>Mapa i szczegóły</h3><p>Działka na mapie, data decyzji, rodzaj budynku; szczegóły urzędowe po rozwinięciu.</p></div>
+          <div class="karta"><h3>Twoja praca w jednym miejscu</h3><p>Zapisane, prywatne notatki, przypomnienia i wynik pracy przy każdej inwestycji.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="ograniczenia">
+      <div class="kontener">
+        <h2 id="ograniczenia">Uczciwie o danych</h2>
+        <ul>
+          <li>W rejestrze są tylko sprawy zakończone pozytywnie (wydane pozwolenia, zgłoszenia bez sprzeciwu).</li>
+          <li>Urzędy wpisują sprawy z opóźnieniem – nawet kilka tygodni.</li>
+          <li>Lokalizacja bywa przybliżona (środek obrębu) – karta zawsze to mówi.</li>
+          <li>Etap budowy i skala inwestycji to szacunki – trzeba je sprawdzić na miejscu.</li>
+          <li>W bocie nie ma danych kontaktowych inwestorów. Gdy rejestr nie podaje inwestora, nie zgadujemy, kto to jest.</li>
+          <li>Nie gwarantujemy zleceń ani pierwszeństwa przed konkurencją.</li>
+          <li>Żółta Tablica nie jest serwisem GUNB i nie jest z nim powiązana – korzysta z publicznie udostępnionych danych.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="oferta" aria-labelledby="oferta-tytul">
+      <div class="kontener">
+        <h2 id="oferta-tytul">Oferta</h2>
+        <div class="oferta">
+          <dl>
+            <dt>Test</dt><dd>7 dni za darmo, raz na konto Telegram</dd>
+            <dt>Cena</dt><dd><span class="do-uzupelnienia">DO UZUPEŁNIENIA: cena i sposób podatku (np. 99 zł netto + VAT albo kwota do zapłaty)</span> za 30 dni</dd>
+            <dt>Dla</dt><dd>1 konto Telegram</dd>
+            <dt>Obszar</dt><dd>Olsztyn i powiat olsztyński</dd>
+            <dt>Płatność</dt><dd><span class="do-uzupelnienia">DO UZUPEŁNIENIA: sposób płatności</span>; dostęp włączamy ręcznie po otrzymaniu płatności</dd>
+            <dt>Odnowienie</dt><dd>Dostęp nie odnawia się sam – przed końcem bot przypomni o przedłużeniu</dd>
+          </dl>
+          <a class="przycisk jasny" href="https://t.me/ZoltaTablicaBot?start=strona_oferta">Zacznij od testu</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="pytania" aria-labelledby="pytania-tytul">
+      <div class="kontener">
+        <h2 id="pytania-tytul">Pytania</h2>
+        <details><summary>Czy to lista klientów, którzy chcą coś kupić?</summary>
+          <p>Nie. To lista budów z publicznego rejestru, które warto sprawdzić. Nie wiemy, czy inwestor już kupił materiały albo wybrał wykonawcę.</p></details>
+        <details><summary>Skąd są dane?</summary>
+          <p>Z publicznego rejestru GUNB (pozwolenia na budowę i zgłoszenia budowy). GUNB aktualizuje go co noc, bot sprawdza go codziennie rano. Pod każdym raportem widać, kiedy rejestr był ostatnio sprawdzony.</p></details>
+        <details><summary>Czy dostanę telefony do inwestorów?</summary>
+          <p>Nie. W bocie nie ma danych kontaktowych inwestorów. Gdy rejestr podaje nazwę inwestora (zwykle spółki, gminy), pokazujemy ją tak, jak jest w rejestrze – bez weryfikacji.</p></details>
+        <details><summary>Jak szybko pojawiają się nowe budowy?</summary>
+          <p>Zwykle następnego ranka po tym, jak urząd wpisze sprawę do rejestru (GUNB publikuje dane co noc). Urzędy wpisują sprawy z opóźnieniem – nawet kilka tygodni po decyzji.</p></details>
+        <details><summary>Co po teście?</summary>
+          <p>Raporty się zatrzymują, a Twoje ustawienia, zapisane i notatki zostają do wglądu. Dalszy dostęp zamówisz w bocie – włączymy go po otrzymaniu płatności.</p></details>
+        <details><summary>Jak zrezygnować?</summary>
+          <p>Wystarczy nie przedłużać – dostęp nie odnawia się sam. Możesz też wstrzymać powiadomienia w ustawieniach albo poprosić o usunięcie konta i danych.</p></details>
+        <details><summary>Czy działa poza Olsztynem?</summary>
+          <p>Na razie monitorujemy tylko Olsztyn i powiat olsztyński.</p></details>
+      </div>
+    </section>
+
+    <section aria-labelledby="kontakt">
+      <div class="kontener">
+        <h2 id="kontakt">Kto za tym stoi</h2>
+        <p>Sprzedawca: <span class="do-uzupelnienia">DO UZUPEŁNIENIA: imię i nazwisko albo nazwa, forma prowadzenia sprzedaży</span><br>
+           Kontakt: <span class="do-uzupelnienia">DO UZUPEŁNIENIA: e-mail lub nick w Telegramie</span></p>
+        <a class="przycisk" href="https://t.me/ZoltaTablicaBot?start=strona_dol">Otwórz Żółtą Tablicę w Telegramie</a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="kontener">
+      <a href="zasady.html">Zasady usługi (szkic)</a>
+      <a href="prywatnosc.html">Prywatność (szkic)</a>
+      <p>Dane z publicznego rejestru GUNB. Żółta Tablica nie jest serwisem GUNB.</p>
+    </div>
+  </footer>
+</body>
+</html>
