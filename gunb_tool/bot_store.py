@@ -32,6 +32,16 @@ POSITIVE_OUTCOMES: frozenset[str] = frozenset({"rozmowa", "oferta"})
 ORDER_STATES: tuple[str, ...] = ("zgloszone", "oplacone", "anulowane")
 
 
+def location_mismatch(inv: Investment) -> bool:
+    """Działka znaleziona w ULDK leży w innej gminie niż kod gminy z rejestru – lokalizacja niepewna.
+
+    Nie wiadomo, które źródło się myli (literówka w numerze działki albo w kodzie), więc niczego nie poprawiamy:
+    karta mówi „lokalizacja niepewna”, a odległość od bazy nie jest liczona.
+    """
+    unit = (inv.teryt_dzialki or "")[:6]
+    return bool(inv.gmina_teryt) and len(unit) == 6 and unit.isdigit() and (inv.gmina_teryt or "")[:6] != unit
+
+
 def mentions_place(place: str, name: str) -> bool:
     """Czy znormalizowany opis miejsca zawiera nazwę całymi słowami („Olsztyn” to nie „Olsztynek” ani „olsztyński”)."""
     wanted = normalize_text(name)
@@ -95,8 +105,9 @@ class UserFilters:
         return self.baza is not None and bool(self.promien_km)
 
     def distance_km(self, inv: Investment) -> float | None:
-        """Odległość budowy od bazy w km (w linii prostej); ``None`` bez bazy lub współrzędnych."""
-        if self.baza is None or inv.lat is None or inv.lon is None:
+        """Odległość budowy od bazy w km (w linii prostej); ``None`` bez bazy, współrzędnych albo przy lokalizacji
+        niepewnej (:func:`location_mismatch`) – lepiej bez odległości niż z odległością do złego miejsca."""
+        if self.baza is None or inv.lat is None or inv.lon is None or location_mismatch(inv):
             return None
         return haversine_km(self.baza, (inv.lat, inv.lon))
 
@@ -616,6 +627,8 @@ class BotStore:
                 " sum(lat IS NULL) AS brak, sum(powiat_teryt IS NULL) AS bez_kodu,"
                 " sum(coalesce(gmina, '') = '') AS bez_gminy,"
                 " sum(coalesce(miejscowosc, '') = '' AND coalesce(adres_opisowy, '') = '') AS bez_miejsca,"
+                " sum(teryt_dzialki IS NOT NULL AND gmina_teryt IS NOT NULL"
+                " AND substr(teryt_dzialki, 1, 6) != substr(gmina_teryt, 1, 6)) AS niepewne,"
                 " min(coalesce(data_decyzji, data_wplywu)) AS najstarsza FROM investments WHERE is_noise = 0").fetchone()
         return {
             "wszystkie": q("SELECT COUNT(*) FROM investments").fetchone()[0], "inwestycje": row["n"],
@@ -624,6 +637,7 @@ class BotStore:
             "spoza": outside, "bez_kodu": row["bez_kodu"] or 0,
             "dzialka": row["dzialka"] or 0, "obreb": row["obreb"] or 0, "brak_lokalizacji": row["brak"] or 0,
             "bez_gminy": row["bez_gminy"] or 0, "bez_miejsca": row["bez_miejsca"] or 0,
+            "niepewne": row["niepewne"] or 0,
             "najstarsza_decyzja": row["najstarsza"],
         }
 
@@ -1172,13 +1186,17 @@ class BotStore:
         Bez listy powiatów w konfiguracji (monitorowane całe województwo) proponuje ``limit``
         powiatów z największą liczbą leadów.
         """
-        rows = self._conn.execute(
-            "SELECT powiat_teryt, max(powiat) AS nazwa, COUNT(*) AS n FROM investments"
-            " WHERE powiat_teryt IS NOT NULL GROUP BY powiat_teryt ORDER BY n DESC"
-        ).fetchall()
-        names = {row["powiat_teryt"]: row["nazwa"] for row in rows}
-        codes = list(powiat_codes) or [row["powiat_teryt"] for row in rows][:limit]
-        return [(code, _powiat_label(names.get(code), code)) for code in codes]
+        names: dict[str, tuple[int, str]] = {}  # kod → (liczba spraw z tą nazwą, nazwa) – wygrywa najczęstsza
+        totals: dict[str, int] = {}
+        for row in self._conn.execute(
+            "SELECT powiat_teryt AS kod, powiat AS nazwa, COUNT(*) AS n FROM investments"
+            " WHERE powiat_teryt IS NOT NULL AND powiat IS NOT NULL GROUP BY powiat_teryt, powiat"
+        ):
+            totals[row["kod"]] = totals.get(row["kod"], 0) + row["n"]
+            if (row["n"], row["nazwa"]) > names.get(row["kod"], (0, "")):
+                names[row["kod"]] = (row["n"], row["nazwa"])
+        codes = list(powiat_codes) or sorted(totals, key=lambda code: (-totals[code], code))[:limit]
+        return [(code, _powiat_label(names.get(code, (0, None))[1], code)) for code in codes]
 
     # Wewnętrzne ----------------------------------------------------------------------------------
 

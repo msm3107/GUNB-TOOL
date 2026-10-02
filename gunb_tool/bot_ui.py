@@ -11,7 +11,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Sequence
 
-from .bot_store import BotUser, Event, JobStatus, LeadFlags, Order, Outcome, Send, UserFilters, WatchItem
+from .bot_store import (BotUser, Event, JobStatus, LeadFlags, Order, Outcome, Send, UserFilters, WatchItem,
+                        location_mismatch)
 from .clock import local
 from .config import BotConfig, OfferConfig, format_money
 from .demo import DEMO_LABEL
@@ -1055,6 +1056,8 @@ def _date_line(inv: Investment) -> str:
 
 
 def _location_line(inv: Investment) -> str:
+    if location_mismatch(inv):
+        return "🗺️ Mapa: lokalizacja niepewna – działka znaleziona w innej gminie niż podaje rejestr; sprawdź adres"
     if inv.precyzja_geo == "obreb":
         return "🗺️ Mapa: lokalizacja przybliżona – środek obrębu"
     if inv.precyzja_geo == "dzialka":
@@ -1062,6 +1065,10 @@ def _location_line(inv: Investment) -> str:
     if inv.lat is None and not inv.google_maps_url:
         return "🗺️ Mapa: brak – rejestr nie podał działki, którą da się odnaleźć"
     return "🗺️ Mapa: punkt z danych ULDK (dokładność nieznana)"
+
+
+def _map_label(inv: Investment) -> str:
+    return "📍 Mapa (niepewna)" if location_mismatch(inv) else "📍 Mapa"
 
 
 def investor_label(inv: Investment) -> str:
@@ -1139,7 +1146,7 @@ def archive_card(inv: Investment, *, flags: LeadFlags, outcome: Outcome, note: s
 def archive_keyboard(inv: Investment) -> Markup:
     rows: list[list[dict[str, str]]] = []
     if inv.google_maps_url:
-        rows.append([{"text": "📍 Mapa", "url": inv.google_maps_url}])
+        rows.append([{"text": _map_label(inv), "url": inv.google_maps_url}])
     rows += inline([[("💳 Przedłuż dostęp", "i:oferta")]])["inline_keyboard"]
     return {"inline_keyboard": rows}
 
@@ -1183,7 +1190,7 @@ def lead_keyboard(inv: Investment, *, flags: LeadFlags, watching_investor: bool,
                   ("👎 Nieprzydatne" + (" ✓" if outcome.ocena == -1 else ""), f"fu:{nr}:0")]
         return inline(rows + [thumbs, back])
     keyboard: list[list[dict[str, str]]] = []
-    links = [{"text": text, "url": url} for text, url in (("📍 Mapa", inv.google_maps_url),
+    links = [{"text": text, "url": url} for text, url in ((_map_label(inv), inv.google_maps_url),
                                                           ("🏛️ Geoportal", inv.geoportal_url)) if url]
     if links:
         keyboard.append(links)
@@ -1275,7 +1282,8 @@ def pilot_report(days: int, *, since: datetime, sent: tuple[int, int], unique: d
     observed = len(cohort.observed)
     lines = [
         f"📈 <b>Pilotaż – ostatnie {days} dni</b> (od {local(since):%d.%m})", "",
-        f"👥 Konta: nowe {len(starts)}" + (" · źródła: " + ", ".join(f"{k} {n}" for k, n in sources.most_common())
+        f"👥 Konta: nowe {len(starts)}" + (" · źródła: " + ", ".join(f"{escape_html(k)} {n}"
+                                                                    for k, n in sources.most_common(10))
                                            if starts else "")
         + f" · razem {len(users)} · firmy oznaczone: {len({u.firma for u in users if u.firma})}",
         f"🚪 Przed testem: przykład {who('demo')} · oferta {who('oferta')} · prośba o test {who('prosba_o_test')}"
@@ -1309,6 +1317,10 @@ def pilot_report(days: int, *, since: datetime, sent: tuple[int, int], unique: d
     return "\n".join(lines)
 
 
+DATA_REPORT_GMINY = 8
+"""Ile gmin z rozbieżnymi nazwami wypisać w ``/dane`` (reszta – liczbą), żeby raport zmieścił się w wiadomości."""
+
+
 def data_report(overview: dict, *, place_names: dict[str, str], freshness: str, import_note: str | None,
                 history_needed: str | None, offer_missing: Sequence[str]) -> str:
     """``/dane`` – co jest w bazie i czego brakuje; niejednoznaczności pokazujemy, nie poprawiamy zgadywaniem."""
@@ -1327,13 +1339,18 @@ def data_report(overview: dict, *, place_names: dict[str, str], freshness: str, 
             lines.append(f"⚠️ Kod {code} ma różne nazwy w danych: {listed} – bot niczego nie poprawia, pokazuje jedną.")
     if not overview["powiaty"]:
         lines.append("• brak")
-    for code, names in overview["gminy_rozne"].items():
-        lines.append(f"⚠️ Gmina {code} ma różne nazwy: " + ", ".join(f"„{escape_html(n)}”" for n in names))
+    variants = list(overview["gminy_rozne"].items())
+    for code, names in variants[:DATA_REPORT_GMINY]:
+        lines.append(f"⚠️ Gmina {code} ma różne nazwy: " + ", ".join(f"„{escape_html(_short(n, 40))}”" for n in names[:5]))
+    if len(variants) > DATA_REPORT_GMINY:
+        lines.append(f"…i {len(variants) - DATA_REPORT_GMINY} kolejnych kodów gmin z różnymi nazwami.")
     lines.append(f"⚠️ Spoza ustawionych powiatów: {overview['spoza']} · bez kodu powiatu: {overview['bez_kodu']}")
     other = overview["inwestycje"] - overview["dzialka"] - overview["obreb"] - overview["brak_lokalizacji"]
     lines.append(f"📍 Lokalizacja: dokładna {overview['dzialka']} · przybliżona {overview['obreb']} · "
                  f"brak {overview['brak_lokalizacji']}" + (f" · nieznana dokładność {other}" if other > 0 else ""))
     lines.append(f"⚠️ Braki: bez gminy: {overview['bez_gminy']} · bez miejscowości i adresu: {overview['bez_miejsca']}")
+    lines.append(f"⚠️ Lokalizacja niepewna (działka poza gminą z rejestru): {overview['niepewne']} – karta mówi to "
+                 "wprost i nie liczy odległości; niczego nie poprawiamy zgadywaniem.")
     oldest = overview["najstarsza_decyzja"]
     if history_needed:
         lines.append(f"🕰️ Najstarsza decyzja: {_pl_date(oldest) if oldest else 'brak'} – okna etapów sięgają do "
