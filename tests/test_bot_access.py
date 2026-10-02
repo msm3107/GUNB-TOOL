@@ -135,9 +135,11 @@ def test_after_expiry_saved_items_and_settings_stay_but_old_buttons_show_nothing
     api.sent.clear()
     api.edits.clear()
 
-    for data in (f"o:{nr}", "hp:1", "f:go", f"s0:{nr}"):
+    for data in ("hp:1", "f:go", f"s0:{nr}"):
         bot.handle_update(click(MIETEK, data))
         assert "⛔" in api.answers[-1]
+    bot.handle_update(click(MIETEK, f"o:{nr}"))  # zapisana – do wglądu w trybie archiwum, bez akcji
+    assert api.last_to(MIETEK)["text"].startswith("🗄️ <b>Twoja zapisana praca</b>")
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
 
     assert api.edits == [] and all("📊 <b>Raport" not in m["text"] for m in api.to(MIETEK))

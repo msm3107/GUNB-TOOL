@@ -269,7 +269,7 @@ def test_report_summarises_and_numbers_matching_leads(bot, api, repo):
     report = api.last_to(MIETEK)
     assert "📊 <b>Raport 29.09</b>" in report["text"]
     assert "Znaleziono 3 nowe inwestycje. 1 spełnia Twoje filtry." in report["text"]
-    assert "1 to 🔥 HOT (duża skala)." in report["text"]
+    assert "Dużej skali (szacunek): 1." in report["text"] and "HOT" not in report["text"]
     assert "Budowa zespołu dwóch budynków wielorodzinnych" in report["text"]
     nr = repo.get("WAW/1").nr
     assert buttons(report["markup"]) == [("1", f"o:{nr}")]
@@ -287,12 +287,13 @@ def test_lead_card_has_action_buttons_and_save_updates_them(bot, api, repo):
     bot.handle_update(click(MIETEK, f"o:{nr}"))
 
     card = api.last_to(MIETEK)
-    assert card["text"].startswith("🔥 <b>HOT</b>")
+    assert card["text"].startswith("🏢 <b>Budynek wielorodzinny</b>") and "🏗️ Skala: duża" in card["text"]
     labels = [t for t, _ in buttons(card["markup"])]
     assert labels[:2] == ["📍 Mapa", "🏛️ Geoportal"] or labels[0] == "📍 Mapa"
-    assert {"⭐ Zapisz", "✅ Przejrzane", "🗑️ Ukryj", "⏰ Przypomnij", "📝 Notatka", "⋯ Więcej"} <= set(labels)
-    bot.handle_update(click(MIETEK, f"mx:{nr}", message_id=card["message_id"]))  # obserwowanie – pod „⋯ Więcej”
-    assert {"👀 Obserwuj inwestora", "📌 Obserwuj gminę"} <= {t for t, _ in buttons(api.edits[-1]["markup"])}
+    assert {"⭐ Zapisz", "⏰ Przypomnij", "📝 Notatka", "📋 Wynik", "🔽 Szczegóły", "⋯ Więcej"} <= set(labels)
+    bot.handle_update(click(MIETEK, f"mx:{nr}", message_id=card["message_id"]))  # rzadsze akcje – pod „⋯ Więcej”
+    assert {"✅ Przejrzane", "🗑️ Ukryj", "👀 Obserwuj inwestora", "📌 Obserwuj gminę"} \
+        <= {t for t, _ in buttons(api.edits[-1]["markup"])}
 
     bot.handle_update(click(MIETEK, f"s:{nr}", message_id=card["message_id"]))
     assert api.answers[-1].startswith("⭐ Zapisano")
@@ -319,8 +320,8 @@ def test_hide_collapses_card_and_undo_restores_it(bot, api, repo):
 def test_hot_only_toggle_filters_report(bot, api, repo):
     activate(bot, api)
     seed_leads(repo)
-    bot.handle_update(message(MIETEK, "🔥 Tylko HOT"))
-    assert "tylko 🔥 HOT" in api.last_to(MIETEK)["text"]
+    bot.handle_update(message(MIETEK, "🔥 Tylko HOT"))  # przycisk starego menu działa dalej
+    assert "tylko inwestycje dużej skali" in api.last_to(MIETEK)["text"]
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
     report = api.last_to(MIETEK)["text"]
     assert "2 spełniają Twoje filtry" in report
@@ -342,7 +343,7 @@ def test_watched_investor_triggers_instant_alert_even_in_morning_mode(bot, api, 
     bot.deliver_instant()
 
     alert = api.last_to(MIETEK)
-    assert alert["text"].startswith("👀 <b>WATCHLISTA</b> · nowa inwestycja obserwowanego inwestora")
+    assert alert["text"].startswith("👀 <b>Obserwowane</b> · nowa inwestycja obserwowanego inwestora")
     clock.advance(hours=1)
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
     assert "1 dotyczy obserwowanego inwestora" in api.last_to(MIETEK)["text"]
@@ -587,14 +588,16 @@ def test_report_lists_only_leads_within_radius_nearest_first_with_distance(bot, 
     assert "📏 &lt;1 km" in text and "📏 6 km" in text
 
 
-def test_hot_leads_stay_on_top_within_radius(bot, api, repo):
+def test_large_scale_does_not_jump_ahead_of_nearer_buildings(bot, api, repo):
+    """Większa inwestycja nie jest lepsza dla każdej firmy – skala nie wyprzedza bliższych budów."""
     activate(bot, api)
     repo.upsert(lead("TUZ/1", nazwa_zamierzenia="Dom tuż obok", **NEAREST))
-    repo.upsert(lead("HOT/1", nazwa_zamierzenia="Blok HOT", priorytet="hot", punkty=9, **NEAR))
+    repo.upsert(lead("HOT/1", nazwa_zamierzenia="Duży blok dalej", priorytet="hot", punkty=9,
+                     lat=53.885, lon=20.48, miejscowosc="Barczewo"))  # ok. 12 km (promień 15 km)
     bot.handle_update(pin(MIETEK, *BASE))
     bot.handle_update(message(MIETEK, "📊 Co nowego?"))
     text = api.last_to(MIETEK)["text"]
-    assert text.index("Blok HOT") < text.index("Dom tuż obok")
+    assert text.index("Dom tuż obok") < text.index("Duży blok dalej")
 
 
 def test_radius_is_changed_with_one_click(bot, api, repo):
@@ -865,9 +868,11 @@ def test_card_buttons_show_both_marks(bot, api, repo):
     seed_leads(repo)
     nr = repo.get("WAW/1").nr
     bot.handle_update(click(MIETEK, f"s1:{nr}"))
-    bot.handle_update(click(MIETEK, f"r1:{nr}"))
-    labels = dict(buttons(api.edits[-1]["markup"]))
-    assert labels["⭐ Zapisany ✓"] == f"s0:{nr}" and labels["✅ Przejrzany ✓"] == f"r0:{nr}"
+    assert dict(buttons(api.edits[-1]["markup"]))["⭐ Zapisany ✓"] == f"s0:{nr}"
+    bot.handle_update(click(MIETEK, f"r1:{nr}"))  # „✅ Przejrzane” jest pod „⋯ Więcej” – tam zostajemy
+    assert dict(buttons(api.edits[-1]["markup"]))["✅ Przejrzany ✓"] == f"r0:{nr}"
+    bot.handle_update(click(MIETEK, f"bk:{nr}"))
+    assert dict(buttons(api.edits[-1]["markup"]))["⭐ Zapisany ✓"] == f"s0:{nr}"
 
 
 def test_hidden_investment_leaves_the_report(bot, api, repo):

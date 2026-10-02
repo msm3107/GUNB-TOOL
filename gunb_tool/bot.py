@@ -27,6 +27,7 @@ from typing import Any, Callable, Sequence
 from . import bot_ui as ui
 from .bot_store import (SETUP_DONE, SETUP_STEPS, BotStore, BotUser, Send, UserFilters, investor_key,
                         watch_match)
+from .ranking import match_reasons, ranked, stage_note
 from .bot_ui import BOT_COMMANDS, MENU_BUTTONS
 from .clock import WARSAW, at_local_time, local
 from .config import BotConfig
@@ -43,8 +44,6 @@ from .telegram_api import TelegramApiError
 log = logging.getLogger(__name__)
 
 __all__ = ["LeadBot", "JobsWorker", "MENU_BUTTONS", "BOT_COMMANDS"]
-
-_PRIORITY_RANK = {"hot": 0, "normal": 1, "low": 2}
 
 FETCH_RETRY_JOB = "pobieranie_ponow"
 """Termin ponowienia nieudanego pobierania (tabela ``zadania``; brak terminu = nic do ponowienia)."""
@@ -125,7 +124,7 @@ COMMAND_ACTIONS: dict[str, str] = {
     "/uzytkownicy": "_show_users",
 }
 ACTION_LEVELS: dict[str, int] = {
-    "_show_news": FULL, "_show_saved": FULL, "_show_watchlist": FULL,
+    "_show_news": FULL, "_show_saved": NONE, "_show_watchlist": FULL,
     "_show_filters": SETUP, "_show_nearby": SETUP, "_show_trade": SETUP, "_show_mode": SETUP, "_toggle_hot": SETUP,
     "_cancel_input": NONE, "_show_help": NONE, "_show_account": NONE, "_show_users": NONE, "_show_settings": NONE,
 }
@@ -921,6 +920,9 @@ class LeadBot:
         self._send(user.chat_id, text, markup)
 
     def _show_saved(self, user: BotUser, page: int = 0) -> None:
+        if self._level(user) < FULL and not user.ever_had_access:
+            self._send_gate(user)
+            return
         text, markup = self._saved_page(user, page)
         self._send(user.chat_id, text, markup)
 
@@ -1037,20 +1039,71 @@ class LeadBot:
     # === Kliknięcia: lead ======================================================================
 
     def _cb_open(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """Numer z listy – karta inwestycji. Bez dostępu tylko własna praca (zapis, notatka, wynik,
+        przypomnienie) w trybie archiwum: stare przyciski i numery nie otwierają nowych danych."""
         inv = self._lead(arg)
         if inv is None:
             return "Nie znaleziono inwestycji"
+        if self._level(user) < FULL:
+            if not (user.ever_had_access and self.store.owns_work(user.chat_id, inv.id_sprawy)):
+                return NO_ACCESS_TOAST
+            self._send(user.chat_id, *self._archive_card(user, inv))
+            return None
         self._send_card(user, inv)
         self.store.record_event(user.chat_id, "szczegoly", inv.id_sprawy)
         return None
 
-    def _cb_flag(self, user: BotUser, arg: str, message_id: int, *, toast: str, **flag: bool) -> str:
-        """Ustawia jedno oznaczenie na wartość zapisaną w przycisku (idempotentnie) i odświeża przyciski."""
+    def _cb_details(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """``d:<nr>`` – szczegóły z rejestru w tej samej wiadomości; ``d:<nr>:0`` – z powrotem pierwszy poziom."""
+        number, _, mode = arg.partition(":")
+        inv = self._lead(number)
+        if inv is None:
+            return "Nie znaleziono inwestycji"
+        text, markup = self._card(user, inv, details=mode != "0")
+        self.api.edit_message_text(user.chat_id, message_id, text, markup)
+        return None
+
+    def _cb_outcome(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """``w:<nr>`` – wybór wyniku pracy; ``w:<nr>:<kod>`` – ustaw (``0`` – wyczyść); „❌ Niepasująca” pyta o powód."""
+        number, _, code = arg.partition(":")
+        inv = self._lead(number)
+        if inv is None:
+            return "Nie znaleziono inwestycji"
+        if not code:
+            self._refresh_keyboard(user, inv, message_id, view="outcome")
+            return None
+        if code != "0" and code not in ui.OUTCOME_CODES:
+            return None
+        wynik = None if code == "0" else ui.OUTCOME_CODES[code]
+        if self.store.set_outcome(user.chat_id, inv.id_sprawy, wynik=wynik):
+            self.store.record_event(user.chat_id, "wynik", inv.id_sprawy, wynik or "wyczyszczony")
+        if wynik == "niepasujaca":
+            self._refresh_keyboard(user, inv, message_id, view="reason")
+            return "❌ Niepasująca – dlaczego? (jedno kliknięcie, możesz pominąć)"
+        self._refresh_keyboard(user, inv, message_id)
+        return f"📋 Zapisano: {ui.OUTCOME_LABELS[wynik]}" if wynik else "📋 Wynik wyczyszczony"
+
+    def _cb_reason(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        """``wp:<nr>:<kod>`` – powód „niepasującej” (zły obszar, rodzaj, moment, brak działania, błędne dane)."""
+        number, _, code = arg.partition(":")
+        inv = self._lead(number)
+        if inv is None or code not in ui.REASON_CODES:
+            return None
+        reason = ui.REASON_CODES[code]
+        if self.store.set_outcome(user.chat_id, inv.id_sprawy, wynik="niepasujaca", powod=reason):
+            self.store.record_event(user.chat_id, "wynik_powod", inv.id_sprawy, reason)
+        self._refresh_keyboard(user, inv, message_id)
+        return "Dzięki – to pomaga dopasować kolejne inwestycje"
+
+    def _cb_flag(self, user: BotUser, arg: str, message_id: int, *, toast: str, view: str = "main",
+                 **flag: bool) -> str:
+        """Ustawia jedno oznaczenie na wartość zapisaną w przycisku (idempotentnie) i odświeża przyciski
+        widoku, w którym ten przycisk jest (``view``)."""
         inv = self._lead(arg)
         if inv is None:
             return "Nie znaleziono inwestycji"
         self.store.set_lead_flags(user.chat_id, inv.id_sprawy, **flag)
-        self._refresh_keyboard(user, inv, message_id)
+        self._refresh_keyboard(user, inv, message_id, view=view)
         return toast
 
     def _cb_save(self, user: BotUser, arg: str, message_id: int) -> str:
@@ -1065,10 +1118,11 @@ class LeadBot:
 
     def _cb_reviewed(self, user: BotUser, arg: str, message_id: int) -> str:
         """``r1:``/``r:`` – przejrzane; zapisanie zostaje."""
-        return self._cb_flag(user, arg, message_id, reviewed=True, toast="✅ Oznaczono jako przejrzane")
+        return self._cb_flag(user, arg, message_id, reviewed=True, view="more", toast="✅ Oznaczono jako przejrzane")
 
     def _cb_unreviewed(self, user: BotUser, arg: str, message_id: int) -> str:
-        return self._cb_flag(user, arg, message_id, reviewed=False, toast="Zdjęto oznaczenie „przejrzane”")
+        return self._cb_flag(user, arg, message_id, reviewed=False, view="more",
+                             toast="Zdjęto oznaczenie „przejrzane”")
 
     def _cb_hide(self, user: BotUser, arg: str, message_id: int) -> str:
         inv = self._lead(arg)
@@ -1171,12 +1225,15 @@ class LeadBot:
         return None
 
     def _cb_feedback(self, user: BotUser, arg: str, message_id: int) -> str | None:
-        """👍 / 👎 pod „⋯ Więcej” – ocena trafności dla pilotażu (bez wpływu na to, co bot wysyła)."""
+        """👍 / 👎 pod „⋯ Więcej” – jedna ocena na osobę i inwestycję (ponowione kliknięcie niczego nie dolicza)."""
         number, _, value = arg.partition(":")
         inv = self._lead(number)
         if inv is None or value not in ("0", "1"):
             return None
-        self.store.record_event(user.chat_id, "przydatne" if value == "1" else "nieprzydatne", inv.id_sprawy)
+        if self.store.set_outcome(user.chat_id, inv.id_sprawy, ocena=1 if value == "1" else -1):
+            self.store.record_event(user.chat_id, "przydatne" if value == "1" else "nieprzydatne", inv.id_sprawy)
+            if message_id is not None:
+                self._safely(lambda: self._refresh_keyboard(user, inv, message_id, view="more"))
         return "Dzięki – to pomaga nam ulepszać Żółtą Tablicę"
 
     # === Kliknięcia: filtry, tryb, listy ===========================================================
@@ -1299,6 +1356,8 @@ class LeadBot:
         return f"⏰ Zapisano: {ui.MODE_LABELS[arg]}"
 
     def _cb_saved_page(self, user: BotUser, arg: str, message_id: int) -> str | None:
+        if self._level(user) < FULL and not user.ever_had_access:
+            return NO_ACCESS_TOAST
         page = int(arg) if arg.isdigit() else 0
         text, markup = self._saved_page(user, page)
         self.api.edit_message_text(user.chat_id, message_id, text, markup)
@@ -1455,9 +1514,8 @@ class LeadBot:
         candidates = self.store.candidates(user.chat_id, self._window_start(user))
         if leads is None:
             leads = [inv for inv in candidates if self._wanted(user, inv)]
-        nearest = user.filtry.distance_km if user.filtry.radius_active else None
         distance = user.filtry.distance_km if user.filtry.baza else None
-        leads = _ranked(leads, nearest)
+        leads = ranked(user, leads, local(self._now()).date())
         chosen = {inv.id_sprawy for inv in leads}
         skipped = [inv for inv in candidates if inv.id_sprawy not in chosen]
         now_iso = _utc_iso(self.repo.now())
@@ -1497,7 +1555,7 @@ class LeadBot:
         """Wszystkie inwestycje z ostatnich ``recent_days`` dni pasujące do filtrów (także już wysłane)."""
         date_from = (local(self._now()).date() - timedelta(days=self.settings.recent_days)).isoformat()
         matches = [inv for inv in self.store.recent_leads(user.chat_id, date_from) if self._wanted(user, inv)]
-        return _ranked(matches, user.filtry.distance_km if user.filtry.radius_active else None)
+        return ranked(user, matches, local(self._now()).date())
 
     def _history_screen(self, user: BotUser, page: int, *, head: Sequence[str] = ()) -> tuple[str, dict | None]:
         """Strona przeglądu historii; nic nie oznacza jako wysłane (kolejka nowych zostaje nietknięta)."""
@@ -1556,7 +1614,7 @@ class LeadBot:
                 self._send(user.chat_id, ui.stage_none_text(trade))
             return False
         filters = user.filtry
-        due = _ranked(due, filters.distance_km if filters.radius_active else None)
+        due = ranked(user, due, today)
         distance = filters.distance_km if filters.baza else None
         shown = min(len(due), self.settings.max_leads_in_report)
         text, markup = ui.stage_reminder(trade, due[:shown], len(due), distance)
@@ -1622,20 +1680,33 @@ class LeadBot:
     def _lead(self, arg: str) -> Investment | None:
         return self.repo.get_by_nr(int(arg)) if arg.isdigit() else None
 
-    def _card(self, user: BotUser, inv: Investment, header: tuple[str, str, str] | None = None) -> tuple[str, dict]:
-        """Karta inwestycji; odległość i prywatna notatka mają zarezerwowane miejsce (HTML nigdy nie jest cięty)."""
-        extras = ""
+    def _card(self, user: BotUser, inv: Investment, header: tuple[str, str, str] | None = None, *,
+              details: bool = False) -> tuple[str, dict]:
+        """Karta inwestycji: fakty z rejestru, dlaczego ją widać, szacunki i prywatna notatka (tylko tej osoby)."""
+        today = local(self._now()).date()
+        estimates = []
         km = user.filtry.distance_km(inv)
         if km is not None:
-            extras += f"\n📏 {escape_html(ui.distance_label(km))} w linii prostej od Twojej bazy"
-        note = self.store.note(user.chat_id, inv.id_sprawy)
-        if note:  # prywatna – tylko w karcie tej osoby
-            extras += ui.note_line(note)
-        message = self.formatter.telegram(inv, self.repo.last_status_change(inv.id_sprawy), header=header,
-                                          limit=TELEGRAM_LIMIT - len(extras))
-        return message.text + extras, self._keyboard(user, inv)
+            estimates.append(f"📏 {ui.distance_label(km)} w linii prostej od Twojej bazy")
+        estimates += [line for line in (ui.scale_line(inv), stage_note(get_trade(user.branza), inv, today)) if line]
+        change = self.repo.last_status_change(inv.id_sprawy)
+        status_change = (change.stary_status.replace("_", " "), change.nowy_status.replace("_", " ")) \
+            if change is not None and change.stary_status else None
+        text = ui.lead_card(inv, why=match_reasons(user, inv, self._place_names(), today), estimates=estimates,
+                            note=self.store.note(user.chat_id, inv.id_sprawy), header=header,
+                            status_change=status_change, details=details)
+        return text, self._keyboard(user, inv, details=details)
 
-    def _keyboard(self, user: BotUser, inv: Investment, view: str = "main") -> dict:
+    def _archive_card(self, user: BotUser, inv: Investment) -> tuple[str, dict]:
+        """Karta po końcu dostępu – tylko to, co osoba sama zapisała; bez szczegółów i bez akcji."""
+        remind_at = self.store.reminder(user.chat_id, inv.id_sprawy)
+        text = ui.archive_card(inv, flags=self.store.lead_flags(user.chat_id, inv.id_sprawy),
+                               outcome=self.store.outcome(user.chat_id, inv.id_sprawy),
+                               note=self.store.note(user.chat_id, inv.id_sprawy),
+                               reminder_on=f"{local(remind_at):%d.%m}" if remind_at else None)
+        return text, ui.archive_keyboard(inv)
+
+    def _keyboard(self, user: BotUser, inv: Investment, view: str = "main", *, details: bool = False) -> dict:
         items = self.store.watchlist(user.chat_id)
         key = investor_key(inv.inwestor)
         remind_at = self.store.reminder(user.chat_id, inv.id_sprawy)
@@ -1646,6 +1717,8 @@ class LeadBot:
             watching_gmina=any(i.rodzaj == "gmina" and i.wartosc == inv.gmina_teryt for i in items),
             reminder_on=f"{local(remind_at):%d.%m}" if remind_at else None,
             has_note=self.store.note(user.chat_id, inv.id_sprawy) is not None,
+            outcome=self.store.outcome(user.chat_id, inv.id_sprawy),
+            details=details,
             view=view,
         )
 
@@ -1675,7 +1748,10 @@ class LeadBot:
     def _saved_page(self, user: BotUser, page: int) -> tuple[str, dict | None]:
         leads = self.store.saved(user.chat_id, limit=ui.SAVED_PAGE_SIZE, offset=page * ui.SAVED_PAGE_SIZE)
         distance = user.filtry.distance_km if user.filtry.baza else None
-        return ui.saved_list(leads, page, self.store.saved_count(user.chat_id), distance)
+        text, markup = ui.saved_list(leads, page, self.store.saved_count(user.chat_id), distance)
+        if self._level(user) < FULL:  # po końcu dostępu: własna praca do wglądu, bez nowych danych
+            text = ui.archive_saved_head() + "\n\n" + text
+        return text, markup
 
     def _place_names(self) -> dict[str, str]:
         return dict(self.store.place_options(self.powiat_codes))
@@ -1813,27 +1889,18 @@ _CALLBACKS: dict[str, Callable[..., str | None]] = {
     "mx": LeadBot._cb_more,
     "bk": LeadBot._cb_back,
     "fu": LeadBot._cb_feedback,
+    "d": LeadBot._cb_details,
+    "w": LeadBot._cb_outcome,
+    "wp": LeadBot._cb_reason,
 }
 _CALLBACK_LEVELS: dict[str, int] = {
     **{prefix: SETUP for prefix in ("f", "fp", "fpr", "mz", "fr", "fb", "ft", "fv", "fi", "m", "ob", "oa")},
     "ts": NONE,
     "st": NONE,  # ekran ustawień sam sprawdza poziom dla każdego przycisku
+    "o": NONE,  # bez dostępu: tylko własna praca w trybie archiwum (sprawdza handler)
+    "sv": NONE,
 }
 """Poziom uprawnień przycisków (domyślnie pełny dostęp – inwestycje, zapisane, obserwowane)."""
-
-
-def _ranked(leads: Sequence[Investment], nearest: Callable[[Investment], float | None] | None = None) -> list[Investment]:
-    """Najpierw 🔥 HOT i więcej punktów, w obrębie tego samego – najnowsze.
-
-    Z „📍 Blisko mnie” (``nearest`` = odległość od bazy): najpierw 🔥 HOT, a w każdej grupie od najbliższych.
-    """
-    newest_first = sorted(leads, key=lambda i: i.data_aktualizacji or "", reverse=True)
-    if nearest is not None:
-        def by_distance(inv: Investment) -> tuple[int, float]:
-            km = nearest(inv)
-            return _PRIORITY_RANK.get(inv.priorytet or "", 3), km if km is not None else float("inf")
-        return sorted(newest_first, key=by_distance)
-    return sorted(newest_first, key=lambda i: (_PRIORITY_RANK.get(i.priorytet or "", 3), -(i.punkty or 0)))
 
 
 def _is_chat_id(text: str) -> bool:

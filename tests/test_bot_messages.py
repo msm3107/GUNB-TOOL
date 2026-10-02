@@ -68,7 +68,7 @@ def test_card_keeps_the_approximate_location_note(bot, api, repo):
     assert "lokalizacja przybliżona – środek obrębu" in api.last_to(MIETEK)["text"]
 
 
-def test_hot_is_a_scale_estimate_not_a_chance_of_winning(bot, api, repo):
+def test_scale_is_an_estimate_not_a_chance_of_winning(bot, api, repo):
     repo.upsert(lead("HOT/1", priorytet="hot", punkty=10, kubatura=26000.0))
     bot.handle_update(message(MIETEK, "📊 Inwestycje"))
     report = api.last_to(MIETEK)["text"]
@@ -77,8 +77,8 @@ def test_hot_is_a_scale_estimate_not_a_chance_of_winning(bot, api, repo):
     bot.handle_update(message(MIETEK, "❓ Pomoc"))
     help_text = api.last_to(MIETEK)["text"]
 
-    assert card.startswith("🔥 <b>HOT</b>") and "Skala (szacunek)" in card
-    assert "1 to 🔥 HOT (duża skala)." in report
+    assert "🏗️ Skala: duża (26 000 m³)" in card and "📐 <b>Szacunki</b> (orientacyjne)" in card
+    assert "Dużej skali (szacunek): 1." in report and "HOT" not in report + card
     assert "szacunek skali" in help_text and "nie mówi, czy zdobędziesz zlecenie" in help_text
 
 

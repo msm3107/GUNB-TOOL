@@ -9,13 +9,14 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Sequence
 
-from .bot_store import BotUser, JobStatus, LeadFlags, Send, UserFilters, WatchItem
+from .bot_store import BotUser, JobStatus, LeadFlags, Outcome, Send, UserFilters, WatchItem
 from .clock import local
 from .config import BotConfig
-from .exporter import CATEGORY_ICONS, escape_html
-from .models import Investment
-from .scoring import HOT
+from .exporter import CATEGORY_ICONS, TELEGRAM_LIMIT, escape_html
+from .models import BUILDING_CATEGORIES, Investment, Status
+from .scoring import score_investment
 from .stages import TRADES, Trade, get_trade
+from .text import normalize_text
 
 Markup = dict[str, Any]
 Distance = Callable[[Investment], float | None]
@@ -107,13 +108,14 @@ def _help_body(settings: BotConfig) -> str:
         "⚙️ <b>Ustawienia</b> – obszar i rodzaj budynków, branża, obserwowani inwestorzy i gminy, "
         f"godziny raportów (rano {settings.morning_time}, wieczorem {settings.evening_time} albo od razu), konto\n\n"
         "<b>Co oznaczają oznaczenia</b>\n"
-        "🔥 HOT / 🟡 NORMAL / ⚪ LOW – szacunek skali inwestycji według prostych reguł (kubatura, rodzaj "
-        "budynku, liczba budynków); nie mówi, czy zdobędziesz zlecenie.\n"
+        "🏗️ Skala: duża / średnia / mała – szacunek skali inwestycji według prostych reguł (kubatura, rodzaj "
+        "budynku, liczba budynków); nie mówi, czy zdobędziesz zlecenie, i nie wpływa na kolejność listy.\n"
         "📏 Odległość od Twojej bazy liczę w linii prostej – droga bywa dłuższa.\n"
         "🧰 Przypomnienia o etapie budowy to szacunek na podstawie daty decyzji – rzeczywisty etap wymaga "
         "sprawdzenia na miejscu.\n"
         "🗺️ „Lokalizacja przybliżona” – rejestr nie podał dokładnej działki, pokazuję środek obrębu.\n"
-        "💼 Inwestorów prywatnych rejestr nie ujawnia; bot nie ma ich danych kontaktowych."
+        "💼 Gdy rejestr nie podaje inwestora, bot nie zgaduje, kto to jest; nazwy z rejestru nie są "
+        "weryfikowane. Bot nie ma danych kontaktowych inwestorów."
     )
 
 
@@ -444,7 +446,7 @@ def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConf
         f"🏗️ Rodzaj: {escape_html(', '.join(categories)) if categories else 'wszystkie'}",
         f"📦 Kubatura: {_volume_label(f.min_kubatura)}",
         f"💼 Inwestor: {_investor_label(f.inwestor)}",
-        f"🔥 Tylko HOT: {'tak' if user.tylko_hot else 'nie'}",
+        f"🏗️ Tylko duża skala: {'tak' if user.tylko_hot else 'nie'}",
         f"⏰ Wysyłka: {_mode_label(user.tryb, settings)}",
         f"🧰 Branża: {_trade_label(get_trade(user.branza))}",
         "",
@@ -583,11 +585,12 @@ def volume_picker(filters: UserFilters) -> tuple[str, Markup]:
 def investor_picker(filters: UserFilters) -> tuple[str, Markup]:
     rows = [
         [(("✅ " if not filters.inwestor else "") + "Dowolny", "fi:any")],
-        [(("✅ " if filters.inwestor == "firma" else "") + "Tylko firmy (jawny inwestor)", "fi:firm")],
+        [(("✅ " if filters.inwestor == "firma" else "") + "Tylko z nazwą inwestora", "fi:firm")],
         [("✏️ Wpisz nazwę inwestora", "fi:txt")],
         [("◀️ Wróć", "f:show")],
     ]
-    text = ("💼 <b>Inwestor</b>\nOsoby prywatne są w rejestrze ukryte. „Tylko firmy” = deweloperzy, spółki, gminy.")
+    text = ("💼 <b>Inwestor</b>\nRejestr podaje nazwę inwestora tylko przy części spraw (zwykle spółki, gminy). "
+            "Gdy jej nie ma, nie wiadomo, kto inwestuje. Nazwy pochodzą z rejestru i nie są weryfikowane.")
     return text, inline(rows)
 
 
@@ -616,13 +619,199 @@ def mode_screen(user: BotUser, settings: BotConfig) -> tuple[str, Markup]:
 REMINDER_DAYS: tuple[int, ...] = (7, 14, 30)
 NOTE_LIMIT = 300
 
+CATEGORY_SINGULAR: dict[str, str] = {
+    "mieszkaniowa-jednorodzinna": "Dom jednorodzinny",
+    "mieszkaniowa-wielorodzinna": "Budynek wielorodzinny",
+    "mieszana": "Budynek mieszkalno-usługowy",
+    "komercyjna": "Obiekt komercyjny (hala, sklep, biuro)",
+    "publiczna": "Obiekt publiczny",
+    "rolnicza": "Budynek rolniczy",
+    "inna": "Inny obiekt",
+}
+SCALE_LABELS: dict[str, str] = {"hot": "duża", "normal": "średnia", "low": "mała"}
+"""Skala inwestycji słowami (w danych zostają kody hot / normal / low) – to szacunek, nie gotowość do zakupu."""
+OUTCOME_LABELS: dict[str, str] = {
+    "do_sprawdzenia": "🔍 Do sprawdzenia", "sprawdzona": "✔️ Sprawdzona", "rozmowa": "💬 Rozmowa",
+    "oferta": "📄 Złożona oferta", "niepasujaca": "❌ Niepasująca",
+}
+OUTCOME_CODES: dict[str, str] = {"s": "do_sprawdzenia", "c": "sprawdzona", "r": "rozmowa", "o": "oferta",
+                                 "n": "niepasujaca"}
+REASON_LABELS: dict[str, str] = {
+    "obszar": "📍 Zły obszar", "rodzaj": "🏗️ Zły rodzaj", "moment": "⏳ Nieodpowiedni moment",
+    "brak_dzialania": "🚫 Nie mogę nic z tym zrobić", "bledne_dane": "⚠️ Błędne dane",
+}
+REASON_CODES: dict[str, str] = {"a": "obszar", "t": "rodzaj", "m": "moment", "x": "brak_dzialania", "e": "bledne_dane"}
+_WORKS = (("budowa nowego", "nowa budowa"), ("rozbudow", "rozbudowa"), ("nadbudow", "nadbudowa"),
+          ("przebudow", "przebudowa"))
+_SCORE_REASONS = {"inwestor firmowy": "nazwa inwestora w rejestrze"}
+
+
+def lead_card(inv: Investment, *, why: Sequence[str] = (), estimates: Sequence[str] = (), note: str | None = None,
+              header: tuple[str, str, str] | None = None, status_change: tuple[str, str] | None = None,
+              details: bool = False, limit: int = TELEGRAM_LIMIT) -> str:
+    """Karta inwestycji: fakty z rejestru, „dlaczego to widzisz”, szacunki i własna notatka – osobno.
+
+    Pierwszy poziom: rodzaj, opis, miejsce, data, dokładność lokalizacji. ``details`` – zamiast tego pełne
+    szczegóły urzędowe (status, kategoria, inwestor, projektant, organ, działka, numer sprawy). HTML nigdy
+    nie jest cięty: przy długich polach skracane są wartości przed escapowaniem.
+    """
+    text = ""
+    for description, field in ((600, 300), (240, 120), (80, 50)):
+        text = _render_card(inv, why, estimates, note, header, status_change, details, description, field)
+        if len(text) <= limit:
+            break
+    return text
+
+
+def _render_card(inv: Investment, why: Sequence[str], estimates: Sequence[str], note: str | None,
+                 header: tuple[str, str, str] | None, status_change: tuple[str, str] | None, details: bool,
+                 description: int, field: int) -> str:
+    lines = _card_head(inv, header, description if details else min(description, 240))
+    if status_change:
+        lines.append(escape_html(f"🔄 Zmiana statusu: {status_change[0]} → {status_change[1]}"))
+    if details:
+        lines += ["", "📋 <b>Szczegóły z rejestru GUNB</b>"] + [escape_html(_short(line, field + 40))
+                                                             for line in _official_lines(inv, field)]
+        lines.append("ℹ️ Dane z publicznego rejestru – bot ich nie weryfikuje.")
+    else:
+        lines += ["", "📋 <b>Z rejestru GUNB</b>", escape_html(_short(_place_line(inv), field)),
+                  escape_html(_date_line(inv)), escape_html(_location_line(inv))]
+        if why:
+            lines += ["", "🎯 <b>Dlaczego to widzisz:</b> " + escape_html(_short(" · ".join(why), field))]
+        if estimates:
+            lines += ["", "📐 <b>Szacunki</b> (orientacyjne)"] + [escape_html(line) for line in estimates]
+    if note:
+        lines += ["", "👤 <b>Twoje</b>", note_line(note).strip()]
+    return "\n".join(lines)
+
+
+def _card_head(inv: Investment, header: tuple[str, str, str] | None, description: int) -> list[str]:
+    lines = []
+    if header is not None:
+        icon, title, detail = header
+        lines.append(f"{icon} <b>{escape_html(title)}</b> · {escape_html(detail)}")
+    kind = CATEGORY_SINGULAR.get(inv.kategoria or "inna", "Inny obiekt")
+    source = "pozwolenie na budowę" if inv.zrodlo == "pozwolenia" else "zgłoszenie budowy"
+    work = next((label for prefix, label in _WORKS if normalize_text(inv.rodzaj_robot).startswith(prefix)), None)
+    icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+    lines.append(f"{icon} <b>{escape_html(kind)}</b> · {source}" + (f" · {work}" if work else ""))
+    lines.append(f"<b>{escape_html(_short(inv.nazwa_zamierzenia or '(brak opisu w rejestrze)', description))}</b>")
+    return lines
+
+
+def _place_line(inv: Investment) -> str:
+    place = inv.adres_opisowy or inv.miejscowosc or "brak adresu w rejestrze"
+    gmina = f" (gm. {inv.gmina})" if inv.gmina and normalize_text(inv.gmina) not in normalize_text(place) else ""
+    return f"📍 {place}{gmina}"
+
+
+def _date_line(inv: Investment) -> str:
+    if inv.data_decyzji:
+        return f"📅 Decyzja: {_pl_date(inv.data_decyzji)}"
+    if inv.data_wplywu:
+        return f"📅 {'Zgłoszenie' if inv.zrodlo == 'zgloszenia' else 'Wniosek'}: wpływ {_pl_date(inv.data_wplywu)}"
+    return "📅 Data: brak w rejestrze"
+
+
+def _location_line(inv: Investment) -> str:
+    if inv.precyzja_geo == "obreb":
+        return "🗺️ Mapa: lokalizacja przybliżona – środek obrębu"
+    if inv.precyzja_geo == "dzialka":
+        return "🗺️ Mapa: lokalizacja dokładna – działka"
+    if inv.lat is None and not inv.google_maps_url:
+        return "🗺️ Mapa: brak – rejestr nie podał działki, którą da się odnaleźć"
+    return "🗺️ Mapa: punkt z danych ULDK (dokładność nieznana)"
+
+
+def investor_label(inv: Investment) -> str:
+    """Inwestor bez zgadywania: brak nazwy to brak informacji (nie „osoba prywatna”), nazwa – bez weryfikacji."""
+    if not inv.inwestor:
+        return "brak informacji w rejestrze"
+    return f"{inv.inwestor} (wg rejestru, bez weryfikacji)"
+
+
+def scale_line(inv: Investment) -> str | None:
+    """„🏗️ Skala: duża (26 000 m³)” – szacunek skali (nie gotowości do zakupu); ``None`` bez oceny."""
+    label = SCALE_LABELS.get(inv.priorytet or "")
+    if label is None:
+        return None
+    basis = f"{_thousands(inv.kubatura)} m³" if inv.kubatura else "bez kubatury w rejestrze – z rodzaju i opisu"
+    return f"🏗️ Skala: {label} ({basis})"
+
+
+def _official_lines(inv: Investment, field: int) -> list[str]:
+    try:
+        status = Status(inv.status).label
+    except ValueError:
+        status = inv.status
+    lines = [f"📌 Status: {status}"]
+    if inv.kategoria_obiektu:
+        description = BUILDING_CATEGORIES.get(inv.kategoria_obiektu)
+        lines.append(f"🏷️ Kategoria obiektu: kat. {inv.kategoria_obiektu}" + (f" – {description}" if description else ""))
+    if inv.rodzaj_robot:
+        lines.append(f"🔨 Rodzaj robót: {inv.rodzaj_robot}")
+    if inv.adres_opisowy:
+        lines.append(f"📍 Adres: {inv.adres_opisowy}")
+    area = ", ".join(p for p in (f"gm. {inv.gmina}" if inv.gmina else None, inv.powiat) if p)
+    if area:
+        lines.append(f"🗺️ Gmina i powiat: {area}")
+    lines.append(f"💼 Inwestor: {_short(investor_label(inv), field + 40)}")
+    designer = ", ".join(dict.fromkeys(p for p in (inv.projektant, inv.pracownia) if p))
+    if designer:
+        lines.append(f"📐 Projektant: {designer}" + (f" (upr. {inv.projektant_uprawnienia})"
+                                                    if inv.projektant_uprawnienia else ""))
+    if inv.kubatura:
+        lines.append(f"📦 Kubatura: {_thousands(inv.kubatura)} m³")
+    dates = " · ".join(p for p in (f"decyzja {_pl_date(inv.data_decyzji)}" if inv.data_decyzji else None,
+                                   f"wpływ {_pl_date(inv.data_wplywu)}" if inv.data_wplywu else None) if p)
+    if dates:
+        lines.append(f"📅 Daty: {dates}")
+    if inv.organ:
+        lines.append(f"🏛️ Organ: {inv.organ}")
+    if inv.teryt_dzialki:
+        extra = len(inv.dzialki) - 1
+        lines.append(f"🧩 Działka: {inv.teryt_dzialki}" + (f" (+{extra})" if extra > 0 else ""))
+    lines.append(f"🔖 Sprawa: {inv.id_sprawy}")
+    if inv.priorytet in SCALE_LABELS:
+        score = score_investment(inv)
+        reasons = ", ".join(_SCORE_REASONS.get(reason, reason) for reason in score.reasons[:4])
+        lines.append(f"🏗️ Skala (szacunek): {SCALE_LABELS[inv.priorytet]}" + (f" – {reasons}" if reasons else ""))
+    return lines
+
+
+def archive_card(inv: Investment, *, flags: LeadFlags, outcome: Outcome, note: str | None,
+                 reminder_on: str | None) -> str:
+    """Karta po końcu dostępu: tylko to, co osoba już widziała i sama zapisała – bez szczegółów i nowych danych."""
+    lines = ["🗄️ <b>Twoja zapisana praca</b> – dostęp nieaktywny"] + _card_head(inv, None, 200)
+    lines += [escape_html(_short(_place_line(inv), 150)), escape_html(_date_line(inv))]
+    own = [part for part in (
+        "⭐ zapisana" if flags.saved else None,
+        f"📋 wynik: {OUTCOME_LABELS[outcome.wynik].split(' ', 1)[1].lower()}" if outcome.wynik else None,
+        f"⏰ przypomnienie {reminder_on}" if reminder_on else None,
+    ) if part]
+    if own or note:
+        lines += ["", "👤 <b>Twoje</b>"] + ([" · ".join(own)] if own else []) + ([note_line(note).strip()] if note else [])
+    lines += ["", "Nowe inwestycje i szczegóły z rejestru zobaczysz po przedłużeniu dostępu."]
+    return "\n".join(lines)
+
+
+def archive_keyboard(inv: Investment) -> Markup:
+    rows: list[list[dict[str, str]]] = []
+    if inv.google_maps_url:
+        rows.append([{"text": "📍 Mapa", "url": inv.google_maps_url}])
+    rows += inline([[("💳 Przedłuż dostęp", "i:oferta")]])["inline_keyboard"]
+    return {"inline_keyboard": rows}
+
 
 def lead_keyboard(inv: Investment, *, flags: LeadFlags, watching_investor: bool, watching_gmina: bool,
-                  reminder_on: str | None = None, has_note: bool = False, view: str = "main") -> Markup:
-    """Przyciski pod inwestycją; każdy niesie docelowy stan (``s1``/``s0``), więc ponowione kliknięcie nic nie psuje.
+                  reminder_on: str | None = None, has_note: bool = False, outcome: Outcome = Outcome(),
+                  details: bool = False, view: str = "main") -> Markup:
+    """Przyciski pod inwestycją; każdy niesie docelowy stan (``s1``/``s0``, ``w:<nr>:r``), więc ponowione
+    kliknięcie nic nie psuje.
 
-    Widoki: ``main`` (oznaczenia, ⏰ Przypomnij, 📝 Notatka, ⋯ Więcej), ``remind`` (7/14/30 dni),
-    ``note`` (zmień/usuń notatkę) i ``more`` (obserwowanie, 👍/👎).
+    Widoki: ``main`` (📍 Mapa, ⭐ Zapisz, ⏰ Przypomnij, 📝 Notatka, 📋 Wynik, 🔽 Szczegóły, ⋯ Więcej),
+    ``remind`` (7/14/30 dni), ``note`` (zmień/usuń notatkę), ``more`` (✅ przejrzane, 🗑️ ukryj, obserwowanie,
+    👍/👎), ``outcome`` (wynik pracy) i ``reason`` (dlaczego niepasująca).
     """
     nr = inv.nr
     back = [("◀️ Wróć", f"bk:{nr}")]
@@ -632,27 +821,41 @@ def lead_keyboard(inv: Investment, *, flags: LeadFlags, watching_investor: bool,
         return inline(rows)
     if view == "note":
         return inline([[("✏️ Zmień notatkę", f"nt:{nr}:e"), ("🗑️ Usuń", f"nt:{nr}:d")], back])
+    if view == "outcome":
+        rows = [[(label + (" ✓" if outcome.wynik == key else ""), f"w:{nr}:{code}")]
+                for code, key in OUTCOME_CODES.items() for label in (OUTCOME_LABELS[key],)]
+        if outcome.wynik:
+            rows.append([("✖️ Wyczyść wynik", f"w:{nr}:0")])
+        return inline(rows + [back])
+    if view == "reason":
+        rows = [[(label + (" ✓" if outcome.powod == key else ""), f"wp:{nr}:{code}")]
+                for code, key in REASON_CODES.items() for label in (REASON_LABELS[key],)]
+        return inline(rows + [[("Pomiń", f"bk:{nr}")]])
     if view == "more":
-        rows = []
+        rows = [[("✅ Przejrzany ✓", f"r0:{nr}") if flags.reviewed else ("✅ Przejrzane", f"r1:{nr}"),
+                 ("🗑️ Ukryj", f"h:{nr}")]]
         if inv.inwestor:
             rows.append([("👀 Obserwujesz inwestora ✓" if watching_investor else "👀 Obserwuj inwestora", f"wi:{nr}")])
         if inv.gmina_teryt:
             rows.append([("📌 Obserwujesz gminę ✓" if watching_gmina else "📌 Obserwuj gminę", f"wg:{nr}")])
-        rows += [[("👍 Przydatne", f"fu:{nr}:1"), ("👎 Nieprzydatne", f"fu:{nr}:0")], back]
-        return inline(rows)
+        thumbs = [("👍 Przydatne" + (" ✓" if outcome.ocena == 1 else ""), f"fu:{nr}:1"),
+                  ("👎 Nieprzydatne" + (" ✓" if outcome.ocena == -1 else ""), f"fu:{nr}:0")]
+        return inline(rows + [thumbs, back])
     keyboard: list[list[dict[str, str]]] = []
     links = [{"text": text, "url": url} for text, url in (("📍 Mapa", inv.google_maps_url),
                                                           ("🏛️ Geoportal", inv.geoportal_url)) if url]
     if links:
         keyboard.append(links)
-    actions = [
-        ("⭐ Zapisany ✓", f"s0:{nr}") if flags.saved else ("⭐ Zapisz", f"s1:{nr}"),
-        ("✅ Przejrzany ✓", f"r0:{nr}") if flags.reviewed else ("✅ Przejrzane", f"r1:{nr}"),
-        ("🗑️ Ukryj", f"h:{nr}"),
+    result = (f"📋 Wynik: {OUTCOME_LABELS[outcome.wynik].split(' ', 1)[1].lower()} ✓" if outcome.wynik
+              else "📋 Wynik")
+    rows = [
+        [("⭐ Zapisany ✓", f"s0:{nr}") if flags.saved else ("⭐ Zapisz", f"s1:{nr}"),
+         (f"⏰ {reminder_on} ✓" if reminder_on else "⏰ Przypomnij", f"pr:{nr}"),
+         ("📝 Notatka ✓" if has_note else "📝 Notatka", f"nt:{nr}")],
+        [(result, f"w:{nr}"), ("🔼 Zwiń" if details else "🔽 Szczegóły", f"d:{nr}:0" if details else f"d:{nr}"),
+         ("⋯ Więcej", f"mx:{nr}")],
     ]
-    personal = [(f"⏰ {reminder_on} ✓" if reminder_on else "⏰ Przypomnij", f"pr:{nr}"),
-                ("📝 Notatka ✓" if has_note else "📝 Notatka", f"nt:{nr}")]
-    keyboard += inline([actions, personal, [("⋯ Więcej", f"mx:{nr}")]])["inline_keyboard"]
+    keyboard += inline(rows)["inline_keyboard"]
     return {"inline_keyboard": keyboard}
 
 
@@ -732,8 +935,8 @@ def hidden_card(inv: Investment) -> tuple[str, Markup]:
 
 def watch_header(item: WatchItem, inv: Investment) -> tuple[str, str, str]:
     if item.rodzaj == "inwestor":
-        return "👀", "WATCHLISTA", "nowa inwestycja obserwowanego inwestora"
-    return "👀", "WATCHLISTA", f"nowa inwestycja w obserwowanej gminie {item.etykieta}"
+        return "👀", "Obserwowane", "nowa inwestycja obserwowanego inwestora"
+    return "👀", "Obserwowane", f"nowa inwestycja w obserwowanej gminie {item.etykieta}"
 
 
 # --- Raport ---------------------------------------------------------------------------------------
@@ -761,7 +964,7 @@ def report(date_label: str, *, total_new: int, leads: Sequence[Investment], matc
     ]
     extra = []
     if hot:
-        extra.append(f"{hot} to 🔥 HOT (duża skala).")
+        extra.append(f"Dużej skali (szacunek): {hot}.")
     if watched:
         extra.append(_watched_text(watched) + ".")
     lines = [f"📊 <b>Raport {date_label}</b>", " ".join(summary)] + ([" ".join(extra)] if extra else [])
@@ -848,8 +1051,14 @@ def filters_summary(user: BotUser, place_names: dict[str, str]) -> str:
     if f.inwestor:
         parts.append(f"💼 {_investor_label(f.inwestor)}")  # już z escapowaniem
     if user.tylko_hot:
-        parts.append("🔥 tylko HOT")
+        parts.append("🏗️ tylko duża skala")
     return "Twoje filtry: " + " · ".join(parts)
+
+
+def archive_saved_head() -> str:
+    """Nad listą zapisanych po końcu dostępu – co jest dostępne i dlaczego nic nowego."""
+    return ("🗄️ <b>Twój dostęp jest nieaktywny</b> – zapisane inwestycje i notatki zostają do wglądu. "
+            "Nowe inwestycje i szczegóły z rejestru zobaczysz po przedłużeniu dostępu (👤 /konto).")
 
 
 def saved_list(leads: Sequence[Investment], page: int, total: int,
@@ -882,8 +1091,8 @@ def watch_screen(items: Sequence[WatchItem]) -> tuple[str, Markup | None]:
 
 def hot_only_text(enabled: bool) -> str:
     if enabled:
-        return "✅ Od teraz wysyłam tylko 🔥 HOT – inwestycje o największej skali (szacunek z kubatury i rodzaju)."
-    return "✅ Wysyłam wszystkie inwestycje pasujące do filtrów (🔥 HOT i pozostałe)."
+        return "✅ Od teraz pokazuję tylko inwestycje dużej skali (szacunek z kubatury i rodzaju budynku)."
+    return "✅ Pokazuję wszystkie inwestycje pasujące do filtrów – bez względu na skalę."
 
 
 def unknown_text() -> str:
@@ -893,7 +1102,7 @@ def unknown_text() -> str:
 # --- Pomocnicze ---------------------------------------------------------------------------------
 
 def _report_entry(position: int, inv: Investment, distance: Distance | None = None) -> str:
-    icon = ("🔥" if inv.priorytet == HOT else "") + CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+    icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
     km = distance(inv) if distance else None
     facts = [p for p in (
         f"📏 {distance_label(km)}" if km is not None else None,
@@ -907,7 +1116,7 @@ def _report_entry(position: int, inv: Investment, distance: Distance | None = No
 
 def _stage_entry(position: int, inv: Investment, distance: Distance | None = None) -> str:
     """Pozycja przypomnienia – z pełną datą pozwolenia (bywa sprzed roku)."""
-    icon = ("🔥" if inv.priorytet == HOT else "") + CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
+    icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
     km = distance(inv) if distance else None
     decided = inv.data_decyzji or inv.data_wplywu
     facts = [p for p in (
@@ -952,7 +1161,7 @@ def _investor_label(value: str | None) -> str:
     if not value:
         return "dowolny"
     if value == "firma":
-        return "tylko firmy"
+        return "tylko z nazwą inwestora"
     return f"zawiera „{escape_html(value)}”"
 
 
@@ -963,6 +1172,11 @@ def _thousands(value: float) -> str:
 def _short(text: str, limit: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _pl_date(iso_date: str) -> str:
+    """„2026-09-21” → „21.09.2026”."""
+    return f"{iso_date[8:10]}.{iso_date[5:7]}.{iso_date[:4]}" if len(iso_date) >= 10 else iso_date
 
 
 def _short_date(iso_date: str | None) -> str | None:

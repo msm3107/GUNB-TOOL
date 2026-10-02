@@ -39,6 +39,7 @@ class Trade:
 
 
 TRADES: tuple[Trade, ...] = (
+    Trade("materialy", "🏪 Materiały budowlane (skład, hurtownia)", "budowy", None),
     Trade("stan_surowy", "🧱 Fundamenty / stan surowy", "fundamentów i murów", None),
     Trade("dach", "🏠 Dach", "dachu", (4, 6)),
     Trade("okna", "🪟 Okna i drzwi", "okien i drzwi", (5, 7)),
