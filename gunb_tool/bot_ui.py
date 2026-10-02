@@ -18,7 +18,7 @@ from .clock import local
 from .config import BotConfig, OfferConfig, format_money
 from .demo import DEMO_LABEL
 from .funnel import OBSERVATION, Cohort
-from .exporter import CATEGORY_ICONS, TELEGRAM_LIMIT, escape_html
+from .exporter import CATEGORY_ICONS, TELEGRAM_LIMIT, escape_html, telegram_length
 from .models import BUILDING_CATEGORIES, Investment, Status
 from .scoring import score_investment
 from .stages import TRADES, Trade, get_trade
@@ -1020,7 +1020,7 @@ def lead_card(inv: Investment, *, why: Sequence[str] = (), estimates: Sequence[s
     text = ""
     for description, field in ((600, 300), (240, 120), (80, 50)):
         text = _render_card(inv, why, estimates, note, header, status_change, details, description, field)
-        if len(text) <= limit:
+        if telegram_length(text) <= limit:
             break
     return text
 
@@ -1640,23 +1640,36 @@ def _short(text: str, limit: int) -> str:
 
 
 def split_lines(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
-    """Długa lista albo raport admina w kilku wiadomościach do ``limit`` znaków (Telegram dłuższych nie przyjmuje).
+    """Długa lista albo raport admina w kilku wiadomościach do ``limit`` (liczonego jak u Telegrama, w UTF-16).
 
     Tnie tylko między liniami – w tych tekstach znacznik HTML nigdy nie przechodzi przez koniec linii. Pojedyncza
     linia dłuższa niż limit (w listach admina się nie zdarza) traci znaczniki i jest skracana przed encją.
     """
     parts: list[str] = []
-    current = ""
+    current, size = "", 0
     for line in text.split("\n"):
-        if len(line) > limit:
-            line = re.sub(r"&[#\w]*$", "", re.sub(r"<[^<>]*>", "", line)[: limit - 1]) + "…"
-        if current and len(current) + 1 + len(line) > limit:
+        if telegram_length(line) > limit:
+            line = re.sub(r"&[#\w]*$", "", _utf16_prefix(re.sub(r"<[^<>]*>", "", line), limit - 1)) + "…"
+        length = telegram_length(line)
+        if current and size + 1 + length > limit:
             parts.append(current)
-            current = line
+            current, size = line, length
+        elif current:
+            current, size = f"{current}\n{line}", size + 1 + length
         else:
-            current = f"{current}\n{line}" if current else line
+            current, size = line, length
     parts.append(current)
     return [part.strip("\n") for part in parts if part.strip()] or [text]
+
+
+def _utf16_prefix(text: str, units: int) -> str:
+    """Najdłuższy początek ``text`` mieszczący się w ``units`` jednostkach UTF-16 (emoji spoza BMP – 2)."""
+    used = 0
+    for index, char in enumerate(text):
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > units:
+            return text[:index]
+    return text
 
 
 def _pl_date(iso_date: str) -> str:

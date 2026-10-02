@@ -973,3 +973,24 @@ def test_no_results_means_really_nothing_matches(bot, api, repo):
     assert "brak pasujących" in text.lower()
     assert "Gdańsk" in text  # pokazane aktywne filtry, bez kasowania
     assert BotStore(repo).get_user(MIETEK).filtry.miejsca == ("Gdańsk",)
+
+
+def test_report_card_and_stage_reminder_with_emoji_fit_telegram(bot, api, repo, clock):
+    """Emoji (np. w notatce) liczą się u Telegrama podwójnie – raport, karta i przypomnienie skracają się do limitu
+    liczonego tak samo, a nie do liczby znaków w Pythonie (atrapa API odrzuca to, co odrzuci Telegram)."""
+    activate(bot, api, MIETEK)
+    BotStore(repo).set_trade(MIETEK, "dach")
+    for n in range(20):
+        repo.upsert(lead(f"E/{n}", nazwa_zamierzenia="🏠" * 300, adres_opisowy="🏗️" * 150, inwestor="🏢" * 300,
+                         projektant="📐" * 300, organ="🏛️" * 150, data_decyzji="2026-05-01",
+                         data_aktualizacji="2026-09-28"))
+    bot.handle_update(message(MIETEK, "📊 Inwestycje"))
+    report = api.last_to(MIETEK)
+    assert report["text"].startswith("📊 <b>Raport")
+    nr = int(report["markup"]["inline_keyboard"][0][0]["callback_data"].split(":")[1])
+    bot.handle_update(click(MIETEK, f"nt:{nr}"))
+    bot.handle_update(message(MIETEK, "👍" * 300))
+    bot.handle_update(click(MIETEK, f"o:{nr}"))
+    bot.handle_update(click(MIETEK, f"d:{nr}"))
+    bot.send_stage_reminder(BotStore(repo).get_user(MIETEK), on_demand=True)
+    assert api.edits and api.last_to(MIETEK)["text"].startswith("⏰ <b>")

@@ -236,3 +236,23 @@ def test_long_admin_text_is_split_between_lines_into_messages_telegram_accepts()
     single = "<b>" + "A &amp; B " * 100 + "</b>"  # jedna linia dłuższa niż limit – bez znaczników, przed encją
     (cut,) = ui.split_lines(single, limit=101)
     assert telegram_rejects(cut) is None and len(cut) <= 101 and cut.endswith("…")
+
+
+def test_length_is_counted_like_telegram_in_utf16_units():
+    """Telegram liczy limit 4096 w jednostkach UTF-16 – większość emoji to 2 (🏠), polskie litery – 1."""
+    from gunb_tool.exporter import telegram_length
+
+    assert telegram_length("🏠") == 2 and telegram_length("ą") == 1 and telegram_length("✅") == 1
+    assert telegram_length("<b>Żółta</b> 🏗️") == 16
+
+
+def test_split_lines_counts_emoji_twice():
+    from tests.bot_helpers import telegram_rejects
+
+    lines = [f"🎁 Osoba {n} 🌅 Raport rano 💳" for n in range(300)]  # trzy emoji po 2 jednostki w każdej linii
+    parts = ui.split_lines("\n".join(lines), limit=1000)
+    assert len(parts) > 1 and all(telegram_rejects(part) is None for part in parts)
+    assert all(len(part.encode("utf-16-le")) // 2 <= 1000 for part in parts)
+    assert "\n".join(parts).split("\n") == lines
+    (cut,) = ui.split_lines("🏠" * 600, limit=101)
+    assert len(cut.encode("utf-16-le")) // 2 <= 101 and cut.endswith("…")

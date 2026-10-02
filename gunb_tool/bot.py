@@ -34,7 +34,7 @@ from .clock import WARSAW, at_local_time, local
 from .config import BotConfig
 from .demo import demo_leads
 from .funnel import ACTIVATION, activation_time, trial_cohort
-from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html
+from .exporter import TELEGRAM_LIMIT, MessageFormatter, escape_html, telegram_length
 from .gunb_scraper import GunbFormatError
 from .http_client import HttpError
 from .models import Investment
@@ -828,8 +828,8 @@ class LeadBot:
         if user is None:
             return
         text = ui.admin_message_text(args[1].strip())
-        if len(text) > TELEGRAM_LIMIT:
-            self._send(admin_chat, ui.admin_message_too_long_text(len(text)))
+        if telegram_length(text) > TELEGRAM_LIMIT:
+            self._send(admin_chat, ui.admin_message_too_long_text(telegram_length(text)))
             return
         delivered = self._notify(user.chat_id, text)
         self._send(admin_chat, f"✉️ Wysłano do {escape_html(user.display_name)} ({user.chat_id})" if delivered
@@ -1488,7 +1488,7 @@ class LeadBot:
             return None
         text, markup = self._card(user, inv)
         if self._take_tip(user, "zapisz", done=self.store.saved_count(user.chat_id) > 0):
-            text, markup = self._card(user, inv, limit=TELEGRAM_LIMIT - len(ui.TIP_SAVE) - 2)
+            text, markup = self._card(user, inv, limit=TELEGRAM_LIMIT - telegram_length(ui.TIP_SAVE) - 2)
             text += "\n\n" + ui.TIP_SAVE
         self._send(user.chat_id, text, markup)
         self.store.record_event(user.chat_id, "szczegoly", inv.id_sprawy)
@@ -1932,7 +1932,7 @@ class LeadBot:
         while start < len(items):
             count = min(self.settings.max_leads_in_report, len(items) - start)
             text, markup = build(items[start:start + count])
-            while len(text) > TELEGRAM_LIMIT and count > 1:
+            while telegram_length(text) > TELEGRAM_LIMIT and count > 1:
                 count = max(1, count - 3)
                 text, markup = build(items[start:start + count])
             self._send(chat_id, text, markup)
@@ -1988,7 +1988,7 @@ class LeadBot:
 
         shown = min(len(leads), self.settings.max_leads_in_report)
         text, markup = build(shown)
-        while len(text) > TELEGRAM_LIMIT and shown > 1:  # długie opisy/adresy – mniej pozycji na liście
+        while telegram_length(text) > TELEGRAM_LIMIT and shown > 1:  # długie opisy/adresy – mniej pozycji na liście
             shown = max(1, shown - 3)
             text, markup = build(shown)
         self._send(user.chat_id, text, markup)
@@ -2072,7 +2072,7 @@ class LeadBot:
         distance = filters.distance_km if filters.baza else None
         shown = min(len(due), self.settings.max_leads_in_report)
         text, markup = ui.stage_reminder(trade, due[:shown], len(due), distance)
-        while len(text) > TELEGRAM_LIMIT and shown > 1:
+        while telegram_length(text) > TELEGRAM_LIMIT and shown > 1:
             shown = max(1, shown - 3)
             text, markup = ui.stage_reminder(trade, due[:shown], len(due), distance)
         self._send(user.chat_id, text, markup)

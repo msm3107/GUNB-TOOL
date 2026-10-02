@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -23,12 +24,17 @@ _ENTITY_RE = re.compile(r"&(?:lt|gt|amp|quot|#\d+|#x[0-9a-fA-F]+);")
 def telegram_rejects(text: str | None, markup: dict | None = None) -> str | None:
     """Dlaczego Telegram odrzuciłby tę wiadomość (``None`` – przyjmie): pusta albo dłuższa niż 4096 znaków,
     HTML spoza dozwolonych znaczników, niedomknięty albo z nieucieczkowanym ``<``/``>``/``&``, przycisk bez
-    tekstu albo z ``callback_data`` dłuższym niż 64 bajty."""
+    tekstu albo z ``callback_data`` dłuższym niż 64 bajty.
+
+    Długość jak u Telegrama: tekst widoczny po odczytaniu HTML, w jednostkach UTF-16 – większość emoji to 2.
+    """
     if text is not None:
-        if not text.strip():
+        visible = html.unescape(_TAG_RE.sub("", text))
+        if not visible.strip():
             return "message text is empty"
-        if len(text) > TELEGRAM_LIMIT:
-            return f"message is too long ({len(text)} > {TELEGRAM_LIMIT})"
+        length = len(visible.encode("utf-16-le")) // 2
+        if length > TELEGRAM_LIMIT:
+            return f"message is too long ({length} UTF-16 > {TELEGRAM_LIMIT})"
         stack: list[str] = []
         for match in _TAG_RE.finditer(text):
             closing, name = match.group(1), match.group(2).lower()
