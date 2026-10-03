@@ -122,7 +122,9 @@ bot:
   # approval – dostęp tylko z testem albo abonamentem nadanym przez admina; open – dostęp dla każdego.
   access: approval
   # O której bot sam pobiera dane GUNB (paczki są aktualizowane ok. 23:30). [] = tylko przez --fetch.
-  fetch_times: ["06:30"]
+  # 06:30 – przed raportem porannym; 13:30 – na wypadek, gdy GUNB opublikuje paczkę z opóźnieniem
+  # (bez zmian w paczce to tylko krótkie sprawdzenie: plik się nie pobiera, nic nie jest wysyłane drugi raz).
+  fetch_times: ["06:30", "13:30"]
   morning_time: "07:00"
   evening_time: "19:00"
   # Co ile minut sprawdzać alerty 👀 watchlisty i tryb „⚡ od razu”.

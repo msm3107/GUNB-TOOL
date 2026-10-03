@@ -1,13 +1,17 @@
 """Zachowanie bota z perspektywy użytkownika („Pan Mietek”) – atrapa API Telegrama, prawdziwa baza SQLite."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from gunb_tool.bot import MENU_BUTTONS
 from gunb_tool.bot_store import BotStore, UserFilters
+from gunb_tool.config import load_config
 from tests.bot_helpers import (ADMIN, MIETEK, OBCY, activate, buttons, callback_for, click, configured, lead,
                                make_bot, message)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
@@ -543,6 +547,31 @@ def test_successful_fetch_is_not_repeated(repo, api, clock):
     clock.advance(hours=2)
     bot.run_due_jobs()
     assert len(calls) == 1
+
+
+def test_late_gunb_package_still_reaches_instant_users_the_same_day(repo, api, clock):
+    """GUNB publikuje paczki ok. 23:35. Gdy spóźni się poza poranne sprawdzenie, drugie (godziny z config.yaml)
+    łapie je tego samego dnia – zamiast czekać dobę na następny poranek."""
+    published: list[str] = []
+
+    def fetcher():  # import GUNB: nowa sprawa jest dopiero w spóźnionej paczce
+        for id_sprawy in published:
+            repo.upsert(lead(id_sprawy))
+        return "ok"
+
+    bot = make_bot(repo, api, clock, fetch_times=load_config(REPO_ROOT / "config.yaml", env={}).bot.fetch_times)
+    bot.fetcher = fetcher
+    activate(bot, api)
+    BotStore(repo).set_mode(MIETEK, "natychmiast")
+
+    clock.utc = datetime(2026, 9, 30, 4, 31, tzinfo=timezone.utc)  # 06:31 – w paczce nic nowego
+    bot.run_due_jobs()
+    assert not api.to(MIETEK)
+
+    published.append("SPOZNIONA/1")  # GUNB opublikował paczkę w ciągu dnia
+    clock.utc = datetime(2026, 9, 30, 11, 31, tzinfo=timezone.utc)  # 13:31
+    bot.run_due_jobs()
+    assert "SPOZNIONA/1" in api.last_to(MIETEK)["text"]
 
 
 def test_fetch_crash_is_logged_and_retried_later(repo, api, clock, caplog):
