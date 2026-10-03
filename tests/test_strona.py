@@ -76,7 +76,8 @@ def test_landing_page_has_every_required_section_and_no_invented_data():
     text = " ".join(parse("index.html").text)
     for required in ("Dla kogo", "Olsztyn i powiat olsztyński", "PRZYKŁAD – dane fikcyjne", "Jak to działa",
                      "Co dostajesz", "Uczciwie o danych", "Oferta", "Pytania", "Kto za tym stoi",
-                     "nie gotowe zamówienia", "Nie gwarantujemy zleceń"):
+                     "nie gotowe zamówienia", "Nie gwarantujemy zleceń",
+                     "kontakt pokazujemy tylko, gdy ktoś wpisał go w rejestr"):  # jak karta w bocie
         assert required in text, required
     assert text.count("DO UZUPEŁNIENIA") >= 3  # cena, płatność, sprzedawca – do wpisania przez operatora
     lowered = text.lower()
@@ -95,7 +96,8 @@ def test_rules_and_privacy_are_marked_as_drafts(name):
 def test_privacy_draft_matches_what_the_bot_really_stores():
     text = " ".join(" ".join(parse("prywatnosc.html").text).split()).lower()
     for fact in ("id czatu", "notatki", "źródło wejścia", "13 miesięcy", "nie przyjmuje płatności", "nie wysyła reklam",
-                 "nazwa firmy", "kopie zapasowe bazy (na serwerze"):
+                 "nazwa firmy", "kopie zapasowe bazy (na serwerze",
+                 "tylko wtedy, gdy ktoś wpisał go w ten rejestr", "nie szuka danych kontaktowych w innych źródłach"):
         assert fact in text, fact
     # bot nie przekazuje zwykłych wiadomości operatorowi („🤔 Nie rozumiem”) – prośba o usunięcie idzie do operatora
     assert "przez bota" not in text

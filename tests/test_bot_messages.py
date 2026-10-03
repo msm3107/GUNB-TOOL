@@ -70,10 +70,10 @@ def test_card_keeps_the_approximate_location_note(bot, api, repo):
 
 
 def test_scale_is_an_estimate_not_a_chance_of_winning(bot, api, repo):
-    repo.upsert(lead("HOT/1", priorytet="hot", punkty=10, kubatura=26000.0))
+    repo.upsert(lead("DUZA/1", priorytet="hot", punkty=10, kubatura=26000.0))
     bot.handle_update(message(MIETEK, "📊 Inwestycje"))
     report = api.last_to(MIETEK)["text"]
-    bot.handle_update(click(MIETEK, f"o:{repo.get('HOT/1').nr}"))
+    bot.handle_update(click(MIETEK, f"o:{repo.get('DUZA/1').nr}"))
     card = api.last_to(MIETEK)["text"]
     bot.handle_update(message(MIETEK, "❓ Pomoc"))
     help_text = api.last_to(MIETEK)["text"]
@@ -81,6 +81,7 @@ def test_scale_is_an_estimate_not_a_chance_of_winning(bot, api, repo):
     assert "🏗️ Skala: duża (26 000 m³)" in card and "📐 <b>Szacunki</b> (orientacyjne)" in card
     assert "Dużej skali (szacunek): 1." in report and "HOT" not in report + card
     assert "szacunek skali" in help_text and "nie mówi, czy zdobędziesz zlecenie" in help_text
+    assert "kontakt pokazuję tylko, gdy ktoś wpisał go w rejestr" in help_text  # karta pokaże go wtedy wprost
 
 
 def test_screens_say_investment_and_never_promise_the_investors_phone(bot, api, repo):

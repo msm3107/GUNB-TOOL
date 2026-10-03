@@ -247,6 +247,22 @@ def test_filters_are_set_with_buttons_and_one_typed_place(bot, api):
     assert "Warszawa" in api.last_to(MIETEK)["text"]
 
 
+def test_filters_screen_shows_large_scale_only_when_it_is_on(bot, api):
+    activate(bot, api)
+    bot.handle_update(message(MIETEK, "/filtry"))
+    assert "skala" not in api.last_to(MIETEK)["text"]  # na tym ekranie nie da się tego zmienić – zbędna linia
+
+    bot.handle_update(message(MIETEK, "/tylkohot"))
+    bot.handle_update(message(MIETEK, "/filtry"))
+    assert "🏗️ Tylko duża skala: tak (wyłączysz: /tylkohot)" in api.last_to(MIETEK)["text"]
+
+
+def test_volume_filter_says_that_cases_without_volume_drop_out(bot, api):
+    activate(bot, api)
+    bot.handle_update(click(MIETEK, "f:vol"))
+    assert "bez kubatury w rejestrze nie przejdą" in api.edits[-1]["text"]
+
+
 def test_powiat_can_be_toggled_from_list(bot, api, repo):
     repo.upsert(lead("A/1"))
     activate(bot, api)
