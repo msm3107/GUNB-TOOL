@@ -552,7 +552,8 @@ podmiotów innych niż osoby fizyczne.
 | **VACUUM** | Po dużym imporcie (≥ 500 nowych/zmienionych leadów, `storage.vacuum_threshold`). |
 
 Z pól inwestora i projektanta wyciągany jest też telefon (`+48…`) i e-mail do kolumn `telefon` i
-`email`, na przyszły kafelek „Zadzwoń”. W rejestrze to rzadkość: pomiar na 2 442 042 wierszach
+`email`; karta inwestycji pokazuje je jako „📞 Kontakt wpisany w rejestrze” (bez danych – bez linii).
+W rejestrze to rzadkość: pomiar na 2 442 042 wierszach
 (4 województwa i ogólnopolskie zgłoszenia) dał 5 wierszy z telefonem, wszystkie wpisane w pole numeru
 uprawnień projektanta, i zero e-maili. Dopasowanie jest ostrożne: 9 cyfr bez „tel.” lub typowego
 zapisu telefonu (np. REGON) jest pomijane.

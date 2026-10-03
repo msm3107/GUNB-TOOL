@@ -82,7 +82,7 @@ def test_help_and_data_limits_are_available_before_any_access(bot, api):
     bot.handle_update(click(MIETEK, "i:pomoc"))
     text = api.last_to(MIETEK)["text"]
     for fact in ("tylko sprawy zakończone pozytywnie", "z opóźnieniem", "szacunki", AREA,
-                 "nie ma danych kontaktowych inwestorów"):
+                 "nie ma danych kontaktowych inwestorów", "kontakt pokażę tylko, gdy ktoś wpisał go w rejestr"):
         assert fact in text
     assert "nie ma gwarancji zlecenia" in text  # wprost: bez obietnic
 

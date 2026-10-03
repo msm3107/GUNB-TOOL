@@ -49,8 +49,9 @@ def test_first_level_shows_type_place_date_location_and_why(bot, api, repo):
     assert "<b>Budowa domu jednorodzinnego z garażem</b>" in text
     assert "📍 Dywity, ul. Polna 5" in text and "📅 Decyzja: 21.09.2026" in text
     assert "🗺️ Mapa: lokalizacja dokładna – działka" in text
+    assert "🔖 Nr sprawy: <code>K/1</code>" in text  # linku do wpisu GUNB nie ma – numer do wyszukiwarki
     assert "🎯 <b>Dlaczego to widzisz:</b> Dywity · domy jednorodzinne" in text
-    for official in ("Sprawa", "Organ", "Projektant", "Działka"):  # szczegóły urzędowe – po rozwinięciu
+    for official in ("Organ", "Projektant", "Działka", "Inwestor", "📞"):  # szczegóły – po rozwinięciu; pustych pól brak
         assert official not in text
     assert {"📍 Mapa", "⭐ Zapisz", "⏰ Przypomnij", "📝 Notatka", "📋 Wynik", "🔽 Szczegóły", "⋯ Więcej"} \
         <= set(labels(card["markup"]))
@@ -83,29 +84,84 @@ def test_scale_replaces_hot_and_is_called_an_estimate(bot, api, repo):
     assert "📐 <b>Szacunki</b> (orientacyjne)" in card
 
 
-@pytest.mark.parametrize("investor, expected, forbidden", [
-    (None, "💼 Inwestor: brak informacji w rejestrze", ("osoba fizyczna", "prywat", "niejawny")),
-    ("Budimex S.A.", "💼 Inwestor: Budimex S.A. (wg rejestru, bez weryfikacji)", ()),
+@pytest.mark.parametrize("investor, expected", [
+    (None, None),  # bez nazwy w rejestrze – bez pola (nie „brak”, nie „osoba prywatna”)
+    ("Budimex S.A.", "💼 Inwestor: Budimex S.A. (wg rejestru, bez weryfikacji)"),
 ])
-def test_investor_field_never_guesses_who_it_is(bot, api, repo, investor, expected, forbidden):
+def test_investor_field_never_guesses_who_it_is(bot, api, repo, investor, expected):
     repo.upsert(lead("INV/1", inwestor=investor, **DYWITY, **decided(5)))
     open_card(bot, api, repo, "INV/1")
     bot.handle_update(click(MIETEK, f"d:{repo.get('INV/1').nr}"))
     details = api.edits[-1]["text"]
-    assert expected in details
-    assert not any(word in details.lower() for word in forbidden)
+    assert (expected in details) if expected else "Inwestor" not in details
+    assert not any(word in details.lower() for word in ("osoba fizyczna", "prywat", "niejawny", "brak"))
 
 
 @pytest.mark.parametrize("geo, expected", [
     (dict(precyzja_geo="dzialka", lat=53.8, lon=20.4), "🗺️ Mapa: lokalizacja dokładna – działka"),
     (dict(precyzja_geo="obreb", lat=53.8, lon=20.4), "🗺️ Mapa: lokalizacja przybliżona – środek obrębu"),
-    (dict(precyzja_geo=None, lat=None, lon=None, google_maps_url=None), "🗺️ Mapa: brak – rejestr nie podał działki"),
+    (dict(precyzja_geo=None, lat=None, lon=None, google_maps_url=None), None),  # bez mapy – bez linii „Mapa: brak”
 ])
-def test_location_accuracy_is_always_stated(bot, api, repo, geo, expected):
+def test_location_accuracy_is_stated_whenever_there_is_a_map(bot, api, repo, geo, expected):
     repo.upsert(lead("GEO/1", **{**DYWITY, **geo}, **decided(5)))
     card = open_card(bot, api, repo, "GEO/1")
-    assert expected in card["text"]
+    assert (expected in card["text"]) if expected else "🗺️" not in card["text"]
     assert ("📍 Mapa" in labels(card["markup"])) == (geo.get("lat") is not None)
+
+
+# --- Alert czytelny w 3 sekundy: co, gdzie, kto, kontakt, kiedy, źródło – tylko pola z danymi ----------------
+
+def instant_alert(bot, api, repo, inv):
+    BotStore(repo).set_mode(MIETEK, "natychmiast")
+    repo.upsert(inv)
+    assert bot.deliver_instant() == 1
+    return api.last_to(MIETEK)
+
+
+def test_instant_alert_shows_investor_contact_and_case_number_in_reading_order(bot, api, repo):
+    alert = instant_alert(bot, api, repo, lead(
+        "ST-WM-OS/WNIOSEK/1049/2026", nazwa_zamierzenia="Budowa budynku usługowego", kategoria="komercyjna",
+        inwestor="XYZ Sp. z o.o.", telefon="+48600123456", email="biuro@xyz.pl", **DYWITY, **decided(2)))
+    text = alert["text"]
+
+    assert text.startswith("🏭 <b>Obiekt komercyjny (hala, sklep, biuro)</b> · pozwolenie na budowę")
+    lines = ["<b>Budowa budynku usługowego</b>", "📍 Dywity, ul. Polna 5", "💼 Inwestor: XYZ Sp. z o.o.",
+             "📞 Kontakt wpisany w rejestrze: +48 600 123 456 · biuro@xyz.pl", "📅 Decyzja: 27.09.2026",
+             "🔖 Nr sprawy: <code>ST-WM-OS/WNIOSEK/1049/2026</code>"]
+    positions = [text.index(line) for line in lines]
+    assert positions == sorted(positions)
+    assert "📍 Mapa" in labels(alert["markup"])
+
+
+@pytest.mark.parametrize("contact, expected", [
+    (dict(telefon="+48600123456"), "📞 Kontakt wpisany w rejestrze: +48 600 123 456"),
+    (dict(email="biuro@xyz.pl"), "✉️ Kontakt wpisany w rejestrze: biuro@xyz.pl"),
+])
+def test_contact_from_the_register_is_shown_also_in_details(bot, api, repo, contact, expected):
+    repo.upsert(lead("TEL/1", **contact, **DYWITY, **decided(5)))
+    assert expected in open_card(bot, api, repo, "TEL/1")["text"]
+    bot.handle_update(click(MIETEK, f"d:{repo.get('TEL/1').nr}"))
+    assert expected in api.edits[-1]["text"]
+
+
+def test_alert_leaves_out_what_the_register_does_not_have(bot, api, repo):
+    alert = instant_alert(bot, api, repo, lead(
+        "PUSTA/1", nazwa_zamierzenia=None, adres_opisowy=None, miejscowosc=None, gmina="Dywity", inwestor=None,
+        data_decyzji=None, data_wplywu=None, lat=None, lon=None, precyzja_geo=None, google_maps_url=None))
+    text = alert["text"]
+
+    assert "📍 gm. Dywity" in text
+    assert "brak" not in text.lower()
+    for absent in ("💼", "📞", "✉️", "📅", "🗺️", "<b></b>"):
+        assert absent not in text, absent
+    assert "🔖 Nr sprawy: <code>PUSTA/1</code>" in text
+
+    bot.handle_update(click(MIETEK, f"d:{repo.get('PUSTA/1').nr}"))
+    assert "brak" not in api.edits[-1]["text"].lower()
+
+    bot.handle_update(message(MIETEK, "📊 Inwestycje"))  # na liście: rodzaj zamiast „(brak opisu)”
+    listing = api.last_to(MIETEK)["text"]
+    assert "1. 🏠 <b>Dom jednorodzinny</b>" in listing and "brak" not in listing.lower()
 
 
 def test_facts_estimates_and_own_work_are_separate(bot, api, repo):

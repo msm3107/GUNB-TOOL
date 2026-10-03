@@ -122,7 +122,8 @@ def _help_body(settings: BotConfig) -> str:
         "sprawdzenia na miejscu.\n"
         "🗺️ „Lokalizacja przybliżona” – rejestr nie podał dokładnej działki, pokazuję środek obrębu.\n"
         "💼 Gdy rejestr nie podaje inwestora, bot nie zgaduje, kto to jest; nazwy z rejestru nie są "
-        "weryfikowane. Bot nie ma danych kontaktowych inwestorów.\n\n"
+        "weryfikowane. Rejestr nie ma pól kontaktowych – kontakt pokazuję tylko, gdy ktoś wpisał go w rejestr "
+        "(rzadko; bywa to kontakt do projektanta). Innych źródeł nie przeszukuję.\n\n"
         "<b>Ograniczenia danych</b>\n"
         "W rejestrze są tylko sprawy zakończone pozytywnie, a urzędy wpisują je z opóźnieniem (nawet kilka "
         "tygodni). To lista budów do sprawdzenia – nie zamówienia i nie gwarancja zlecenia."
@@ -136,13 +137,14 @@ def about_text(area: str) -> str:
         "📥 <b>Skąd dane:</b> publiczny rejestr GUNB – pozwolenia na budowę i zgłoszenia budowy. GUNB "
         "aktualizuje go co noc, bot sprawdza go codziennie rano.\n"
         f"📍 <b>Obszar:</b> {escape_html(area)}. Innych miejsc na razie nie monitoruję.\n"
-        "📋 <b>Co zobaczysz:</b> rodzaj budynku, miejscowość, datę decyzji, mapę działki (gdy rejestr ją podaje) "
-        "i to, dlaczego inwestycja pasuje do Twoich ustawień. Możesz zapisywać, dodawać notatki i przypomnienia.\n\n"
+        "📋 <b>Co zobaczysz:</b> rodzaj budynku, miejscowość, inwestora (gdy rejestr go podaje), datę decyzji, "
+        "numer sprawy, mapę działki (gdy rejestr ją podaje) i to, dlaczego inwestycja pasuje do Twoich ustawień. "
+        "Możesz zapisywać, dodawać notatki i przypomnienia.\n\n"
         "⚠️ <b>Ograniczenia:</b> w rejestrze są tylko sprawy zakończone pozytywnie; urzędy wpisują je "
         "z opóźnieniem (nawet kilka tygodni); lokalizacja bywa przybliżona; etap budowy i skala to szacunki – "
         "trzeba je sprawdzić.\n"
-        "🚫 <b>Czego nie ma:</b> w bocie nie ma danych kontaktowych inwestorów; nie ma gwarancji zlecenia "
-        "ani pierwszeństwa przed konkurencją.\n"
+        "🚫 <b>Czego nie ma:</b> w rejestrze nie ma danych kontaktowych inwestorów – kontakt pokażę tylko, gdy "
+        "ktoś wpisał go w rejestr (rzadko); nie ma gwarancji zlecenia ani pierwszeństwa przed konkurencją.\n"
         "🔒 <b>Twoje dane:</b> imię i numer konta z Telegrama, Twoje ustawienia, zapisane inwestycje i notatki – "
         "tylko do działania bota."
     )
@@ -808,7 +810,8 @@ def filters_screen(user: BotUser, place_names: dict[str, str], settings: BotConf
         f"🏗️ Rodzaj: {escape_html(', '.join(categories)) if categories else 'wszystkie'}",
         f"📦 Kubatura: {_volume_label(f.min_kubatura)}",
         f"💼 Inwestor: {_investor_label(f.inwestor)}",
-        f"🏗️ Tylko duża skala: {'tak' if user.tylko_hot else 'nie'}",
+        # dawne „🔥 Tylko HOT” – tu bez przycisku, więc linia tylko wtedy, gdy coś zawęża
+        *(["🏗️ Tylko duża skala: tak (wyłączysz: /tylkohot)"] if user.tylko_hot else []),
         f"⏰ Wysyłka: {_mode_label(user.tryb, settings)}",
         f"🧰 Branża: {_trade_label(get_trade(user.branza))}",
         "",
@@ -941,7 +944,8 @@ def volume_picker(filters: UserFilters) -> tuple[str, Markup]:
         current = (filters.min_kubatura or 0) == value
         rows.append([(("✅ " if current else "") + label, f"fv:{value}")])
     rows.append([("✏️ Wpisz liczbę", "fv:txt"), ("◀️ Wróć", "f:show")])
-    return "📦 <b>Minimalna kubatura</b>\nDla porównania: typowy dom to ok. 900 m³, blok – kilkanaście tysięcy.", inline(rows)
+    return ("📦 <b>Minimalna kubatura</b>\nDla porównania: typowy dom to ok. 900 m³, blok – kilkanaście tysięcy.\n"
+            "Sprawy bez kubatury w rejestrze nie przejdą tego filtra (rejestr nie zawsze ją podaje)."), inline(rows)
 
 
 def investor_picker(filters: UserFilters) -> tuple[str, Markup]:
@@ -1013,9 +1017,10 @@ def lead_card(inv: Investment, *, why: Sequence[str] = (), estimates: Sequence[s
               details: bool = False, limit: int = TELEGRAM_LIMIT) -> str:
     """Karta inwestycji: fakty z rejestru, „dlaczego to widzisz”, szacunki i własna notatka – osobno.
 
-    Pierwszy poziom: rodzaj, opis, miejsce, data, dokładność lokalizacji. ``details`` – zamiast tego pełne
-    szczegóły urzędowe (status, kategoria, inwestor, projektant, organ, działka, numer sprawy). HTML nigdy
-    nie jest cięty: przy długich polach skracane są wartości przed escapowaniem.
+    Pierwszy poziom (do ogarnięcia w kilka sekund): rodzaj, opis, miejsce, inwestor, kontakt wpisany w rejestr,
+    data, dokładność lokalizacji i numer sprawy – tylko pola, dla których rejestr ma dane (bez „brak”).
+    ``details`` – zamiast tego pełne szczegóły urzędowe (status, kategoria, projektant, organ, działka…). HTML
+    nigdy nie jest cięty: przy długich polach skracane są wartości przed escapowaniem.
     """
     text = ""
     for description, field in ((600, 300), (240, 120), (80, 50)):
@@ -1036,8 +1041,11 @@ def _render_card(inv: Investment, why: Sequence[str], estimates: Sequence[str], 
                                                              for line in _official_lines(inv, field)]
         lines.append("ℹ️ Dane z publicznego rejestru – bot ich nie weryfikuje.")
     else:
-        lines += ["", "📋 <b>Z rejestru GUNB</b>", escape_html(_short(_place_line(inv), field)),
-                  escape_html(_date_line(inv)), escape_html(_location_line(inv))]
+        facts = (_place_line(inv), f"💼 Inwestor: {inv.inwestor}" if inv.inwestor else None, _contact_line(inv),
+                 _date_line(inv), _location_line(inv))
+        lines += ["", "📋 <b>Z rejestru GUNB</b>"] + [escape_html(_short(line, field)) for line in facts if line]
+        # wyszukiwarka GUNB nie ma adresów wpisów (i ma CAPTCHA) – numer do skopiowania zamiast linku
+        lines.append(f"🔖 Nr sprawy: <code>{escape_html(_short(inv.id_sprawy, field))}</code>")
         if why:
             lines += ["", "🎯 <b>Dlaczego to widzisz:</b> " + escape_html(_short(" · ".join(why), field))]
         if estimates:
@@ -1052,30 +1060,50 @@ def _card_head(inv: Investment, header: tuple[str, str, str] | None, description
     if header is not None:
         icon, title, detail = header
         lines.append(f"{icon} <b>{escape_html(title)}</b> · {escape_html(detail)}")
-    kind = CATEGORY_SINGULAR.get(inv.kategoria or "inna", "Inny obiekt")
+    kind = _kind(inv)
     source = "pozwolenie na budowę" if inv.zrodlo == "pozwolenia" else "zgłoszenie budowy"
     work = next((label for prefix, label in _WORKS if normalize_text(inv.rodzaj_robot).startswith(prefix)), None)
     icon = CATEGORY_ICONS.get(inv.kategoria or "inna", "•")
     lines.append(f"{icon} <b>{escape_html(kind)}</b> · {source}" + (f" · {work}" if work else ""))
-    lines.append(f"<b>{escape_html(_short(inv.nazwa_zamierzenia or '(brak opisu w rejestrze)', description))}</b>")
+    if inv.nazwa_zamierzenia:
+        lines.append(f"<b>{escape_html(_short(inv.nazwa_zamierzenia, description))}</b>")
     return lines
 
 
-def _place_line(inv: Investment) -> str:
-    place = inv.adres_opisowy or inv.miejscowosc or "brak adresu w rejestrze"
+def _kind(inv: Investment) -> str:
+    """„Dom jednorodzinny”, „Obiekt komercyjny (hala, sklep, biuro)”… – także tytuł, gdy rejestr nie ma opisu."""
+    return CATEGORY_SINGULAR.get(inv.kategoria or "inna", "Inny obiekt")
+
+
+def _place_line(inv: Investment) -> str | None:
+    place = inv.adres_opisowy or inv.miejscowosc
+    if not place:
+        return f"📍 gm. {inv.gmina}" if inv.gmina else None
     gmina = f" (gm. {inv.gmina})" if inv.gmina and normalize_text(inv.gmina) not in normalize_text(place) else ""
     return f"📍 {place}{gmina}"
 
 
-def _date_line(inv: Investment) -> str:
+def _date_line(inv: Investment) -> str | None:
     if inv.data_decyzji:
         return f"📅 Decyzja: {_pl_date(inv.data_decyzji)}"
     if inv.data_wplywu:
         return f"📅 {'Zgłoszenie' if inv.zrodlo == 'zgloszenia' else 'Wniosek'}: wpływ {_pl_date(inv.data_wplywu)}"
-    return "📅 Data: brak w rejestrze"
+    return None
 
 
-def _location_line(inv: Investment) -> str:
+def _contact_line(inv: Investment) -> str | None:
+    """Telefon / e-mail, gdy ktoś wpisał je w rejestr – rejestr nie ma pól kontaktowych, więc to rzadkość
+    i nie zawsze kontakt do inwestora (bywa numer projektanta); innych źródeł nie przeszukujemy."""
+    phone = inv.telefon
+    if phone and phone.startswith("+48") and len(phone) == 12:  # +48600123456 → +48 600 123 456
+        phone = f"+48 {phone[3:6]} {phone[6:9]} {phone[9:]}"
+    parts = [part for part in (phone, inv.email) if part]
+    if not parts:
+        return None
+    return f"{'📞' if phone else '✉️'} Kontakt wpisany w rejestrze: {' · '.join(parts)}"
+
+
+def _location_line(inv: Investment) -> str | None:
     if location_mismatch(inv):
         return "🗺️ Mapa: lokalizacja niepewna – działka znaleziona w innej gminie niż podaje rejestr; sprawdź adres"
     if inv.precyzja_geo == "obreb":
@@ -1083,7 +1111,7 @@ def _location_line(inv: Investment) -> str:
     if inv.precyzja_geo == "dzialka":
         return "🗺️ Mapa: lokalizacja dokładna – działka"
     if inv.lat is None and not inv.google_maps_url:
-        return "🗺️ Mapa: brak – rejestr nie podał działki, którą da się odnaleźć"
+        return None  # bez mapy nie ma czego opisywać (i nie ma przycisku „📍 Mapa”)
     return "🗺️ Mapa: punkt z danych ULDK (dokładność nieznana)"
 
 
@@ -1091,11 +1119,9 @@ def _map_label(inv: Investment) -> str:
     return "📍 Mapa (niepewna)" if location_mismatch(inv) else "📍 Mapa"
 
 
-def investor_label(inv: Investment) -> str:
-    """Inwestor bez zgadywania: brak nazwy to brak informacji (nie „osoba prywatna”), nazwa – bez weryfikacji."""
-    if not inv.inwestor:
-        return "brak informacji w rejestrze"
-    return f"{inv.inwestor} (wg rejestru, bez weryfikacji)"
+def investor_label(inv: Investment) -> str | None:
+    """Inwestor bez zgadywania: nazwa z rejestru (bez weryfikacji); bez nazwy – ``None`` (nie „osoba prywatna”)."""
+    return f"{inv.inwestor} (wg rejestru, bez weryfikacji)" if inv.inwestor else None
 
 
 def scale_line(inv: Investment) -> str | None:
@@ -1123,11 +1149,16 @@ def _official_lines(inv: Investment, field: int) -> list[str]:
     area = ", ".join(p for p in (f"gm. {inv.gmina}" if inv.gmina else None, inv.powiat) if p)
     if area:
         lines.append(f"🗺️ Gmina i powiat: {area}")
-    lines.append(f"💼 Inwestor: {_short(investor_label(inv), field + 40)}")
+    investor = investor_label(inv)
+    if investor:
+        lines.append(f"💼 Inwestor: {_short(investor, field + 40)}")
     designer = ", ".join(dict.fromkeys(p for p in (inv.projektant, inv.pracownia) if p))
     if designer:
         lines.append(f"📐 Projektant: {designer}" + (f" (upr. {inv.projektant_uprawnienia})"
                                                     if inv.projektant_uprawnienia else ""))
+    contact = _contact_line(inv)
+    if contact:
+        lines.append(contact)
     if inv.kubatura:
         lines.append(f"📦 Kubatura: {_thousands(inv.kubatura)} m³")
     dates = " · ".join(p for p in (f"decyzja {_pl_date(inv.data_decyzji)}" if inv.data_decyzji else None,
@@ -1151,7 +1182,7 @@ def archive_card(inv: Investment, *, flags: LeadFlags, outcome: Outcome, note: s
                  reminder_on: str | None) -> str:
     """Karta po końcu dostępu: tylko to, co osoba już widziała i sama zapisała – bez szczegółów i nowych danych."""
     lines = ["🗄️ <b>Twoja zapisana praca</b> – dostęp nieaktywny"] + _card_head(inv, None, 200)
-    lines += [escape_html(_short(_place_line(inv), 150)), escape_html(_date_line(inv))]
+    lines += [escape_html(_short(line, 150)) for line in (_place_line(inv), _date_line(inv)) if line]
     own = [part for part in (
         "⭐ zapisana" if flags.saved else None,
         f"📋 wynik: {OUTCOME_LABELS[outcome.wynik].split(' ', 1)[1].lower()}" if outcome.wynik else None,
@@ -1578,7 +1609,7 @@ def _report_entry(position: int, inv: Investment, distance: Distance | None = No
         f"{_thousands(inv.kubatura)} m³" if inv.kubatura else None,
         _short_date(inv.data_aktualizacji),
     ) if p]
-    title = escape_html(_short(inv.nazwa_zamierzenia or "(brak opisu)", 90))
+    title = escape_html(_short(inv.nazwa_zamierzenia or _kind(inv), 90))
     return f"{position}. {icon} <b>{title}</b>\n    {escape_html(' · '.join(facts))}"
 
 
@@ -1593,7 +1624,7 @@ def _stage_entry(position: int, inv: Investment, distance: Distance | None = Non
         f"{_thousands(inv.kubatura)} m³" if inv.kubatura else None,
         f"decyzja {decided[8:10]}.{decided[5:7]}.{decided[:4]}" if decided and len(decided) >= 10 else None,
     ) if p]
-    title = escape_html(_short(inv.nazwa_zamierzenia or "(brak opisu)", 90))
+    title = escape_html(_short(inv.nazwa_zamierzenia or _kind(inv), 90))
     return f"{position}. {icon} <b>{title}</b>\n    {escape_html(' · '.join(facts))}"
 
 
