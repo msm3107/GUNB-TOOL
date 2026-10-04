@@ -140,3 +140,21 @@ cd /opt/gunb-tool && runuser -u gunb -- .venv/bin/python -c "import sqlite3,sys;
 `PRAGMA foreign_keys=ON` jest konieczne – bez niego (np. samo `DELETE FROM bot_users` w konsoli `sqlite3`) notatki,
 zamówienia i reszta danych tej osoby zostałyby w bazie. Dane zostają jeszcze w kopiach bazy (`data/backups`, także
 kopie `*-przed-v*` sprzed aktualizacji, i kopie poza serwerem), dopóki tych kopii nie usuniesz.
+
+## 10. Rozszerzenie obszaru (np. na całe województwo)
+
+Obszar ustawia `gunb.powiats` w `config.yaml` (pusta lista = całe województwo z `gunb.voivodeships`). Po
+rozszerzeniu **najpierw** zaimportuj historię nowego obszaru, **potem** zrestartuj bota – inaczej pierwsze zwykłe
+pobieranie uzna sprawy z ostatnich 60 dni z nowych powiatów za nowe i klienci dostaną raport „Znaleziono kilkaset
+nowych inwestycji”:
+
+```bash
+cd /opt/gunb-tool && git pull
+runuser -u gunb -- .venv/bin/python main.py --config config.yaml --fetch --historical   # 2–4 h, najlepiej wieczorem
+systemctl restart gunb-bot
+```
+
+Import historii nie wysyła żadnych wiadomości; działający bot w tym czasie odpowiada normalnie (swoje pobieranie
+ponowi po imporcie). Sprawy z ostatnich dwóch tygodni z nowego obszaru trafią do najbliższego raportu jako nowe –
+osoby z filtrem „cały monitorowany obszar” zobaczą teraz całe województwo, osoby z wybranym powiatem lub
+miejscowością – bez zmian. Jeśli w `.env` jest `OFERTA_OBSZAR`, wpisz tam nowy obszar.

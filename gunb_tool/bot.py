@@ -1133,7 +1133,10 @@ class LeadBot:
         return True
 
     def _region_label(self) -> str:
-        """Monitorowany obszar słowami (np. „Olsztyn, powiat olsztyński”)."""
+        """Monitorowany obszar słowami (np. „Olsztyn, powiat olsztyński”); całe województwo – nazwa obszaru oferty
+        (np. „województwo warmińsko-mazurskie”) zamiast listy kilkunastu powiatów."""
+        if not self.powiat_codes and self.settings.offer.area:
+            return self.settings.offer.area
         names = [label for _, label in self.store.place_options(self.powiat_codes)]
         return ", ".join(names) if names else "cały monitorowany obszar"
 

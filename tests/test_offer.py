@@ -86,4 +86,4 @@ def test_repository_config_keeps_the_offer_in_env_placeholders():
 
     offer = load_config(REPO_ROOT / "config.yaml", env={}).bot.offer
     assert not offer.complete and offer.price is None and offer.seller_name == ""
-    assert offer.area == "Olsztyn i powiat olsztyński"
+    assert offer.area == "województwo warmińsko-mazurskie"

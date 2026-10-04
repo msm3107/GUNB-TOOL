@@ -92,6 +92,13 @@ def test_repository_config_file_is_valid():
     assert cfg.gunb.voivodeships
 
 
+def test_repository_config_monitors_the_whole_warminsko_mazurskie_voivodeship():
+    """Iława, Szczytno, Bisztynek… – całe województwo, nie tylko Olsztyn i powiat olsztyński."""
+    cfg = load_config(REPO_ROOT / "config.yaml", env={})
+    assert cfg.gunb.voivodeships == ("28",) and cfg.gunb.powiats == ()
+    assert cfg.bot.offer.area == "województwo warmińsko-mazurskie"
+
+
 # --- Segmenty klientów ----------------------------------------------------------------------
 
 SEGMENTS_YAML = """

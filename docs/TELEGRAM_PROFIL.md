@@ -18,13 +18,13 @@ tylko listę komend pod „/”).
 ## Krótki opis
 
 <!-- about -->
-Nowe budowy z Olsztyna i powiatu olsztyńskiego – codziennie z publicznego rejestru GUNB. Pilotaż z 7-dniowym testem.
+Nowe budowy z Warmii i Mazur – codziennie z publicznego rejestru GUNB. Pilotaż z 7-dniowym testem.
 <!-- /about -->
 
 ## Opis
 
 <!-- description -->
-Żółta Tablica codziennie sprawdza publiczny rejestr pozwoleń na budowę i zgłoszeń (GUNB) i pokazuje nowe inwestycje z Olsztyna i powiatu olsztyńskiego: rodzaj budynku, miejscowość, datę decyzji i mapę. Dla składów budowlanych, handlowców i wykonawców. To lista budów do sprawdzenia – nie zamówienia i nie kontakty do inwestorów. Kliknij Start: zobaczysz przykład i możesz poprosić o 7-dniowy test.
+Żółta Tablica codziennie sprawdza publiczny rejestr pozwoleń na budowę i zgłoszeń (GUNB) i pokazuje nowe inwestycje z województwa warmińsko-mazurskiego: rodzaj budynku, miejscowość, datę decyzji i mapę. Dla składów budowlanych, handlowców i wykonawców. To lista budów do sprawdzenia – nie zamówienia i nie kontakty do inwestorów. Kliknij Start: zobaczysz przykład i możesz poprosić o 7-dniowy test.
 <!-- /description -->
 
 ## Linki z oznaczeniem źródła
