@@ -125,7 +125,7 @@ Całość ustawień jest w [`config.yaml`](config.yaml) (plik jest opisany komen
 gunb:
   sources: [pozwolenia, zgloszenia]
   voivodeships: ["28"]                 # kody TERYT lub nazwy województw (28 – warmińsko-mazurskie)
-  powiats: ["2862", "2814"]            # m. Olsztyn + powiat olsztyński; pusta lista = całe województwo
+  powiats: []                          # pusta lista = całe województwo; np. ["2862", "2814"] = Olsztyn + powiat
   date_field: decyzja                  # decyzja | wplyw
   lookback_days: 60
   page_size: 200

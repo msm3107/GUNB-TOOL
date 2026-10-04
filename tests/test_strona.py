@@ -74,7 +74,7 @@ def test_every_link_works_locally_or_opens_the_bot_with_a_valid_source(name):
 
 def test_landing_page_has_every_required_section_and_no_invented_data():
     text = " ".join(parse("index.html").text)
-    for required in ("Dla kogo", "Olsztyn i powiat olsztyński", "PRZYKŁAD – dane fikcyjne", "Jak to działa",
+    for required in ("Dla kogo", "województwo warmińsko-mazurskie", "PRZYKŁAD – dane fikcyjne", "Jak to działa",
                      "Co dostajesz", "Uczciwie o danych", "Oferta", "Pytania", "Kto za tym stoi",
                      "nie gotowe zamówienia", "Nie gwarantujemy zleceń",
                      "kontakt pokazujemy tylko, gdy ktoś wpisał go w rejestr"):  # jak karta w bocie

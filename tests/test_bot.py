@@ -7,7 +7,7 @@ import pytest
 
 from gunb_tool.bot import MENU_BUTTONS
 from gunb_tool.bot_store import BotStore, UserFilters
-from gunb_tool.config import load_config
+from gunb_tool.config import OfferConfig, load_config
 from tests.bot_helpers import (ADMIN, MIETEK, OBCY, activate, buttons, callback_for, click, configured, lead,
                                make_bot, message)
 
@@ -265,6 +265,36 @@ def test_volume_filter_says_that_cases_without_volume_drop_out(bot, api):
     activate(bot, api)
     bot.handle_update(click(MIETEK, "f:vol"))
     assert "bez kubatury w rejestrze nie przejdą" in api.edits[-1]["text"]
+
+
+WM_POWIATS = {"2801": "bartoszycki", "2807": "iławski", "2817": "szczycieński", "2808": "kętrzyński",
+              "2814": "olsztyński", "2862": "Olsztyn", "2861": "Elbląg", "2804": "elbląski"}
+
+
+def test_whole_voivodeship_typed_towns_are_known_and_the_area_has_one_name(repo, api, clock):
+    """Całe województwo (bez listy powiatów): Iława czy Bisztynek z danych są rozpoznawane, obszar ma jedną nazwę,
+    a powiaty mieszczą się po dwa w rzędzie."""
+    bot = make_bot(repo, api, clock, offer=OfferConfig(area="województwo warmińsko-mazurskie"))
+    bot.powiat_codes = ()
+    for code, name in WM_POWIATS.items():
+        repo.upsert(lead(f"WM/{code}", powiat_teryt=code, powiat=f"powiat {name}" if name.islower() else name,
+                         gmina_teryt=code + "011", miejscowosc="Iława" if code == "2807" else "Wieś",
+                         adres_opisowy="Iława, ul. Kopernika 1" if code == "2807" else "Wieś 1"))
+    activate(bot, api)
+
+    bot.handle_update(click(MIETEK, "f:place"))
+    rows = api.edits[-1]["markup"]["inline_keyboard"]
+    assert [len(row) for row in rows if row[0]["callback_data"].startswith("fp:") and row[0]["callback_data"] != "fp:txt"] \
+        == [2, 2, 2, 2]
+
+    bot.handle_update(click(MIETEK, "fp:txt"))
+    bot.handle_update(message(MIETEK, "Iława"))
+    assert "Dodano miejsce: Iława" in api.last_to(MIETEK)["text"]
+
+    bot.handle_update(click(MIETEK, "fp:txt"))
+    bot.handle_update(message(MIETEK, "Kraków"))  # spoza obszaru – jedna nazwa obszaru, nie lista powiatów
+    unknown = api.last_to(MIETEK)["text"]
+    assert "(województwo warmińsko-mazurskie)" in unknown and "bartoszycki" not in unknown
 
 
 def test_powiat_can_be_toggled_from_list(bot, api, repo):

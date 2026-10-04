@@ -404,7 +404,7 @@ def setup_trade_step() -> tuple[str, Markup]:
 
 
 def setup_area_step(options: Sequence[tuple[str, str]], region: str) -> tuple[str, Markup]:
-    rows = [[(f"📌 {label}", f"oa:p:{code}")] for code, label in options]
+    rows = _pairs([(f"📌 {label}", f"oa:p:{code}") for code, label in options])
     rows += [[("📍 W promieniu od mojej bazy", "oa:loc")], [("✏️ Wpisz miejscowość", "oa:txt")],
              [("🗺️ Cały monitorowany obszar", "oa:all")]]
     return ("<b>2/2</b> 📍 <b>Gdzie działasz?</b>\n"
@@ -885,7 +885,7 @@ def stage_reminder(trade: Trade, leads: Sequence[Investment], total: int,
 def place_picker(filters: UserFilters, options: Sequence[tuple[str, str]]) -> tuple[str, Markup]:
     nearby = f"✅ 📍 Blisko mnie: do {filters.promien_km} km" if filters.radius_active else "📍 Blisko mnie (promień od bazy)"
     rows = [[(nearby, "f:near")]]
-    rows += [[(("✅ " if code in filters.powiaty else "▫️ ") + label, f"fp:{code}")] for code, label in options]
+    rows += _pairs([(("✅ " if code in filters.powiaty else "▫️ ") + label, f"fp:{code}") for code, label in options])
     rows += [[(f"❌ {place}", f"fpr:{index}")] for index, place in enumerate(filters.miejsca)]
     rows.append([("✏️ Wpisz miejscowość", "fp:txt")])
     rows.append([("✔️ Gotowe", "f:show")])
@@ -1626,6 +1626,11 @@ def _stage_entry(position: int, inv: Investment, distance: Distance | None = Non
     ) if p]
     title = escape_html(_short(inv.nazwa_zamierzenia or _kind(inv), 90))
     return f"{position}. {icon} <b>{title}</b>\n    {escape_html(' · '.join(facts))}"
+
+
+def _pairs(choices: Sequence[tuple[str, str]]) -> list[list[tuple[str, str]]]:
+    """Powiaty po dwa w rzędzie – całe województwo to kilkanaście przycisków."""
+    return [list(choices[i:i + 2]) for i in range(0, len(choices), 2)]
 
 
 def _trade_label(trade: Trade | None) -> str:

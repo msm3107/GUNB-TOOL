@@ -21,9 +21,9 @@ gunb:
   voivodeships: ["28"]
 
   # Powiaty do monitorowania (4-cyfrowe kody TERYT). Pusta lista = całe województwo.
-  # 2862 – m. Olsztyn (miasto na prawach powiatu), 2814 – powiat olsztyński (gminy wokół miasta).
-  # Inne przykłady: 1261 – m. Kraków, 1206 – powiat krakowski, 1465 – m.st. Warszawa.
-  powiats: ["2862", "2814"]
+  # Przykłady: 2862 – m. Olsztyn, 2814 – powiat olsztyński, 1261 – m. Kraków, 1465 – m.st. Warszawa.
+  # Całe warmińsko-mazurskie (Iława, Szczytno, Bisztynek…) – klient zawęża obszar sam w ⚙️ Ustawienia.
+  powiats: []
 
   # Data używana przy filtrowaniu pozwoleń: "decyzja" (data wydania) lub "wplyw" (data złożenia).
   # Zgłoszenia mają wyłącznie datę wpływu i zawsze są filtrowane po niej.
@@ -138,7 +138,7 @@ bot:
   # „💬 Zapytaj o ofertę”. Brakujące pola pokazuje adminowi /dane. Wzór: .env.example.
   offer:
     name: ${OFERTA_NAZWA:-Żółta Tablica}
-    area: ${OFERTA_OBSZAR:-Olsztyn i powiat olsztyński}
+    area: ${OFERTA_OBSZAR:-województwo warmińsko-mazurskie}
     accounts: ${OFERTA_KONTA:-1}              # ile kont Telegram obejmuje jeden dostęp
     price: ${OFERTA_CENA:-}                   # np. 99 – decyzja operatora (hipoteza pilotażu)
     currency: ${OFERTA_WALUTA:-PLN}
