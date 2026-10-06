@@ -42,14 +42,15 @@
 - `enqueue(chat_id, endpoint_id, event_key, parts, *, expires_at: datetime) -> tuple[int, ...]`;
   empty tuple means no new reservation; repeat event returns original IDs.
 
-- [ ] Write `test_report_round_trip_keeps_facts_and_revisions`, validation/ownership/proof tests,
+- [x] Write `test_report_round_trip_keeps_facts_and_revisions`, validation/ownership/proof tests,
   `test_telegram_delivery_does_not_suppress_channels`, filter-before-limit, snapshot idempotency,
   pending/history dedupe, owner/version/revision/TTL checks, queue caps and concurrent enqueue.
-- [ ] Run `python -m pytest tests/test_notification_store.py`; expected missing new modules/API.
-- [ ] Implement the models/report builder/store per spec. Reuse `UserFilters.matches`,
+- [x] Run `python -m pytest tests/test_notification_store.py`; expected missing new modules/API.
+- [x] Implement the models/report builder/store per spec. Reuse `UserFilters.matches`,
   `BotStore.get_user` and `LeadRepository.transaction`; leave their implementation untouched.
-- [ ] Run store tests and full `python -m pytest -rs`; expected all pass, POSIX skip reported.
-- [ ] `git diff --check`; commit models, reports, store and tests.
+- [x] Run store tests and full `python -m pytest -rs`; 54 store tests and 996 full-suite tests passed,
+  1 POSIX-rights test skipped on Windows. Unicode splitting and imported-proof regressions RED→GREEN.
+- [x] `git diff --check`; commit models, reports, store and tests.
 
 ### Task 2: Safe claim, dispatch and completion
 
