@@ -42,6 +42,12 @@ może sugerować, że niewdrożona wysyłka działa. Ten PR nie wprowadza creden
 Nie dodajemy wątków, połączeń sieciowych ani obsługi nowych tabel podczas cyklu bota.
 Nie zmieniamy filtrów, uprawnień, rankingu, doręczeń, treści wiadomości ani CLI Telegrama.
 
+Przed udostępnieniem zapisu i wysyłki w kolejnych PR wymagane są: normalizacja adresów
+i ponowna weryfikacja po zmianie adresu; zgodność właściciela outbox i historii oraz
+kanału webhooku; poprawne zajmowanie zadań, ponowienia i retencja niepowiązanych
+webhooków. Same tabele nie realizują tych operacji. API/store i worker muszą mieć
+testy tych niezmienników przed włączeniem kanałów.
+
 ## Aktualizacja i powrót
 
 Nowy krok migracji używa istniejącej transakcji i kopii bazy przed migracją. Przerwany
@@ -52,6 +58,7 @@ Kod v12 nadal odmawia pracy na v13. Powrót do v12 wymaga zatrzymania zapisując
 procesów i odtworzenia kopii sprzed migracji, co cofa późniejsze dane. Kolejne wydanie
 z nadawcami powinno zachować v13, aby można było wrócić do tego przygotowawczego wydania
 bez cofania danych. Przed dodaniem innych kolumn trzeba ponownie ocenić rollback.
+Powrót do wydania przygotowawczego wymaga ustawienia obu kanałów na `enabled: false`.
 
 ## Weryfikacja
 

@@ -188,7 +188,9 @@ drugiego bota na kopii z tym samym tokenem.
 przełączenie kodu nie wystarczy. Odtworzenie cofa dane zapisane od czasu kopii.
 Wydania z nadawcami powinny zachować v13, aby wycofanie ich do tego wydania
 przygotowawczego nie wymagało odtwarzania bazy; każdą późniejszą zmianę schematu
-trzeba ponownie sprawdzić przed wydaniem.
+trzeba ponownie sprawdzić przed wydaniem. Przed takim powrotem do wydania
+przygotowawczego ustaw oba `enabled: false`, ponieważ odrzuca ono włączone kanały.
+Stan outbox pozostaje w bazie, ale wysyłka nowych kanałów jest w nim zatrzymana.
 
 ## E. Wycofanie wersji
 

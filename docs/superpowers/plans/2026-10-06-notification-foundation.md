@@ -49,6 +49,8 @@
 - [x] Run the foundation tests; expected: all pass.
 - [x] Document the bridge-release update, rollback and scope of the next PR.
 - [x] Run `python -m pytest -rs`; expected: zero failures; report any skip.
-- [ ] Run `git diff --check`, review the complete diff, commit, and request an independent review.
-- [ ] Address important review findings with reproducing tests, then run affected checks.
+- [x] Run `git diff --check`, review the complete diff, commit, and request an independent review.
+- [x] Address important review findings with reproducing tests, then run affected checks.
+  Independent review: no Critical, Important or Minor findings; 86 additional tests passed.
+  Future store/sender invariants remain prerequisites for later PRs, as documented in the spec.
 - [ ] Push the feature branch, create a PR against `main`, attach it and inspect CI.
