@@ -248,6 +248,39 @@ def test_pruning_outbox_keeps_delivery_history(channel_repo):
     assert row["endpoint_id"] == ident and row["outbox_id"] is None and row["outcome"] == "accepted"
 
 
+def test_pruning_outbox_avoids_full_history_scan_after_v12_upgrade(legacy_state):
+    with LeadRepository(db_of(legacy_state)) as repo:
+        conn = repo.connection
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        removed = endpoint(conn, address="retencja@example.test")
+        retained = endpoint(conn, address="zachowany@example.test")
+        unlinked = endpoint(conn, address="historia@example.test")
+        removed_outbox = queued(conn, removed)
+        retained_outbox = queued(conn, retained)
+        processed(conn, removed, removed_outbox)
+        processed(conn, retained, retained_outbox)
+        processed(conn, unlinked)
+
+        plan = [row[3] for row in conn.execute(
+            "EXPLAIN QUERY PLAN DELETE FROM notification_outbox WHERE id = ?",
+            (removed_outbox,),
+        )]
+        history_access = [detail for detail in plan if "notification_deliveries" in detail]
+        # Retencja jednego zadania ma wyszukiwać powiązania zamiast skanować całą historię.
+        assert history_access and all(detail.startswith("SEARCH ") for detail in history_access), plan
+
+        conn.execute("DELETE FROM notification_outbox WHERE id = ?", (removed_outbox,))
+        rows = conn.execute(
+            "SELECT endpoint_id, outbox_id, outcome FROM notification_deliveries ORDER BY endpoint_id"
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [
+            (removed, None, "accepted"),
+            (retained, retained_outbox, "accepted"),
+            (unlinked, None, "accepted"),
+        ]
+        assert not conn.execute("PRAGMA foreign_key_check").fetchall()
+
+
 @pytest.mark.parametrize("delete_owner", [False, True])
 def test_removing_endpoint_or_account_removes_dependent_channel_data(channel_repo, delete_owner):
     conn = channel_repo.connection

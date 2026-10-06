@@ -59,6 +59,8 @@ CREATE TABLE notification_deliveries (
     PRIMARY KEY (endpoint_id, id_sprawy, revision)
 );
 CREATE INDEX ix_notification_deliveries_history ON notification_deliveries (endpoint_id, processed_at);
+CREATE INDEX ix_notification_deliveries_outbox ON notification_deliveries (outbox_id)
+    WHERE outbox_id IS NOT NULL;
 
 CREATE TABLE notification_webhook_events (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
