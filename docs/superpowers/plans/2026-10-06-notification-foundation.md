@@ -53,4 +53,5 @@
 - [x] Address important review findings with reproducing tests, then run affected checks.
   Independent review: no Critical, Important or Minor findings; 86 additional tests passed.
   Future store/sender invariants remain prerequisites for later PRs, as documented in the spec.
-- [ ] Push the feature branch, create a PR against `main`, attach it and inspect CI.
+- [x] Push the feature branch, create a PR against `main`, attach it and inspect CI.
+  PR: https://github.com/msm3107/GUNB-TOOL/pull/7; Python 3.10–3.14 and deployment-script checks.
