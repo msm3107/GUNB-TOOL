@@ -210,6 +210,15 @@ discord:
   webhook_url: ${DISCORD_WEBHOOK_URL}
   delay_seconds: 1.0
 
+# Fundament nowych kanałów (schemat v13). Nadawcy będą wdrażani w kolejnych wydaniach.
+# Brak tych sekcji także oznacza wyłączenie. W tym wydaniu enabled: true jest błędem
+# konfiguracji — nie ma jeszcze wysyłki SMTP ani WhatsApp/Meta API.
+email:
+  enabled: false
+
+whatsapp:
+  enabled: false
+
 sheets:
   service_account_file: ${GOOGLE_SERVICE_ACCOUNT_FILE:-service_account.json}
   spreadsheet_id: ${GOOGLE_SHEET_ID}

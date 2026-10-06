@@ -162,6 +162,34 @@ kończy bieżący krok, powstaje kopia bazy `…-przed-<wersja>-…`, przełącz
 Jeśli zależności się nie zainstalują albo nowa wersja nie przyjmie konfiguracji, nic się nie zmienia
 i dalej działa stara wersja. Bot celowo zatrzymany zostaje zatrzymany.
 
+### Wydanie przygotowawcze powiadomień (PR 1: v12 → v13)
+
+Wdrażaj przypięty tag lub commit wydania po scaleniu PR. Zostaw `email.enabled: false`
+i `whatsapp.enabled: false`; starszy config bez tych sekcji również działa. Nie wpisuj
+jeszcze danych SMTP ani tokenu Meta. W tej wersji `enabled: true` jest błędem
+konfiguracji, ponieważ nadawcy będą dostępni w następnych wydaniach.
+
+Przed aktualizacją wykonaj `sudo gunb-admin kopia` i zachowaj kopię poza serwerem
+(sekcja F). Standardowe `aktualizuj WERSJA` robi własną kopię, a pierwsze otwarcie
+bazy przez nowy kod dodatkowo tworzy `…-przed-v13-…`. Brak możliwości wykonania tej
+kopii przerywa migrację. Krok v13 jest transakcyjny i dodaje cztery puste tabele,
+zachowując konta, abonamenty, filtry, zamówienia i doręczenia Telegrama. Nie tworzy
+odbiorców ani zadań nowych kanałów. Ponowny start na v13 nie powtarza migracji.
+
+Po aktualizacji sprawdź `sudo gunb-admin zdrowie`, `sudo gunb-admin logi 100`
+oraz `/status` w bocie. Potwierdź także zwykły raport Telegrama i ustawienia istniejącego
+użytkownika. Na kopii bazy można sprawdzić `PRAGMA user_version` (13),
+`PRAGMA integrity_check` (`ok`) i `PRAGMA foreign_key_check` (brak wierszy).
+Nowe tabele `notification_endpoints`, `notification_outbox`, `notification_deliveries`
+i `notification_webhook_events` powinny być puste po tej aktualizacji. Nie uruchamiaj
+drugiego bota na kopii z tym samym tokenem.
+
+**Powrót do kodu v12 wymaga kopii sprzed migracji**, zgodnie z sekcją E; samo
+przełączenie kodu nie wystarczy. Odtworzenie cofa dane zapisane od czasu kopii.
+Wydania z nadawcami powinny zachować v13, aby wycofanie ich do tego wydania
+przygotowawczego nie wymagało odtwarzania bazy; każdą późniejszą zmianę schematu
+trzeba ponownie sprawdzić przed wydaniem.
+
 ## E. Wycofanie wersji
 
 ```bash
