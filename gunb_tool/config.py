@@ -189,6 +189,20 @@ class DiscordConfig:
 
 
 @dataclass(frozen=True)
+class EmailConfig:
+    """Flaga przyszłego nadawcy e-mail; wydanie przygotowawcze wymaga wyłączenia."""
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
+class WhatsAppConfig:
+    """Flaga przyszłego nadawcy WhatsApp; wydanie przygotowawcze wymaga wyłączenia."""
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class SheetsConfig:
     """Eksport do Google Sheets przez konto serwisowe."""
 
@@ -362,6 +376,8 @@ class AppConfig:
     logging: LoggingConfig
     segments: tuple[SegmentConfig, ...] = ()
     bot: BotConfig = BotConfig()
+    email: EmailConfig = EmailConfig()
+    whatsapp: WhatsAppConfig = WhatsAppConfig()
 
 
 _CHAT_ID_RE = re.compile(r"^-?\d+$")
@@ -370,7 +386,7 @@ _SEGMENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _KNOWN_SECTIONS = {
     "http", "gunb", "filter", "geocoding", "storage", "notifications", "telegram", "discord", "sheets",
-    "logging", "segments", "bot",
+    "logging", "segments", "bot", "email", "whatsapp",
 }
 
 
@@ -419,7 +435,18 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         logging=_logging(_section(raw, "logging"), base_dir),
         segments=_segments(_section(raw, "segments")),
         bot=bot,
+        email=EmailConfig(enabled=_prepared_channel(_section(raw, "email"), "email")),
+        whatsapp=WhatsAppConfig(enabled=_prepared_channel(_section(raw, "whatsapp"), "whatsapp")),
     )
+
+
+def _prepared_channel(data: dict[str, Any], section: str) -> bool:
+    """Nie sugeruj działającej wysyłki, dopóki nadawca nie zostanie wdrożony."""
+    enabled = _bool(data, section, "enabled", False)
+    if enabled:
+        raise ConfigError(f"{section}.enabled: wysyłka jest niedostępna w wydaniu przygotowawczym; "
+                          "ustaw enabled: false")
+    return enabled
 
 
 def override_scope(

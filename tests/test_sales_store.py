@@ -41,12 +41,12 @@ def test_version_11_database_gets_the_sales_tables_and_keeps_its_data(tmp_path, 
     legacy.close()
 
     with LeadRepository(path, now=clock.now_utc) as repo:
-        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION == 12
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         user = BotStore(repo).get_user(MIETEK)
         assert user.filtry.miejsca == ("Dywity",) and user.setup_done
         assert user.zrodlo is None and user.firma is None and user.tips_enabled and user.porady == ()
         assert repo.connection.execute("SELECT szczegoly FROM zdarzenia").fetchone()[0] is None
-    assert list((tmp_path / "backups").glob("v11-przed-v12-*.sqlite")), "kopia przed migracją"
+    assert list((tmp_path / "backups").glob(f"v11-przed-v{storage.SCHEMA_VERSION}-*.sqlite")), "kopia przed migracją"
 
 
 def test_deleting_a_person_removes_their_orders_and_outcomes(store, repo):

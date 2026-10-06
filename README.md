@@ -93,6 +93,7 @@ main.py (CLI)
 | `gunb_tool/data_filter.py` | Flagi `is_residential` / `is_commercial` / `is_noise`, kategoria biznesowa, **segment klientów**, ekstrakcja inwestora i projektanta (pracownia, uprawnienia, porządkowanie nazwisk). |
 | `gunb_tool/geocoding_uldk.py` | ULDK: identyfikator działki → centroid WGS84, nazwy gminy/powiatu, linki Google Maps i Geoportal; ponowna próba w jednostce z kodu TERC adresu; fallback do środka obrębu; cache; bezpiecznik przy awarii usługi. |
 | `gunb_tool/storage.py` | SQLite (WAL, migracje schematu): tabela `investments`, historia statusów, wykrywanie zmian, kolejka powiadomień per kanał, kolejka synchronizacji arkusza, cache geokodowania. |
+| `gunb_tool/notification_schema.py` | Schemat v13: odbiorcy e-mail/WhatsApp, outbox, niezależna historia doręczeń i deduplikacja webhooków. Wydanie przygotowawcze, bez nadawców. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
 | `gunb_tool/scoring.py` | Scoring 🔥 HOT / 🟡 NORMAL / ⚪ LOW z uzasadnieniem. |
@@ -393,6 +394,26 @@ abonamentami (baza < v6) dostają dostęp bez terminu – przełączasz ich świ
 albo `/nowymodel <chat_id> 2026-12-31`. Starsza wersja programu **nie uruchomi się** na bazie z nowszym
 schematem (kod wyjścia 2) – powrót do niej wymaga odtworzenia kopii sprzed aktualizacji, a zmiany
 z czasu po tej kopii przepadają ([docs/WDROZENIE.md](docs/WDROZENIE.md), sekcja E).
+
+### Przygotowanie e-mail i WhatsApp (PR 1, schemat v13)
+
+Migracja dodaje cztery puste tabele: `notification_endpoints`, `notification_outbox`,
+`notification_deliveries` i `notification_webhook_events`. Nie tworzy odbiorców ani zadań
+wysyłki; zachowuje dane i działanie obecnego bota. Kolejka i historia są przypisane do
+odbiorcy nowego kanału, niezależnie od tabeli `deliveries` Telegrama.
+
+Sekcje `email.enabled` i `whatsapp.enabled` domyślnie mają wartość `false`. Starszy
+`config.yaml` działa bez ich dopisywania. Próba ustawienia `true` kończy się błędem
+konfiguracji przed otwarciem bazy: rzeczywista wysyłka będzie dostępna w kolejnych PR.
+To wydanie nie wymaga danych SMTP ani tokenu Meta i nie dodaje zależności.
+
+Kolejne kroki to budowanie raportów i worker outbox, następnie SMTP z weryfikacją adresu
+oraz WhatsApp API z szablonami, zgodami i webhookiem HTTPS. Kolejne wydania powinny
+zachować schemat v13, aby można było wycofać nadawców do tego wydania przygotowawczego
+bez cofania danych. Zmiana schematu wymaga ponownej oceny tej zgodności.
+
+Powrót z v13 do kodu znającego tylko v12 wymaga odtworzenia kopii sprzed migracji;
+instrukcja i kontrola po aktualizacji są w [docs/WDROZENIE.md](docs/WDROZENIE.md#d-aktualizacja).
 
 ## Google Sheets
 
