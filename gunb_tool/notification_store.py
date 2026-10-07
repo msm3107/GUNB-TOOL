@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
+import hashlib
 import re
 import sqlite3
 from typing import Sequence
 import unicodedata
+import uuid
 
 from .bot_store import BotStore, BotUser, MODES
 from .models import Investment
-from .notification_models import (CHANNELS, MAX_REPORT_LEADS, LeadRef, NotificationEndpoint, ReportPart,
+from .notification_models import (CHANNELS, MAX_REPORT_LEADS, Claim, DeliveryResult, LeadRef, NotificationEndpoint, ReportPart,
                                   bounded_int, bounded_text, parse_time, utc_iso)
 from .storage import LeadRepository, investment_from_row
 from .scoring import HOT
@@ -303,3 +305,152 @@ class NotificationStore:
         clauses = " OR ".join("(endpoint_id = ? AND id_sprawy = ? AND revision = ?)" for _ in refs)
         params = tuple(value for ref in refs for value in (endpoint_id, ref.id_sprawy, ref.revision))
         return self._conn.execute(f"SELECT 1 FROM notification_deliveries WHERE {clauses} LIMIT 1", params).fetchone() is not None
+
+    def _quarantine(self, endpoint_id: int) -> None:
+        """Zatrzymanie jednego kanału, bez zmiany konta/Telegrama i bez cofania zgody."""
+        stamp = utc_iso(self.repo.now())
+        self._conn.execute(
+            "UPDATE notification_endpoints SET enabled = 0, activated_at = NULL, version = version + 1, updated_at = ?"
+            " WHERE id = ? AND enabled = 1", (stamp, endpoint_id),
+        )
+        self._conn.execute(
+            "UPDATE notification_outbox SET state = 'cancelled', updated_at = ?"
+            " WHERE endpoint_id = ? AND state IN ('queued', 'retry')", (stamp, endpoint_id),
+        )
+
+    def _mark(self, ident: int, outcome: str, *, keep_claim: bool = False) -> None:
+        clear = "" if keep_claim else ", claim_owner = NULL, claimed_at = NULL"
+        self._conn.execute("UPDATE notification_outbox SET state = ?, updated_at = ?" + clear + " WHERE id = ?",
+                           (outcome, utc_iso(self.repo.now()), ident))
+
+    def _recover_claims(self, channels: Sequence[str]) -> None:
+        marks = ",".join("?" for _ in channels)
+        rows = self._conn.execute(
+            "SELECT o.id, o.endpoint_id, o.claimed_at, o.claim_owner FROM notification_outbox o"
+            " JOIN notification_endpoints e ON e.id = o.endpoint_id"
+            f" WHERE o.state = 'sending' AND e.channel IN ({marks}) ORDER BY o.claimed_at, o.id LIMIT 100", tuple(channels),
+        ).fetchall()
+        now = self.repo.now()
+        for row in rows:
+            try:
+                claimed = parse_time(row["claimed_at"] or "")
+                abandoned = not row["claim_owner"] or claimed > now or now >= claimed + timedelta(seconds=self.lease_seconds)
+            except (ValueError, TypeError):
+                abandoned = True
+            if abandoned:
+                # Nie przejmujemy ponownie: dostawca mógł już przyjąć wiadomość.
+                self._mark(row["id"], "unknown", keep_claim=True)
+                self._quarantine(row["endpoint_id"])
+
+    def claim(self, channels: Sequence[str]) -> Claim | None:
+        channels = tuple(dict.fromkeys(channels))
+        if any(channel not in CHANNELS for channel in channels):
+            raise ValueError("Nieznany kanał workera")
+        if not channels:
+            return None
+        with self.repo.transaction():
+            self._recover_claims(channels)
+            marks = ",".join("?" for _ in channels)
+            stamp = utc_iso(self.repo.now())
+            row = self._conn.execute(
+                "SELECT o.* FROM notification_outbox o JOIN notification_endpoints e ON e.id = o.endpoint_id"
+                f" WHERE o.state IN ('queued', 'retry') AND o.next_attempt_at <= ? AND e.channel IN ({marks})"
+                " AND NOT EXISTS (SELECT 1 FROM notification_outbox busy"
+                " WHERE busy.endpoint_id = o.endpoint_id AND busy.state = 'sending')"
+                " ORDER BY o.next_attempt_at, o.id LIMIT 1", (stamp, *channels),
+            ).fetchone()
+            if row is None:
+                return None
+            owner = uuid.uuid4().hex
+            self._conn.execute(
+                "UPDATE notification_outbox SET state = 'sending', claimed_at = ?, claim_owner = ?,"
+                " attempts = attempts + 1, updated_at = ? WHERE id = ?", (stamp, owner, stamp, row["id"]),
+            )
+            return Claim(row["id"], row["endpoint_id"], row["event_key"], row["part"], owner, stamp, row["attempts"] + 1)
+
+    def _claimed_row(self, claim: Claim) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM notification_outbox WHERE id = ? AND endpoint_id = ? AND claim_owner = ? AND claimed_at = ?"
+            " AND state IN ('sending', 'unknown')",
+            (claim.id, claim.endpoint_id, claim.claim_owner, claim.claimed_at),
+        ).fetchone()
+
+    def prepare_send(self, claim: Claim) -> tuple[NotificationEndpoint, ReportPart] | None:
+        """Ostatnia kontrola; zwracamy niemutowalnego odbiorcę zamiast czytać nowy adres po jej zakończeniu."""
+        with self.repo.transaction():
+            row = self._claimed_row(claim)
+            if row is None or row["state"] != "sending":
+                return None
+            now = self.repo.now()
+            if now >= parse_time(row["claimed_at"]) + timedelta(seconds=self.lease_seconds):
+                self._mark(claim.id, "unknown", keep_claim=True)
+                self._quarantine(claim.endpoint_id)
+                return None
+            try:
+                if parse_time(row["expires_at"] or "") <= now:
+                    self._mark(claim.id, "expired")
+                    return None
+                part = ReportPart.from_json(row["payload"])
+                endpoint = _endpoint(self._conn.execute(
+                    "SELECT * FROM notification_endpoints WHERE id = ?", (claim.endpoint_id,),
+                ).fetchone())
+                user = self._eligible_user(endpoint)
+                valid = (user is not None and part.chat_id == endpoint.chat_id and part.endpoint_version == endpoint.version
+                         and self._valid_refs(user, part.leads) and not self._has_history(endpoint.id, part.leads))
+            except (ValueError, TypeError):
+                self._mark(claim.id, "failed")
+                self._quarantine(claim.endpoint_id)
+                return None
+            if not valid:
+                self._mark(claim.id, "cancelled")
+                return None
+            return endpoint, part
+
+    def complete(self, claim: Claim, result: DeliveryResult, *, max_attempts: int = 5) -> bool:
+        bounded_int(max_attempts, 1, 10)
+        if not isinstance(result, DeliveryResult):
+            raise ValueError("Niepoprawny wynik nadawcy")
+        with self.repo.transaction():
+            row = self._claimed_row(claim)
+            if row is None:
+                return False
+            outcome = result.outcome
+            if outcome == "retry" and row["attempts"] >= max_attempts:
+                outcome = "failed"
+            if outcome in ("accepted", "delivered", "read"):
+                try:
+                    part = ReportPart.from_json(row["payload"])
+                except ValueError:
+                    self._mark(claim.id, "unknown", keep_claim=True)
+                    self._quarantine(claim.endpoint_id)
+                    return False
+                owner = self._conn.execute("SELECT chat_id FROM notification_endpoints WHERE id = ?", (claim.endpoint_id,)).fetchone()
+                if owner is None or owner["chat_id"] != part.chat_id:
+                    self._mark(claim.id, "unknown", keep_claim=True)
+                    self._quarantine(claim.endpoint_id)
+                    return False
+                stamp = utc_iso(self.repo.now())
+                self._conn.executemany(
+                    "INSERT INTO notification_deliveries (endpoint_id, id_sprawy, revision, kind, outcome, processed_at, outbox_id)"
+                    " SELECT ?, id_sprawy, ?, 'report', ?, ?, ? FROM investments WHERE id_sprawy = ?"
+                    " ON CONFLICT (endpoint_id, id_sprawy, revision) DO UPDATE SET"
+                    " outcome = CASE WHEN notification_deliveries.outcome = 'read' THEN 'read'"
+                    " WHEN notification_deliveries.outcome = 'delivered' AND excluded.outcome = 'accepted' THEN 'delivered'"
+                    " ELSE excluded.outcome END, processed_at = excluded.processed_at, outbox_id = excluded.outbox_id",
+                    [(claim.endpoint_id, ref.revision, outcome, stamp, claim.id, ref.id_sprawy) for ref in part.leads],
+                )
+                self._conn.execute("UPDATE notification_outbox SET provider_message_id = ? WHERE id = ?",
+                                   (result.provider_message_id, claim.id))
+                self._mark(claim.id, outcome)
+            elif outcome == "retry":
+                jitter = int(hashlib.sha256(f"{claim.id}:{row['attempts']}".encode()).hexdigest()[:4], 16) % 16
+                delay = max(min(3600, 60 * 2 ** min(row["attempts"] - 1, 10)) + jitter, result.retry_after_seconds or 0)
+                self._conn.execute(
+                    "UPDATE notification_outbox SET state = 'retry', next_attempt_at = ?, updated_at = ?,"
+                    " claim_owner = NULL, claimed_at = NULL WHERE id = ?",
+                    (utc_iso(self.repo.now() + timedelta(seconds=delay)), utc_iso(self.repo.now()), claim.id),
+                )
+            else:
+                self._mark(claim.id, outcome, keep_claim=outcome == "unknown")
+                self._quarantine(claim.endpoint_id)
+            return True

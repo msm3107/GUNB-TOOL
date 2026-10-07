@@ -94,6 +94,8 @@ main.py (CLI)
 | `gunb_tool/geocoding_uldk.py` | ULDK: identyfikator działki → centroid WGS84, nazwy gminy/powiatu, linki Google Maps i Geoportal; ponowna próba w jednostce z kodu TERC adresu; fallback do środka obrębu; cache; bezpiecznik przy awarii usługi. |
 | `gunb_tool/storage.py` | SQLite (WAL, migracje schematu): tabela `investments`, historia statusów, wykrywanie zmian, kolejka powiadomień per kanał, kolejka synchronizacji arkusza, cache geokodowania. |
 | `gunb_tool/notification_schema.py` | Schemat v13: odbiorcy e-mail/WhatsApp, outbox, niezależna historia doręczeń i deduplikacja webhooków. Wydanie przygotowawcze, bez nadawców. |
+| `gunb_tool/notification_models.py`, `notification_reports.py` | Niemutowalne części raportu, ograniczenia rozmiaru i wersjonowany JSON kolejki. Fakty GUNB z identyfikatorami i rewizjami inwestycji. |
+| `gunb_tool/notification_store.py`, `notification_worker.py` | Własność i zgody odbiorców, trwałe enqueue/claim, ponowna kontrola dostępu przed wysyłką, retry i rozliczanie wyników. Wewnętrzne API z wstrzykniętym nadawcą; bez podłączenia do harmonogramu. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
 | `gunb_tool/scoring.py` | Scoring 🔥 HOT / 🟡 NORMAL / ⚪ LOW z uzasadnieniem. |
@@ -395,7 +397,7 @@ albo `/nowymodel <chat_id> 2026-12-31`. Starsza wersja programu **nie uruchomi s
 schematem (kod wyjścia 2) – powrót do niej wymaga odtworzenia kopii sprzed aktualizacji, a zmiany
 z czasu po tej kopii przepadają ([docs/WDROZENIE.md](docs/WDROZENIE.md), sekcja E).
 
-### Przygotowanie e-mail i WhatsApp (PR 1, schemat v13)
+### Przygotowanie e-mail i WhatsApp (PR 1–2, schemat v13)
 
 Migracja dodaje cztery puste tabele: `notification_endpoints`, `notification_outbox`,
 `notification_deliveries` i `notification_webhook_events`. Nie tworzy odbiorców ani zadań
@@ -407,8 +409,21 @@ Sekcje `email.enabled` i `whatsapp.enabled` domyślnie mają wartość `false`. 
 konfiguracji przed otwarciem bazy: rzeczywista wysyłka będzie dostępna w kolejnych PR.
 To wydanie nie wymaga danych SMTP ani tokenu Meta i nie dodaje zależności.
 
-Kolejne kroki to budowanie raportów i worker outbox, następnie SMTP z weryfikacją adresu
-oraz WhatsApp API z szablonami, zgodami i webhookiem HTTPS. Kolejne wydania powinny
+PR 2 dodaje wewnętrzne API raportów, magazynu odbiorców i workera outbox. Raport obejmuje
+do 20 inwestycji, dzieli treść na części do 32 KiB i zapisuje pierwszy snapshot w kolejce.
+Historia nowego kanału nie pomija inwestycji dostarczonych przez Telegram. Worker ponownie
+sprawdza zgodę, adres, dostęp, filtry i rewizje; odbiorcy nie spełniający warunków nie dostają
+zakolejkowanego raportu. Status w rejestrze GUNB nie jest potwierdzeniem etapu robót.
+
+Worker wykonuje ograniczony cykl z nadawcą przekazanym przez kod. Obecny bot i CLI nie
+wywołują tego API; SMTP, Meta, weryfikacja tokenem i ustawienia użytkownika są nadal
+niedostępne. `accepted` oznacza przyjęcie przez dostawcę. Timeout lub crash z nieznanym
+wynikiem zatrzymuje dany endpoint bez automatycznej ponownej wysyłki; nie gwarantujemy
+wysyłki dokładnie raz. Limity i warunki przyszłego uruchomienia opisuje
+[docs/WDROZENIE.md](docs/WDROZENIE.md#pr-2-raporty-i-trwały-outbox-bez-uruchomienia-nadawców).
+
+Kolejne kroki to SMTP z weryfikacją adresu, a następnie WhatsApp API z szablonami,
+zgodami i webhookiem HTTPS. Kolejne wydania powinny
 zachować schemat v13, aby można było wycofać nadawców do tego wydania przygotowawczego
 bez cofania danych. Zmiana schematu wymaga ponownej oceny tej zgodności.
 

@@ -65,12 +65,14 @@
 - `NotificationWorker(store, senders: Mapping[str, Sender], *, max_attempts=5)`;
   `run_once(*, limit=25) -> int` returns handled claims, bounded 1–100.
 
-- [ ] Write claim concurrency/per-endpoint serialization, retry/Retry-After/idempotency, accepted≠read,
+- [x] Write claim concurrency/per-endpoint serialization, retry/Retry-After/idempotency, accepted≠read,
   stale ACK, lease/crash/late ACK, revalidation, provider exception, disabled-channel, corruption,
   bounded loop, receiver isolation and no-transaction-during-dispatch tests.
-- [ ] Run `python -m pytest tests/test_notification_worker.py`; expected missing worker/API.
-- [ ] Implement claim/revalidation/completion and bounded worker per spec; no provider adapters.
-- [ ] Document current preparatory stage, operational limits and pre-enable requirements.
-- [ ] Run affected notification tests, full `python -m pytest -rs`, `git diff --check`; commit.
-- [ ] Fresh reviewer of complete branch per ignored local prompt; resolve real findings with regressions.
-- [ ] Push feature branch, create/attach PR against main; verify exact-HEAD CI and save review feedback.
+- [x] Run `python -m pytest tests/test_notification_worker.py`; expected missing worker/API.
+- [x] Implement claim/revalidation/completion and bounded worker per spec; no provider adapters.
+- [x] Document current preparatory stage, operational limits and pre-enable requirements.
+- [x] Run affected notification tests, full `python -m pytest -rs`, `git diff --check`; commit.
+  130 notification tests passed; full suite: 1029 passed, 1 POSIX-rights test skipped on Windows.
+- [ ] Push feature branch, create/attach PR against main; verify exact-HEAD CI.
+- [ ] Fresh reviewer of complete PR per ignored local prompt; resolve real findings with regressions
+  and save review feedback before handing the PR over for acceptance.
