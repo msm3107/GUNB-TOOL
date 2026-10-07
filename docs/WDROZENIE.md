@@ -207,6 +207,10 @@ domyślne okno obejmuje ostatnie 30 dni i respektuje datę początku raportów u
 Raport ma termin ważności do 24 h od enqueue. Worker obsługuje domyślnie do 25 zadań
 na cykl (maks. 100), z jednym aktywnym przejęciem na endpoint. Każdy wątek otwiera własne
 repozytorium SQLite, a wywołanie nadawcy odbywa się poza transakcją bazy.
+Publiczne operacje zapisu `NotificationStore` (odbiorca, enqueue, claim, preflight,
+complete) wymagają połączenia bez zewnętrznej transakcji. Odrzucają ją przez
+`RuntimeError` przed zmianami, aby błąd kolejnej części lub wpisu historii nie
+pozostawił częściowego wyniku po przechwyceniu wyjątku przez wywołującego.
 
 Nadawca musi kończyć żądanie przed upływem lease (domyślnie 120 s). `retry` jest dopuszczalne
 wyłącznie przy pewności, że dostawca nie przyjął wiadomości: backoff od 60 s, podwajany
@@ -226,6 +230,11 @@ i ciszą nocną, obsługę statusów/webhooków oraz procedurę rozliczania `unk
 Potrzebna jest też retencja treści kolejki i webhooków wraz z pomiarem na dużej historii.
 W tym PR nie ma polecenia do ręcznego rozliczania awarii; samo ponowne włączenie endpointu
 nie zwalnia rezerwacji inwestycji z `unknown`/`failed` i nie jest procedurą naprawczą.
+
+Przed podłączeniem harmonogramu jego implementer musi też zmierzyć selekcję kandydatów
+na dysku dla planowanej liczby inwestycji i odbiorców, z selektywnymi filtrami. Limit
+20 wyników nie ogranicza obecnego skanu i sortowania SQLite. Pomiar ma rozstrzygnąć
+potrzebę indeksu lub stronicowania; PR 2 nie zmienia już wydanego schematu v13.
 
 ## E. Wycofanie wersji
 

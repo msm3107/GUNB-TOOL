@@ -14,6 +14,7 @@
 - Keep CLI, scheduler, UI and both unavailable-sender config gates unchanged.
 - No merge/deployment. Use local reviewer prompt and save feedback in ignored `.local-review/`.
 - API callers must open their repository in the consuming thread; never keep a transaction during dispatch.
+- NotificationStore writes must reject an external transaction before mutation; each operation owns its transaction.
 
 ## Review Focus
 
@@ -73,6 +74,9 @@
 - [x] Document current preparatory stage, operational limits and pre-enable requirements.
 - [x] Run affected notification tests, full `python -m pytest -rs`, `git diff --check`; commit.
   130 notification tests passed; full suite: 1029 passed, 1 POSIX-rights test skipped on Windows.
+  After INT-01: 141 notification tests and 1040 full-suite tests passed; same single Windows skip.
 - [ ] Push feature branch, create/attach PR against main; verify exact-HEAD CI.
 - [ ] Fresh reviewer of complete PR per ignored local prompt; resolve real findings with regressions
   and save review feedback before handing the PR over for acceptance.
+  Initial review: INT-01/P2 requires standalone write transactions and regressions for partial enqueue/receipt.
+  PERF-01/P3 remains a documented measurement gate before production scheduler integration, owned by its implementer.

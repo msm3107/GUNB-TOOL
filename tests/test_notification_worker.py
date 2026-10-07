@@ -339,6 +339,45 @@ def test_receipt_database_failure_rolls_back_all_refs_and_outbox(notification_st
     assert store.repo.connection.execute("SELECT COUNT(*) FROM notification_deliveries").fetchone()[0] == 2
 
 
+def test_external_transaction_cannot_commit_partial_receipt(notification_store):
+    store = notification_store
+    endpoint = ready(store)
+    store.repo.upsert(lead("B/2"))
+    ident, = enqueue(store, endpoint, "atomic-receipt", "A/1", "B/2")
+    claim = store.claim(("email",))
+    store.repo.connection.execute(
+        "CREATE TEMP TRIGGER reject_second_receipt BEFORE INSERT ON notification_deliveries"
+        " WHEN NEW.id_sprawy = 'B/2' BEGIN SELECT RAISE(ABORT, 'simulated receipt failure'); END",
+    )
+    failure = None
+    with store.repo.transaction():
+        try:
+            store.complete(claim, DeliveryResult("accepted", "receipt"))
+        except (sqlite3.IntegrityError, RuntimeError) as exc:
+            failure = exc
+    assert store.repo.connection.execute("SELECT COUNT(*) FROM notification_deliveries").fetchone()[0] == 0
+    assert isinstance(failure, RuntimeError)
+    assert state(store, ident)["state"] == "sending" and state(store, ident)["provider_message_id"] is None
+    store.repo.connection.execute("DROP TRIGGER reject_second_receipt")
+    assert store.complete(claim, DeliveryResult("accepted", "receipt"))
+    assert state(store, ident)["state"] == "accepted"
+    assert store.repo.connection.execute("SELECT COUNT(*) FROM notification_deliveries").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("operation", ["claim", "prepare"])
+def test_claim_and_preflight_refuse_external_transaction(notification_store, operation):
+    store = notification_store
+    ident, = enqueue(store, ready(store))
+    claim = store.claim(("email",)) if operation == "prepare" else None
+    before = dict(state(store, ident))
+    with store.repo.transaction():
+        with pytest.raises(RuntimeError, match="transakcj"):
+            store.prepare_send(claim) if claim else store.claim(("email",))
+    assert dict(state(store, ident)) == before
+    result = store.prepare_send(claim) if claim else store.claim(("email",))
+    assert result is not None
+
+
 def test_process_exit_during_provider_call_is_never_automatically_resent(notification_store, clock):
     class SimulatedProcessExit(BaseException):
         pass

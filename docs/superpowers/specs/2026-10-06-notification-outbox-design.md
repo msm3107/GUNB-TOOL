@@ -23,6 +23,11 @@ Przepływ: aktualny odbiorca → pasujące inwestycje → raport → atomowe enq
 claim → ponowna walidacja → wywołanie nadawcy poza transakcją → trwały wynik.
 Każdy właściciel workera otwiera własny `LeadRepository` w swoim wątku.
 Worker nie uruchamia własnej nieskończonej pętli ani współdzielonego połączenia.
+Wszystkie publiczne operacje zapisu `NotificationStore` wymagają połączenia bez
+zewnętrznej transakcji. W przeciwnym razie zgłaszają `RuntimeError` przed zapisem.
+Każda operacja otwiera własne `BEGIN IMMEDIATE`; zagnieżdżenie repozytorium bez
+savepoint nie może utrwalić części raportu ani części historii po złapaniu wyjątku.
+Odczyty nie mają tego ograniczenia. Nie zmieniamy transakcji istniejącego bota.
 
 ## Odbiorca i dostęp
 
@@ -106,3 +111,10 @@ harmonogramu z TTL/ciszą nocną, maskowanie sekretów adapterów, obsługa webh
 i monotonicznych statusów, operacyjne rozliczanie unknown/failed, retencja payloadów
 i niepowiązanych webhooków oraz pomiar retencji na dużej historii. Ten PR nie ma
 aktywnej ścieżki nadawania i nie udostępnia tych przyszłych funkcji użytkownikowi.
+
+PERF-01 (review PR 2, P3): selekcja kandydatów skanuje `investments` i sortuje
+w SQLite; limit 20 wyników w Pythonie nie ogranicza pracy bazy. Implementer
+integracji harmonogramu musi przed jej uruchomieniem zmierzyć koszt na dysku dla
+zakładanej historii i liczby odbiorców, także z selektywnymi filtrami. Dopiero pomiar
+rozstrzyga potrzebę indeksu lub stronicowania i ewentualnej migracji. Nie dodajemy
+SQL LIMIT przed filtrami ani indeksu do już wydanego schematu v13 w tym PR.

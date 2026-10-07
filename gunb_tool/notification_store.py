@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 import sqlite3
-from typing import Sequence
+from typing import Iterator, Sequence
 import unicodedata
 import uuid
 
@@ -69,6 +70,14 @@ class NotificationStore:
         self.max_age_days = bounded_int(max_age_days, 1, 365)
         self.lease_seconds = bounded_int(lease_seconds, 1, 3600)
 
+    @contextmanager
+    def _transaction(self) -> Iterator[None]:
+        """Każdy zapis jest samodzielny: repo nie cofa osobno zagnieżdżonej operacji."""
+        if self._conn.in_transaction:
+            raise RuntimeError("Operacja powiadomień wymaga połączenia bez zewnętrznej transakcji")
+        with self.repo.transaction():
+            yield
+
     def get_endpoint(self, chat_id: int, endpoint_id: int) -> NotificationEndpoint:
         bounded_int(chat_id, -(2**63) + 1, 2**63 - 1)
         bounded_int(endpoint_id, 1, 2**63 - 1)
@@ -85,13 +94,14 @@ class NotificationStore:
             raise ValueError("Nieznany tryb raportu")
         now = utc_iso(self.repo.now())
         try:
-            ident = self._conn.execute(
-                "INSERT INTO notification_endpoints (chat_id, channel, address, mode, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)", (chat_id, channel, address, mode, now, now),
-            ).lastrowid
+            with self._transaction():
+                ident = self._conn.execute(
+                    "INSERT INTO notification_endpoints (chat_id, channel, address, mode, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)", (chat_id, channel, address, mode, now, now),
+                ).lastrowid
+                return self.get_endpoint(chat_id, ident)
         except sqlite3.IntegrityError as exc:
             raise NotificationError("Nie można dodać odbiorcy") from exc
-        return self.get_endpoint(chat_id, ident)
 
     def _change(self, endpoint: NotificationEndpoint, **values: object) -> NotificationEndpoint:
         if not values or not values.keys() <= _CHANGING:
@@ -115,7 +125,7 @@ class NotificationStore:
 
     def record_verification(self, chat_id: int, endpoint_id: int, *, expected_version: int) -> NotificationEndpoint:
         """Zaufany adapter potwierdził adres dla tej wersji; sam token i limity należą do adaptera."""
-        with self.repo.transaction():
+        with self._transaction():
             endpoint = self.get_endpoint(chat_id, endpoint_id)
             self._check_version(endpoint, expected_version)
             if endpoint.enabled:
@@ -128,7 +138,7 @@ class NotificationStore:
     def record_consent(self, chat_id: int, endpoint_id: int, *, expected_version: int,
                        source: str) -> NotificationEndpoint:
         source = bounded_text(source, 200, single_line=True)
-        with self.repo.transaction():
+        with self._transaction():
             endpoint = self.get_endpoint(chat_id, endpoint_id)
             self._check_version(endpoint, expected_version)
             return self._change(endpoint, enabled=0, consent_at=utc_iso(self.repo.now()),
@@ -137,7 +147,7 @@ class NotificationStore:
     def set_enabled(self, chat_id: int, endpoint_id: int, enabled: bool, *, expected_version: int) -> NotificationEndpoint:
         if type(enabled) is not bool:
             raise ValueError("Wymagana wartość logiczna")
-        with self.repo.transaction():
+        with self._transaction():
             endpoint = self.get_endpoint(chat_id, endpoint_id)
             self._check_version(endpoint, expected_version)
             if enabled and not self._has_proofs(endpoint):
@@ -145,7 +155,7 @@ class NotificationStore:
             return self._change(endpoint, enabled=int(enabled), activated_at=utc_iso(self.repo.now()) if enabled else None)
 
     def change_address(self, chat_id: int, endpoint_id: int, address: str) -> NotificationEndpoint:
-        with self.repo.transaction():
+        with self._transaction():
             endpoint = self.get_endpoint(chat_id, endpoint_id)
             address = normalize_address(endpoint.channel, address)
             if address == endpoint.address:
@@ -157,12 +167,12 @@ class NotificationStore:
                 raise NotificationError("Nie można zmienić adresu") from exc
 
     def revoke_consent(self, chat_id: int, endpoint_id: int) -> NotificationEndpoint:
-        with self.repo.transaction():
+        with self._transaction():
             endpoint = self.get_endpoint(chat_id, endpoint_id)
             return self._change(endpoint, enabled=0, consent_revoked_at=utc_iso(self.repo.now()), activated_at=None)
 
     def delete_endpoint(self, chat_id: int, endpoint_id: int) -> None:
-        with self.repo.transaction():
+        with self._transaction():
             self.get_endpoint(chat_id, endpoint_id)
             self._conn.execute("DELETE FROM notification_endpoints WHERE id = ? AND chat_id = ?", (endpoint_id, chat_id))
 
@@ -261,7 +271,7 @@ class NotificationStore:
         refs = tuple(ref for part in parts for ref in part.leads)
         if len(refs) > MAX_REPORT_LEADS or len(set(refs)) != len(refs):
             raise ValueError("Niepoprawna partia rewizji")
-        with self.repo.transaction():
+        with self._transaction():
             endpoint = self.get_endpoint(chat_id, endpoint_id)
             if any(part.chat_id != chat_id for part in parts):
                 raise NotificationError("Niezgodny właściciel raportu")
@@ -348,7 +358,7 @@ class NotificationStore:
             raise ValueError("Nieznany kanał workera")
         if not channels:
             return None
-        with self.repo.transaction():
+        with self._transaction():
             self._recover_claims(channels)
             marks = ",".join("?" for _ in channels)
             stamp = utc_iso(self.repo.now())
@@ -377,7 +387,7 @@ class NotificationStore:
 
     def prepare_send(self, claim: Claim) -> tuple[NotificationEndpoint, ReportPart] | None:
         """Ostatnia kontrola; zwracamy niemutowalnego odbiorcę zamiast czytać nowy adres po jej zakończeniu."""
-        with self.repo.transaction():
+        with self._transaction():
             row = self._claimed_row(claim)
             if row is None or row["state"] != "sending":
                 return None
@@ -410,7 +420,7 @@ class NotificationStore:
         bounded_int(max_attempts, 1, 10)
         if not isinstance(result, DeliveryResult):
             raise ValueError("Niepoprawny wynik nadawcy")
-        with self.repo.transaction():
+        with self._transaction():
             row = self._claimed_row(claim)
             if row is None:
                 return False

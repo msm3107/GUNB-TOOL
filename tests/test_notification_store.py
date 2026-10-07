@@ -53,6 +53,50 @@ def history(store, endpoint, case="A/1"):
     )
 
 
+def test_external_transaction_cannot_commit_partial_enqueue(notification_store):
+    store = notification_store
+    endpoint = ready(store)
+    store.repo.upsert(lead("B/2"))
+    parts = report(store, endpoint, "A/1", "B/2", part_size=1)
+    broken = (parts[0], replace(parts[1], body="\n" * 32767 + "x"))
+    failure = None
+    with store.repo.transaction():
+        BotStore(store.repo).set_company(MIETEK, "Zewnętrzna operacja")
+        try:
+            store.enqueue(MIETEK, endpoint.id, "atomic-batch", broken,
+                          expires_at=store.repo.now() + timedelta(hours=1))
+        except (ValueError, RuntimeError) as exc:
+            failure = exc
+    assert store.repo.connection.execute("SELECT COUNT(*) FROM notification_outbox").fetchone()[0] == 0
+    assert isinstance(failure, RuntimeError)
+    assert BotStore(store.repo).get_user(MIETEK).firma == "Zewnętrzna operacja"
+    ids = store.enqueue(MIETEK, endpoint.id, "atomic-batch", parts,
+                        expires_at=store.repo.now() + timedelta(hours=1))
+    assert len(ids) == 2
+    assert store.enqueue(MIETEK, endpoint.id, "atomic-batch", parts,
+                         expires_at=store.repo.now() + timedelta(hours=1)) == ids
+
+
+@pytest.mark.parametrize("operation", ["add", "verify", "consent", "enable", "address", "revoke", "delete"])
+def test_endpoint_mutations_refuse_external_transaction_before_changes(notification_store, operation):
+    store = notification_store
+    endpoint = store.add_endpoint(MIETEK, "email", "odbiorca@example.test")
+    actions = {
+        "add": lambda: store.add_endpoint(MIETEK, "whatsapp", "+48123456789"),
+        "verify": lambda: store.record_verification(MIETEK, endpoint.id, expected_version=endpoint.version),
+        "consent": lambda: store.record_consent(MIETEK, endpoint.id, expected_version=endpoint.version, source="form"),
+        "enable": lambda: store.set_enabled(MIETEK, endpoint.id, False, expected_version=endpoint.version),
+        "address": lambda: store.change_address(MIETEK, endpoint.id, "nowy@example.test"),
+        "revoke": lambda: store.revoke_consent(MIETEK, endpoint.id),
+        "delete": lambda: store.delete_endpoint(MIETEK, endpoint.id),
+    }
+    with store.repo.transaction():
+        with pytest.raises(RuntimeError, match="transakcj"):
+            actions[operation]()
+    assert store.get_endpoint(MIETEK, endpoint.id) == endpoint
+    assert store.repo.connection.execute("SELECT COUNT(*) FROM notification_endpoints").fetchone()[0] == 1
+
+
 def test_report_round_trip_keeps_facts_and_revisions(notification_store):
     store = notification_store
     endpoint = ready(store)
