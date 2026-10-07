@@ -75,8 +75,10 @@
 - [x] Run affected notification tests, full `python -m pytest -rs`, `git diff --check`; commit.
   130 notification tests passed; full suite: 1029 passed, 1 POSIX-rights test skipped on Windows.
   After INT-01: 141 notification tests and 1040 full-suite tests passed; same single Windows skip.
-- [ ] Push feature branch, create/attach PR against main; verify exact-HEAD CI.
-- [ ] Fresh reviewer of complete PR per ignored local prompt; resolve real findings with regressions
+- [x] Push feature branch, create/attach PR against main; verify exact-HEAD CI.
+- [x] Fresh reviewer of complete PR per ignored local prompt; resolve real findings with regressions
   and save review feedback before handing the PR over for acceptance.
-  Initial review: INT-01/P2 requires standalone write transactions and regressions for partial enqueue/receipt.
+  PR #8 created and attached. INT-01/P2 fixed with standalone transactions and 11 RED→GREEN regressions.
+  Independent follow-up accepted the code; 16 reviewer checks passed. CI: 12/12 success.
+  Review reports are retained locally in ignored `.local-review/`; no review publication, merge or deployment.
   PERF-01/P3 remains a documented measurement gate before production scheduler integration, owned by its implementer.
