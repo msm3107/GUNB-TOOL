@@ -30,11 +30,12 @@
 `SMTPEmailSender(settings)`; `send(endpoint, report, *, idempotency_key)`;
 `send_verification(endpoint, token, *, expires_at, idempotency_key)` -> DeliveryResult.
 
-- [ ] Write fake protocol tests for TLS/auth order, envelope/MIME, stable Message-ID, injection,
+- [x] Write fake protocol tests for TLS/auth order, envelope/MIME, stable Message-ID, injection,
   SMTP codes, errors before/during DATA, cleanup, budget and repr/log privacy.
-- [ ] Run SMTP tests; verify missing module/API RED.
-- [ ] Implement adapter from spec with smtplib/ssl/email, no runtime wiring.
-- [ ] Run SMTP and existing notification tests; diff check; commit.
+- [x] Run SMTP tests; verify missing module/API RED.
+- [x] Implement adapter from spec with smtplib/ssl/email, no runtime wiring.
+- [x] Run SMTP and existing notification tests; diff check; commit.
+  39 SMTP cases + 98 store/worker cases passed (137 total).
 
 ### Task 2: Durable verification and v14
 
