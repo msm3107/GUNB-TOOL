@@ -210,11 +210,15 @@ discord:
   webhook_url: ${DISCORD_WEBHOOK_URL}
   delay_seconds: 1.0
 
-# Fundament nowych kanałów (schemat v13). Nadawcy będą wdrażani w kolejnych wydaniach.
-# Brak tych sekcji także oznacza wyłączenie. W tym wydaniu enabled: true jest błędem
-# konfiguracji — nie ma jeszcze wysyłki SMTP ani WhatsApp/Meta API.
+# E-mail wymaga świadomego włączenia, TLS i danych SMTP w .env.
+# Brak sekcji oznacza wyłączenie; WhatsApp pozostaje niedostępny.
 email:
   enabled: false
+  host: ${SMTP_HOST:-}
+  port: 587
+  tls: starttls
+  from_address: ${SMTP_FROM_ADDRESS:-}
+  timeout_seconds: 5
 
 whatsapp:
   enabled: false

@@ -10,10 +10,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import yaml
 
@@ -22,6 +22,9 @@ from .teryt import get_voivodeship
 from .text import fold_polish
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .email_sender import SMTPSettings
 
 
 class ConfigError(ValueError):
@@ -190,9 +193,10 @@ class DiscordConfig:
 
 @dataclass(frozen=True)
 class EmailConfig:
-    """Flaga przyszłego nadawcy e-mail; wydanie przygotowawcze wymaga wyłączenia."""
+    """Optional SMTP runtime; private settings never appear in config repr."""
 
     enabled: bool = False
+    smtp: SMTPSettings | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -435,9 +439,29 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         logging=_logging(_section(raw, "logging"), base_dir),
         segments=_segments(_section(raw, "segments")),
         bot=bot,
-        email=EmailConfig(enabled=_prepared_channel(_section(raw, "email"), "email")),
+        email=_email(_section(raw, "email"), env),
         whatsapp=WhatsAppConfig(enabled=_prepared_channel(_section(raw, "whatsapp"), "whatsapp")),
     )
+
+
+def _email(data: dict[str, Any], env: Mapping[str, str]) -> EmailConfig:
+    from .email_sender import SMTPSettings
+
+    allowed = {'enabled', 'host', 'port', 'tls', 'from_address', 'timeout_seconds'}
+    if set(data) - allowed:
+        raise ConfigError('email.enabled: nieobsługiwane ustawienia; dane logowania podaj tylko w środowisku')
+    if not _bool(data, 'email', 'enabled', False):
+        return EmailConfig()
+    try:
+        username, password = env.get('SMTP_USERNAME', ''), env.get('SMTP_PASSWORD', '')
+        if not username or not password:
+            raise ValueError('Incomplete authentication')
+        smtp = SMTPSettings(host=data.get('host', ''), port=data.get('port', 587),
+                            from_address=data.get('from_address', ''), tls=data.get('tls', 'starttls'),
+                            username=username, password=password, timeout_seconds=data.get('timeout_seconds', 5))
+    except (ValueError, TypeError, AttributeError):
+        raise ConfigError('email.enabled: wymagane poprawne SMTP z TLS, SMTP_USERNAME i SMTP_PASSWORD') from None
+    return EmailConfig(enabled=True, smtp=smtp)
 
 
 def _prepared_channel(data: dict[str, Any], section: str) -> bool:

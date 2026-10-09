@@ -145,8 +145,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_USAGE
     if args.zdrowie:  # bez logu do pliku, alertów i otwierania bazy przez repozytorium (to by ją migrowało)
         return _run_health(config, ping_url=args.ping or os.environ.get("HEALTHCHECK_PING_URL"))
+    smtp = config.email.smtp
     setup_logging(config.logging, verbose=args.verbose,
-                  secrets=(config.telegram.bot_token, config.discord.webhook_url))
+                  secrets=(config.telegram.bot_token, config.discord.webhook_url,
+                           *( (smtp.username, smtp.password, smtp.from_address) if smtp else () )))
 
     telegram = config.telegram
     alerts = None
@@ -200,7 +202,7 @@ class RedactingFormatter(logging.Formatter):
 
     def __init__(self, fmt: str, *, secrets: Sequence[str] = ()) -> None:
         super().__init__(fmt)
-        self._secrets = tuple(s for s in secrets if s and len(s) >= 8)
+        self._secrets = tuple(sorted({s for s in secrets if s}, key=len, reverse=True))
 
     def format(self, record: logging.LogRecord) -> str:
         text = redact_url(super().format(record))
