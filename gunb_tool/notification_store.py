@@ -21,7 +21,7 @@ from .scoring import HOT
 
 _RESERVING = ("queued", "retry", "sending", "unknown", "failed")
 _CHANGING = frozenset({"address", "enabled", "verified_at", "consent_at", "consent_source",
-                      "consent_revoked_at", "activated_at"})
+                      "consent_revoked_at", "activated_at", "mode"})
 
 
 class NotificationError(ValueError):
@@ -102,6 +102,29 @@ class NotificationStore:
                 return self.get_endpoint(chat_id, ident)
         except sqlite3.IntegrityError as exc:
             raise NotificationError("Nie można dodać odbiorcy") from exc
+
+    def list_endpoints(self, chat_id: int, channel: str = 'email') -> tuple[NotificationEndpoint, ...]:
+        bounded_int(chat_id, -(2**63) + 1, 2**63 - 1)
+        if channel not in CHANNELS:
+            raise ValueError('Nieznany kanał')
+        # The bot supports one mailbox. A second result signals operator intervention.
+        return tuple(_endpoint(row) for row in self._conn.execute(
+            'SELECT * FROM notification_endpoints WHERE chat_id = ? AND channel = ? ORDER BY id LIMIT 2',
+            (chat_id, channel)))
+
+    def has_unresolved(self, chat_id: int, endpoint_id: int) -> bool:
+        self.get_endpoint(chat_id, endpoint_id)
+        return self._conn.execute(
+            "SELECT 1 FROM notification_outbox WHERE endpoint_id = ? AND state IN ('unknown', 'failed') LIMIT 1",
+            (endpoint_id,)).fetchone() is not None
+
+    def set_mode(self, chat_id: int, endpoint_id: int, mode: str, *, expected_version: int) -> NotificationEndpoint:
+        if mode not in MODES:
+            raise ValueError('Nieznany tryb raportu')
+        with self._transaction():
+            endpoint = self.get_endpoint(chat_id, endpoint_id)
+            self._check_version(endpoint, expected_version)
+            return endpoint if endpoint.mode == mode else self._change(endpoint, mode=mode)
 
     def _change(self, endpoint: NotificationEndpoint, **values: object) -> NotificationEndpoint:
         if not values or not values.keys() <= _CHANGING:

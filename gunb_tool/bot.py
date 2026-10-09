@@ -198,6 +198,7 @@ class LeadBot:
         fetcher: Callable[[], bool | str | None] | None = None,
         maintenance: Callable[[], object] | None = None,
         clock: Callable[[], datetime] | None = None,
+        email_commands: Any = None,
     ) -> None:
         self.repo = repo
         self.api = api
@@ -209,6 +210,7 @@ class LeadBot:
         self.max_age_days = max_age_days
         self.fetcher = fetcher
         self.maintenance = maintenance
+        self.email_commands = email_commands
         self._now = clock or repo.now
         self._offset: int | None = None
         self._db_busy: dict[int, int] = {}
@@ -220,7 +222,10 @@ class LeadBot:
 
     def setup(self) -> None:
         """Rejestruje menu komend widoczne pod „/” w Telegramie."""
-        self.api.set_my_commands(BOT_COMMANDS)
+        commands = list(BOT_COMMANDS)
+        if self.email_commands is not None:
+            commands.append({'command': 'email', 'description': 'Powiadomienia e-mail i rezygnacja'})
+        self.api.set_my_commands(commands)
 
     def run_forever(self, *, should_stop: Callable[[], bool] = lambda: False,
                     sleep: Callable[[float], None] = time.sleep) -> None:
@@ -525,6 +530,12 @@ class LeadBot:
         if user.status == "zablokowany":  # odblokował bota i znów pisze – dostęp zostaje, jaki był
             self.store.set_status(chat_id, "aktywny")
             user = self.store.get_user(chat_id)
+        if command == '/email':
+            if self.email_commands is None:
+                self._send(chat_id, 'Powiadomienia e-mail są wyłączone przez administratora.')
+            else:
+                self.email_commands.handle(user, text.split()[1:])
+            return
         if user.status == "odrzucony":
             self._send(chat_id, ui.rejected_text())
             return
