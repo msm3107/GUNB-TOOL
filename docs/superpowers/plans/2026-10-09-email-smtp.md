@@ -55,6 +55,13 @@ historical `test_notification_foundation.py`, README and docs/WDROZENIE.
   After review fixes: 218 affected tests passed; full suite: 1117 passed, 1 skipped (Windows POSIX), 19.22s.
   Restore-counter Message-ID regression observed RED, fixed by binding the key to the token digest.
   Review REL-01/REL-02 reproduced RED and corrected: bounded receipt before SMTP;
-  quoted-printable UTF-8 for 7-bit transport. Follow-up review and new-HEAD CI pending.
-- [ ] Create/attach PR; independent full review per local prompt; save ignored reports.
-- [ ] Resolve real findings with regressions/re-review; verify exact final-HEAD CI.
+  quoted-printable UTF-8 for 7-bit transport. Follow-up accepted code HEAD d34c1b6;
+  CI 12/12 SUCCESS (Python 3.10–3.14 and deploy-scripts, push + PR).
+- [x] Create/attach PR #9; independent full review per local prompt; save ignored reports.
+- [x] Resolve REL-01/REL-02 with RED→GREEN regressions and same-reviewer follow-up;
+  verify final-HEAD CI (including the subsequent status-only plan commit).
+
+**Handoff:** PR #9 https://github.com/msm3107/GUNB-TOOL/pull/9. Independent verdict:
+AKCEPTUJ for preparatory scope, code reviewed at d34c1b6. No merge/deploy performed.
+Both runtime flags still fail closed. Production integration gates remain in the spec
+and deployment guide; v14→v13 rollback requires backup restore and loses later data.
