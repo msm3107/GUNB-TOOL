@@ -186,9 +186,9 @@ drugiego bota na kopii z tym samym tokenem.
 
 **Powrót do kodu v12 wymaga kopii sprzed migracji**, zgodnie z sekcją E; samo
 przełączenie kodu nie wystarczy. Odtworzenie cofa dane zapisane od czasu kopii.
-Wydania z nadawcami powinny zachować v13, aby wycofanie ich do tego wydania
-przygotowawczego nie wymagało odtwarzania bazy; każdą późniejszą zmianę schematu
-trzeba ponownie sprawdzić przed wydaniem. Przed takim powrotem do wydania
+PR 2 zachowuje v13, więc wycofanie go do PR 1 nie wymaga odtwarzania bazy.
+PR 3 dodaje v14; dla tego wydania obowiązuje procedura odtworzenia opisana niżej.
+Przed powrotem do wydania
 przygotowawczego ustaw oba `enabled: false`, ponieważ odrzuca ono włączone kanały.
 Stan outbox pozostaje w bazie, ale wysyłka nowych kanałów jest w nim zatrzymana.
 
@@ -235,6 +235,57 @@ Przed podłączeniem harmonogramu jego implementer musi też zmierzyć selekcję
 na dysku dla planowanej liczby inwestycji i odbiorców, z selektywnymi filtrami. Limit
 20 wyników nie ogranicza obecnego skanu i sortowania SQLite. Pomiar ma rozstrzygnąć
 potrzebę indeksu lub stronicowania; PR 2 nie zmienia już wydanego schematu v13.
+
+### PR 3: SMTP i weryfikacja adresu (v13 → v14)
+
+PR 3 dodaje adapter SMTP i wewnętrzne API `EmailVerification.request/consume`.
+Bot, CLI i harmonogram nadal nie uruchamiają kanałów; zostaw oba `enabled: false`.
+Nie ma jeszcze pól SMTP w config.yaml ani komend użytkownika. Nie dodawaj procesu
+wysyłającego i nie wpisuj credentials w kod. Kolejny PR integracji musi dodać
+konfigurację przez zmienne środowiskowe, maskowanie i eksport bez sekretów.
+
+Aktualizuj przypięty commit/tag po scaleniu, standardowym `gunb-admin aktualizuj WERSJA`.
+Zrób też `gunb-admin kopia` i zachowaj ją poza serwerem. Pierwszy start nowego kodu
+tworzy `…-przed-v14-…`, a następnie transakcyjnie dodaje jedną tabelę
+`email_verifications` i indeksy. Brak kopii lub błąd DDL zatrzymuje migrację;
+istniejące dane Telegrama i outbox pozostają. W czystej aktualizacji nowa tabela jest pusta.
+Po aktualizacji sprawdź zdrowie, logi, `/status` i raport Telegrama. Na kopii bazy:
+`PRAGMA user_version` = 14, integrity_check = ok, foreign_key_check bez wyników.
+
+**Wycofanie PR 3 do kodu PR 1–2/v13 wymaga odtworzenia kopii sprzed v14** zgodnie
+z sekcją E. Samo przełączenie kodu zostanie bezpiecznie odrzucone jako nowszy schemat.
+Odtworzenie cofa wszystkie dane zapisane po kopii, także zmiany bota i outbox.
+Nie usuwaj ręcznie tabel ani nie obniżaj user_version. Zachowaj kopię stanu v14
+przed odtwarzaniem, jak robi istniejące narzędzie odtworzenia.
+
+Weryfikacja jest wewnętrznym API z zaufanym ownerem: request dla własnego wyłączonego
+endpointu e-mail, wiadomość z jednorazowym kodem, następnie consume w tym samym
+zaufanym interfejsie. Nie ma serwera HTTP ani gotowej komendy bota do tych czynności.
+Kod ważny 15 minut; po 5 błędnych próbach jest unieważniany. Zmiana adresu lub wersji
+endpointu, powtórne żądanie i usunięcie endpointu unieważniają możliwość użycia starego
+kodu. Potwierdzenie nie zapisuje zgody ani nie włącza wysyłki. Dalsza aktywacja wymaga
+osobnej, potwierdzonej zgody i istniejących kontroli dostępu.
+
+Limity request: min. 60 s między żądaniami ownera/adresu, maks. 3/h dla ownera
+i adresu oraz 100/h globalnie. Liczą się także nieprzyjęte próby wysyłki. Limity adresu
+i globalne pozostają po usunięciu endpointu/konta dzięki nullable FK; digest adresu
+jest metadaną wrażliwą. Rekordy starsze niż 7 dni są usuwane przy request, do 200 na
+operację. To sprzątanie przy ruchu, bez gwarancji usunięcia dokładnie po 7 dniach;
+integracja produkcyjna musi zapewnić planową retencję również bez ruchu.
+Tokeny nie są utrwalane jawnie i nie są automatycznie ponawiane. Po crashu można
+żądać nowego tokenu zgodnie z limitem. Unknown zachowuje możliwość potwierdzenia
+maila, który mógł już dotrzeć; retry/failed unieważnia token. Przyszłe UI musi pokazywać
+jednakowy komunikat bez ujawniania diagnostyki SMTP lub istnienia skrzynki.
+
+SMTPSettings obsługuje wyłącznie STARTTLS lub implicit TLS z kontrolą certyfikatu
+i hosta. AUTH następuje po TLS. Jeden adres koperty i To, bez Cc/Bcc. Message-ID
+jest stabilnym identyfikatorem nagłówka aplikacji, nie potwierdzeniem odczytu ani
+mechanizmem idempotencji SMTP. Jawne 4xx pozwala retry, 5xx oznacza failed, końcowe
+DATA 250 oznacza accepted. Utrata połączenia podczas DATA oznacza unknown.
+Socket timeout wynosi domyślnie 5 s (0.1–10 s); budżet 45 s jest sprawdzany między
+poleceniami, bez twardego przerwania DNS/polecenia w toku. Przed podłączeniem
+workera trzeba dobrać lease i nadzór czasu. Nadal wymagane są operacyjne unknown/failed,
+zgody/UI/rezygnacja, harmonogram/TTL/cisza nocna, retencja i pomiar PERF-01 z PR 2.
 
 ## E. Wycofanie wersji
 

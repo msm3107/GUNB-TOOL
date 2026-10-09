@@ -45,12 +45,14 @@ historical `test_notification_foundation.py`, README and docs/WDROZENIE.
 **Interfaces:** `EmailVerification(store, sender).request(chat_id, endpoint_id) -> DeliveryResult | None`,
 `consume(chat_id, endpoint_id, token) -> bool`; sender protocol from Task 1.
 
-- [ ] Write tests for real v13 upgrade/state/backup/DDL failure/restart/old-code refusal,
+- [x] Write tests for real v13 upgrade/state/backup/DDL failure/restart/old-code refusal,
   token privacy, TTL/replay/version/address/ownership/access, attempts, provider failure,
   durable/global/address/user limits, deletion, retention and concurrent request/consume.
-- [ ] Run verification tests; expected missing module/schema RED.
-- [ ] Implement v14/service and pin historical v13 tests to their actual migration scope.
-- [ ] Document preparatory stage, token flow, API limits, TLS timeout limits and rollback.
-- [ ] Run affected tests, full pytest -rs, diff check; commit and push.
+- [x] Run verification tests; expected missing module/schema RED.
+- [x] Implement v14/service and pin historical v13 tests to their actual migration scope.
+- [x] Document preparatory stage, token flow, API limits, TLS timeout limits and rollback.
+- [x] Run affected tests, full pytest -rs, diff check; commit.
+  214 affected tests passed; full suite: 1113 passed, 1 skipped (Windows POSIX), 26.05s.
+  Restore-counter Message-ID regression observed RED, fixed by binding the key to the token digest.
 - [ ] Create/attach PR; independent full review per local prompt; save ignored reports.
 - [ ] Resolve real findings with regressions/re-review; verify exact final-HEAD CI.

@@ -58,7 +58,10 @@ jednakowy komunikat o żądaniu, bez ujawniania wyniku SMTP lub istnienia skrzyn
 
 Token `secrets.token_urlsafe(32)` (43 znaki) trafia tylko do maila, nie do zwrotki API,
 bazy, repr ani logów. SHA-256 tokenu w bazie; compare_digest przy consume. Związanie
-z owner/endpoint/version i skrótem adresu. Ponowne żądanie unieważnia wcześniejszy
+klucza wiadomości także ze skrótem tokenu zapobiega kolizji Message-ID nowego kodu
+po odtworzeniu kopii i cofnięciu licznika ID. Nie ujawnia surowego tokenu.
+Weryfikacja jest związana z owner/endpoint/version i skrótem adresu.
+Ponowne żądanie unieważnia wcześniejszy
 token endpointu. Wygasa po 900 s, maks. 5 błędnych prób prawidłowego formatu.
 Consume atomowo zapisuje consumed_at i verified_at. Nie zmienia zgody, version
 ani enabled. Zmiana adresu/zgody/wersji, usunięcie i ponowne utworzenie endpointu,
@@ -73,6 +76,8 @@ możliwość potwierdzenia otrzymanego maila. Brak automatycznego retry weryfika
 po crashu można ponowić po limicie z nowym tokenem. Treść tokenu nie jest utrwalana.
 Retencja 7 dni, usuwanie do 200 najstarszych rekordów na request. Dane limitujące
 z ostatniej godziny pozostają; timestamp future nie może ułatwiać obejścia limitów.
+To sprzątanie przy ruchu, nie gwarancja usunięcia po dokładnie 7 dniach; przed
+produkcją potrzebna planowa retencja również przy braku żądań.
 
 ## Weryfikacja i dalsze kroki
 

@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
 from .notification_schema import NOTIFICATION_SCHEMA
+from .email_verification_schema import EMAIL_VERIFICATION_SCHEMA
 
 log = logging.getLogger(__name__)
 
@@ -357,6 +358,7 @@ _MIGRATIONS: tuple[Migration, ...] = (
     _PERSONAL_SCHEMA,                                     # v11: przypomnienia, notatki, pauza, zdarzenia
     _SALES_SCHEMA,                                        # v12: źródło, zamówienia, wyniki pracy, podpowiedzi
     NOTIFICATION_SCHEMA,                                  # v13: fundament e-mail/WhatsApp, bez wysyłki
+    EMAIL_VERIFICATION_SCHEMA,                            # v14: tokeny weryfikacji i trwałe limity
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

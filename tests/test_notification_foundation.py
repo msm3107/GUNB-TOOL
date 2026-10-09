@@ -39,6 +39,13 @@ def isolated_env(monkeypatch):
 
 
 @pytest.fixture
+def v13_migrations(monkeypatch):
+    """Historical tests exercise the released v13 step, not later additive steps."""
+    monkeypatch.setattr(storage, '_MIGRATIONS', storage._MIGRATIONS[:13])
+    monkeypatch.setattr(storage, 'SCHEMA_VERSION', 13)
+
+
+@pytest.fixture
 def legacy_state(tmp_path, clock, monkeypatch):
     """Pełny stan bota zapisany przez prawdziwy kod schematu v12."""
     with monkeypatch.context() as legacy:
@@ -103,7 +110,7 @@ def version(path):
         return conn.execute("PRAGMA user_version").fetchone()[0]
 
 
-def test_v12_migration_keeps_all_data_and_creates_one_restorable_backup(legacy_state, clock, monkeypatch):
+def test_v12_migration_keeps_all_data_and_creates_one_restorable_backup(legacy_state, clock, monkeypatch, v13_migrations):
     path = db_of(legacy_state)
     before = dump(path)
     assert version(path) == 12
@@ -144,7 +151,7 @@ def test_failed_backup_does_not_start_v13_migration(legacy_state, tmp_path):
     assert version(path) == 12 and dump(path) == before
 
 
-def test_partial_v13_migration_rolls_back_every_new_table(legacy_state, monkeypatch):
+def test_partial_v13_migration_rolls_back_every_new_table(legacy_state, monkeypatch, v13_migrations):
     assert storage.SCHEMA_VERSION == 13
     path = db_of(legacy_state)
     before = dump(path)
@@ -157,7 +164,7 @@ def test_partial_v13_migration_rolls_back_every_new_table(legacy_state, monkeypa
     assert version(backup) == 12 and dump(backup) == before
 
 
-def test_old_code_refuses_v13_without_modifying_it(tmp_path, monkeypatch):
+def test_old_code_refuses_v13_without_modifying_it(tmp_path, monkeypatch, v13_migrations):
     path = tmp_path / "state.sqlite"
     with LeadRepository(path):
         pass
@@ -314,13 +321,17 @@ def test_filled_notification_state_survives_export_import_and_backup(legacy_stat
         processed(repo.connection, email, queued(repo.connection, email))
         queued(repo.connection, whatsapp)
         webhook(repo.connection, whatsapp)
+        repo.connection.execute(
+            'INSERT INTO email_verifications (chat_id, endpoint_id, endpoint_version, address_digest, token_digest, issued_at, expires_at)'
+            ' VALUES (?, ?, 1, ?, ?, ?, ?)', (MIETEK, email, 'a' * 64, 'b' * 64, NOW, NOW),
+        )
     before = dump(path)
     assert all(before[table] for table in TABLES)
     package = export_state(legacy_state, tmp_path / "packages", now=clock.now_utc)
     target = tmp_path / "target" / "config.yaml"
     imported = import_state(package, target, now=clock.now_utc)
-    assert imported.schema_version == 13 and dump(imported.database) == before
-    assert all(imported.counts[t] == len(before[t]) for t in TABLES)
+    assert imported.schema_version == storage.SCHEMA_VERSION and dump(imported.database) == before
+    assert all(imported.counts[t] == len(before[t]) for t in TABLES | {'email_verifications'})
     backup = backup_now(target, now=clock.now_utc)
     with LeadRepository(imported.database) as repo:
         repo.connection.execute("DELETE FROM notification_endpoints")
@@ -343,7 +354,7 @@ def test_old_config_defaults_both_channels_off_and_keeps_cli_working(tmp_path):
     with pytest.raises(FrozenInstanceError):
         config.email.enabled = True
     assert main.main(["--config", str(path), "--stats"]) == 0
-    assert version(tmp_path / "state.sqlite") == 13
+    assert version(tmp_path / "state.sqlite") == storage.SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("channel", ["email", "whatsapp"])
