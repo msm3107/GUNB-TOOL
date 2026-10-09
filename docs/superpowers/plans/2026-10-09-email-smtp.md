@@ -1,0 +1,67 @@
+# SMTP and email verification implementation plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans, inline continuation as PR #7–8. Track checkboxes; one fresh independent whole-PR reviewer.
+
+**Goal:** TLS-only SMTP adapter and durable one-time email verification.
+**Architecture:** Existing Sender/worker/endpoint interfaces; one v14 table via existing migration mechanism. No runtime wiring.
+**Tech Stack:** Python >=3.10 standard library, SQLite/WAL, pytest; no dependencies.
+**Spec:** `docs/superpowers/specs/2026-10-09-email-smtp-design.md`.
+
+## Global constraints
+
+- Base f197bda2162849db95714a11720ec438b6856c9c, branch codex/email-smtp, reuse attached worktree.
+- Keep bot/CLI/UI/scheduler/config gates unchanged; no real network sends, secrets or production data.
+- v13 DDL unchanged; v14 migration only additive table/indices. Explain restore requirement.
+- All mutable verification operations reject external transaction. SMTP outside DB transaction.
+- Mask secrets/addresses/tokens; no raw provider error logging. No merge/deploy.
+
+## Review focus
+
+- Known SMTP rejection permits retry; ambiguous DATA cannot auto-resend.
+- Cleanup after DATA 250 cannot turn acceptance into failure/unknown.
+- New endpoint/address/version cannot consume an old token, including delete/recreate.
+- Limits survive restarts and endpoint deletion; concurrent requests cannot bypass them.
+- Migration preserves actual bot/outbox state and refuses unsafe rollback to v13.
+
+### Task 1: SMTP transport adapter
+
+**Files:** Create `gunb_tool/email_sender.py`, `tests/test_email_sender.py`.
+**Interfaces:** `SMTPSettings(host, port, from_address, tls='starttls', username='', password='', timeout_seconds=5)`;
+`SMTPEmailSender(settings)`; `send(endpoint, report, *, idempotency_key)`;
+`send_verification(endpoint, token, *, expires_at, idempotency_key)` -> DeliveryResult.
+
+- [x] Write fake protocol tests for TLS/auth order, envelope/MIME, stable Message-ID, injection,
+  SMTP codes, errors before/during DATA, cleanup, budget and repr/log privacy.
+- [x] Run SMTP tests; verify missing module/API RED.
+- [x] Implement adapter from spec with smtplib/ssl/email, no runtime wiring.
+- [x] Run SMTP and existing notification tests; diff check; commit.
+  39 SMTP cases + 98 store/worker cases passed (137 total).
+
+### Task 2: Durable verification and v14
+
+**Files:** Create `email_verification_schema.py`, `email_verification.py`,
+`tests/test_email_verification.py`; update `storage.py` migration list,
+historical `test_notification_foundation.py`, README and docs/WDROZENIE.
+**Interfaces:** `EmailVerification(store, sender).request(chat_id, endpoint_id) -> DeliveryResult | None`,
+`consume(chat_id, endpoint_id, token) -> bool`; sender protocol from Task 1.
+
+- [x] Write tests for real v13 upgrade/state/backup/DDL failure/restart/old-code refusal,
+  token privacy, TTL/replay/version/address/ownership/access, attempts, provider failure,
+  durable/global/address/user limits, deletion, retention and concurrent request/consume.
+- [x] Run verification tests; expected missing module/schema RED.
+- [x] Implement v14/service and pin historical v13 tests to their actual migration scope.
+- [x] Document preparatory stage, token flow, API limits, TLS timeout limits and rollback.
+- [x] Run affected tests, full pytest -rs, diff check; commit.
+  After review fixes: 218 affected tests passed; full suite: 1117 passed, 1 skipped (Windows POSIX), 19.22s.
+  Restore-counter Message-ID regression observed RED, fixed by binding the key to the token digest.
+  Review REL-01/REL-02 reproduced RED and corrected: bounded receipt before SMTP;
+  quoted-printable UTF-8 for 7-bit transport. Follow-up accepted code HEAD d34c1b6;
+  CI 12/12 SUCCESS (Python 3.10–3.14 and deploy-scripts, push + PR).
+- [x] Create/attach PR #9; independent full review per local prompt; save ignored reports.
+- [x] Resolve REL-01/REL-02 with RED→GREEN regressions and same-reviewer follow-up;
+  verify final-HEAD CI (including the subsequent status-only plan commit).
+
+**Handoff:** PR #9 https://github.com/msm3107/GUNB-TOOL/pull/9. Independent verdict:
+AKCEPTUJ for preparatory scope, code reviewed at d34c1b6. No merge/deploy performed.
+Both runtime flags still fail closed. Production integration gates remain in the spec
+and deployment guide; v14→v13 rollback requires backup restore and loses later data.

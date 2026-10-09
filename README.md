@@ -93,9 +93,11 @@ main.py (CLI)
 | `gunb_tool/data_filter.py` | Flagi `is_residential` / `is_commercial` / `is_noise`, kategoria biznesowa, **segment klientów**, ekstrakcja inwestora i projektanta (pracownia, uprawnienia, porządkowanie nazwisk). |
 | `gunb_tool/geocoding_uldk.py` | ULDK: identyfikator działki → centroid WGS84, nazwy gminy/powiatu, linki Google Maps i Geoportal; ponowna próba w jednostce z kodu TERC adresu; fallback do środka obrębu; cache; bezpiecznik przy awarii usługi. |
 | `gunb_tool/storage.py` | SQLite (WAL, migracje schematu): tabela `investments`, historia statusów, wykrywanie zmian, kolejka powiadomień per kanał, kolejka synchronizacji arkusza, cache geokodowania. |
-| `gunb_tool/notification_schema.py` | Schemat v13: odbiorcy e-mail/WhatsApp, outbox, niezależna historia doręczeń i deduplikacja webhooków. Wydanie przygotowawcze, bez nadawców. |
+| `gunb_tool/notification_schema.py` | Definicja v13: odbiorcy e-mail/WhatsApp, outbox, niezależna historia doręczeń i deduplikacja webhooków. |
 | `gunb_tool/notification_models.py`, `notification_reports.py` | Niemutowalne części raportu, ograniczenia rozmiaru i wersjonowany JSON kolejki. Fakty GUNB z identyfikatorami i rewizjami inwestycji. |
 | `gunb_tool/notification_store.py`, `notification_worker.py` | Własność i zgody odbiorców, trwałe enqueue/claim, ponowna kontrola dostępu przed wysyłką, retry i rozliczanie wyników. Wewnętrzne API z wstrzykniętym nadawcą; bez podłączenia do harmonogramu. |
+| `gunb_tool/email_sender.py` | Wewnętrzny adapter SMTP z TLS, jednym odbiorcą i rozróżnieniem odrzucenia od niepewnego wyniku DATA. |
+| `gunb_tool/email_verification.py`, `email_verification_schema.py` | Wewnętrzna jednorazowa weryfikacja adresu oraz schemat v14: skróty tokenów i trwałe limity żądań. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
 | `gunb_tool/scoring.py` | Scoring 🔥 HOT / 🟡 NORMAL / ⚪ LOW z uzasadnieniem. |
@@ -397,10 +399,11 @@ albo `/nowymodel <chat_id> 2026-12-31`. Starsza wersja programu **nie uruchomi s
 schematem (kod wyjścia 2) – powrót do niej wymaga odtworzenia kopii sprzed aktualizacji, a zmiany
 z czasu po tej kopii przepadają ([docs/WDROZENIE.md](docs/WDROZENIE.md), sekcja E).
 
-### Przygotowanie e-mail i WhatsApp (PR 1–2, schemat v13)
+### Przygotowanie e-mail i WhatsApp (PR 1–3, schemat v14)
 
 Migracja dodaje cztery puste tabele: `notification_endpoints`, `notification_outbox`,
-`notification_deliveries` i `notification_webhook_events`. Nie tworzy odbiorców ani zadań
+`notification_deliveries` i `notification_webhook_events` (v13). PR 3 dodaje tabelę
+`email_verifications` w v14. Migracja nie tworzy odbiorców ani zadań
 wysyłki; zachowuje dane i działanie obecnego bota. Kolejka i historia są przypisane do
 odbiorcy nowego kanału, niezależnie od tabeli `deliveries` Telegrama.
 
@@ -415,17 +418,24 @@ Historia nowego kanału nie pomija inwestycji dostarczonych przez Telegram. Work
 sprawdza zgodę, adres, dostęp, filtry i rewizje; odbiorcy nie spełniający warunków nie dostają
 zakolejkowanego raportu. Status w rejestrze GUNB nie jest potwierdzeniem etapu robót.
 
-Worker wykonuje ograniczony cykl z nadawcą przekazanym przez kod. Obecny bot i CLI nie
-wywołują tego API; SMTP, Meta, weryfikacja tokenem i ustawienia użytkownika są nadal
-niedostępne. `accepted` oznacza przyjęcie przez dostawcę. Timeout lub crash z nieznanym
+Worker wykonuje ograniczony cykl z nadawcą przekazanym przez kod. PR 3 dodaje adapter
+SMTP i API jednorazowej weryfikacji skrzynki. Obecny bot i CLI nie wywołują tych API;
+konfiguracja SMTP, ustawienia nowych kanałów i weryfikacja nie są jeszcze dostępne użytkownikowi.
+`accepted` oznacza przyjęcie przez dostawcę. Timeout lub crash z nieznanym
 wynikiem zatrzymuje dany endpoint bez automatycznej ponownej wysyłki; nie gwarantujemy
 wysyłki dokładnie raz. Limity i warunki przyszłego uruchomienia opisuje
 [docs/WDROZENIE.md](docs/WDROZENIE.md#pr-2-raporty-i-trwały-outbox-bez-uruchomienia-nadawców).
 
-Kolejne kroki to SMTP z weryfikacją adresu, a następnie WhatsApp API z szablonami,
-zgodami i webhookiem HTTPS. Kolejne wydania powinny
-zachować schemat v13, aby można było wycofać nadawców do tego wydania przygotowawczego
-bez cofania danych. Zmiana schematu wymaga ponownej oceny tej zgodności.
+Weryfikacja ma token ważny 15 minut, do 5 prób i trwałe limity owner/adres/globalnie.
+Baza przechowuje skróty tokenu i adresu; surowy token trafia tylko do wiadomości.
+Potwierdzenie skrzynki nie zapisuje zgody ani nie włącza raportów. SMTP wymaga STARTTLS
+lub implicit TLS; Message-ID nie gwarantuje wysyłki dokładnie raz. Szczegóły i ograniczenia:
+[wdrożenie PR 3](docs/WDROZENIE.md#pr-3-smtp-i-weryfikacja-adresu-v13--v14).
+
+Kolejne kroki to integracja e-mail z konfiguracją, zgodami/UI i harmonogramem oraz
+WhatsApp API z szablonami i webhookiem HTTPS. PR 3 wymaga v14 dla trwałej weryfikacji;
+**powrót do PR 1–2/v13 wymaga odtworzenia kopii sprzed migracji** i cofa późniejsze dane.
+Samo przełączenie kodu nie wystarcza. Aktualizacja robi kopię przez istniejący mechanizm.
 
 Powrót z v13 do kodu znającego tylko v12 wymaga odtworzenia kopii sprzed migracji;
 instrukcja i kontrola po aktualizacji są w [docs/WDROZENIE.md](docs/WDROZENIE.md#d-aktualizacja).
