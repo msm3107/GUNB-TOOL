@@ -280,7 +280,10 @@ jednakowy komunikat bez ujawniania diagnostyki SMTP lub istnienia skrzynki.
 SMTPSettings obsługuje wyłącznie STARTTLS lub implicit TLS z kontrolą certyfikatu
 i hosta. AUTH następuje po TLS. Jeden adres koperty i To, bez Cc/Bcc. Message-ID
 jest stabilnym identyfikatorem nagłówka aplikacji, nie potwierdzeniem odczytu ani
-mechanizmem idempotencji SMTP. Jawne 4xx pozwala retry, 5xx oznacza failed, końcowe
+mechanizmem idempotencji SMTP. Dla nagłówka dłuższego niż 256 bajtów wynik przechowuje
+jego skrót `sha256:…`; pełny Message-ID pozostaje w mailu. Wynik jest walidowany przed
+połączeniem, aby metadane nie mogły nadpisać DATA 250. Tekst UTF-8 jest kodowany jako
+quoted-printable, więc nie wymaga 8BITMIME. Jawne 4xx pozwala retry, 5xx oznacza failed, końcowe
 DATA 250 oznacza accepted. Utrata połączenia podczas DATA oznacza unknown.
 Socket timeout wynosi domyślnie 5 s (0.1–10 s); budżet 45 s jest sprawdzany między
 poleceniami, bez twardego przerwania DNS/polecenia w toku. Przed podłączeniem

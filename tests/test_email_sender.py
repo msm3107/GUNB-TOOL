@@ -149,6 +149,22 @@ def test_cleanup_failure_cannot_erase_acceptance(notification_store, transport):
     assert sender().send(endpoint, report(notification_store, endpoint)[0], idempotency_key='job').outcome == 'accepted'
 
 
+def test_polish_report_works_without_8bitmime(notification_store, transport):
+    endpoint = ready(notification_store)
+    part, = report(notification_store, endpoint)
+    original_data = transport.data
+    def ascii_only(payload):
+        response = original_data(payload)
+        return response if payload.isascii() else (550, b'7-bit transport required')
+    transport.data = ascii_only
+    result = sender().send(endpoint, part, idempotency_key='seven-bit-report')
+    assert result.outcome == 'accepted'
+    assert transport.payload.isascii()
+    message = BytesParser(policy=policy.default).parsebytes(transport.payload)
+    assert message.get_content().replace('\r\n', '\n').rstrip() == part.body.rstrip()
+    assert str(message['Subject']) == part.title
+
+
 @pytest.mark.parametrize('options', [dict(tls='plain'), dict(host='smtp.test\r\nX: y'),
     dict(host='https://smtp.test'), dict(port=True), dict(port=0), dict(timeout_seconds=True),
     dict(timeout_seconds=0), dict(timeout_seconds=11), dict(timeout_seconds=float('nan')),
@@ -193,6 +209,7 @@ def test_verification_email_is_separate_from_reports(notification_store, transpo
     expires = notification_store.repo.now() + timedelta(minutes=15)
     token = 'x' * 43
     assert sender().send_verification(endpoint, token, expires_at=expires, idempotency_key='verify-1').outcome == 'accepted'
+    assert transport.payload.isascii()
     message = BytesParser(policy=policy.default).parsebytes(transport.payload)
     assert token in message.get_content() and 'nie włącza' in message.get_content()
     assert 'inwestycje' not in message.get_content()
@@ -204,3 +221,23 @@ def test_real_adapter_protocol_integrates_with_worker(notification_store, transp
     assert NotificationWorker(notification_store, {'email': sender()}).run_once() == 1
     row = notification_store.repo.connection.execute('SELECT state FROM notification_outbox WHERE id = ?', (ident,)).fetchone()
     assert row[0] == 'accepted'
+
+
+@pytest.mark.parametrize('tail_size', [56, 57, 59])
+def test_long_sender_domain_preserves_acceptance_in_worker(notification_store, transport, tail_size):
+    # Valid sender domains at/across the receipt's 256-byte boundary.
+    domain = '.'.join(('a' * 63, 'b' * 63, 'c' * tail_size, 'test'))
+    adapter = SMTPEmailSender(SMTPSettings('smtp.example.test', 587, f'alerts@{domain}'))
+    transport.errors['close'] = OSError('FAKE_CLEANUP_FAILURE')
+    endpoint = ready(notification_store)
+    ident, = enqueue(notification_store, endpoint)
+    assert NotificationWorker(notification_store, {'email': adapter}).run_once() == 1
+    row = notification_store.repo.connection.execute('SELECT state, provider_message_id FROM notification_outbox WHERE id = ?', (ident,)).fetchone()
+    assert row[0] == 'accepted'
+    message_id = str(BytesParser(policy=policy.default).parsebytes(transport.payload)['Message-ID'])
+    assert len(message_id) == 256 + tail_size - 56
+    receipt = row[1]
+    assert 0 < len(receipt.encode('ascii')) <= 256
+    assert notification_store.get_endpoint(MIETEK, endpoint.id).enabled
+    if len(message_id) <= 256:
+        assert receipt == message_id

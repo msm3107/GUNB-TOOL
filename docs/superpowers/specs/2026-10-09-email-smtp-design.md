@@ -26,9 +26,13 @@ Login dopiero po TLS, debug wyłączony. Sekrety/adres nadawcy ukryte w repr.
 `send_verification(endpoint, token, *, expires_at, idempotency_key)` wysyła wyłącznie
 wiadomość o potwierdzeniu skrzynki, bez inwestycji i bez zgody na marketing.
 Jedna koperta MAIL/RCPT, jeden To, bez Cc/Bcc, tekst UTF-8, standardowy EmailMessage.
+Quoted-printable daje transport ASCII także bez 8BITMIME, bez zmiany odkodowanej treści.
 Subject jednowierszowy; adresy kanoniczne ASCII. Stabilny Message-ID ze skrótu klucza
 i domeny nadawcy. To identyfikator nagłówka aplikacji, nie queue ID dostawcy i nie
-gwarancja exactly-once. Date może odpowiadać dacie próby; treść/temat raportu są frozen.
+gwarancja exactly-once. Wynik przyjęcia jest przygotowany i walidowany przed połączeniem;
+jeśli Message-ID przekracza limit 256 bajtów wyniku, zapisywany jest jego skrót
+`sha256:…`, a pełny nagłówek pozostaje w wiadomości. Date może odpowiadać dacie próby;
+treść/temat raportu są frozen.
 
 Operacje SMTP są jawne: MAIL, RCPT, DATA. Brak DATA = brak przyjęcia wiadomości.
 Jawne odpowiedzi 4xx -> retry, 5xx -> failed; końcowe 250 DATA -> accepted.
@@ -95,4 +99,6 @@ skrzynki nie jest zgodą na kontakt z inwestorami GUNB ani dowodem doręczania r
 
 Źródła techniczne sprawdzone 2026-10-09:
 [smtplib](https://docs.python.org/3/library/smtplib.html),
-[SSLContext](https://docs.python.org/3/library/ssl.html#ssl.create_default_context).
+[SSLContext](https://docs.python.org/3/library/ssl.html#ssl.create_default_context),
+[MIME set_content](https://docs.python.org/3/library/email.contentmanager.html#email.contentmanager.set_content),
+[RFC 6152 §3](https://datatracker.ietf.org/doc/html/rfc6152#section-3).

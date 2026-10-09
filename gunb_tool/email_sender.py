@@ -120,7 +120,7 @@ class SMTPEmailSender:
         message['Date'] = format_datetime(datetime.now(timezone.utc))
         domain = self.settings.from_address.rsplit('@', 1)[1]
         message['Message-ID'] = f'<{hashlib.sha256(key.encode()).hexdigest()}@{domain}>'
-        message.set_content(body, charset='utf-8')
+        message.set_content(body, charset='utf-8', cte='quoted-printable')
         return message
 
     def _deliver(self, address: str, message: EmailMessage) -> DeliveryResult:
@@ -138,6 +138,11 @@ class SMTPEmailSender:
 
         try:
             payload = message.as_bytes()
+            message_id = str(message['Message-ID'])
+            receipt_id = (message_id if len(message_id) <= 256 else
+                          'sha256:' + hashlib.sha256(message_id.encode('ascii')).hexdigest())
+            # Validate local result metadata before SMTP can accept the message.
+            accepted = DeliveryResult('accepted', receipt_id)
             context = ssl.create_default_context()
             if self.settings.tls == 'implicit':
                 client = smtplib.SMTP_SSL(self.settings.host, self.settings.port,
@@ -167,7 +172,7 @@ class SMTPEmailSender:
             data_started = True
             code, _ = call(client.data, payload)
             if code == 250:
-                return DeliveryResult('accepted', str(message['Message-ID']))
+                return accepted
             return _rejection(code)
         except (ssl.SSLCertVerificationError, smtplib.SMTPNotSupportedError, ValueError):
             return DeliveryResult('failed') if not data_started else DeliveryResult('unknown')

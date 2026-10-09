@@ -52,7 +52,9 @@ historical `test_notification_foundation.py`, README and docs/WDROZENIE.
 - [x] Implement v14/service and pin historical v13 tests to their actual migration scope.
 - [x] Document preparatory stage, token flow, API limits, TLS timeout limits and rollback.
 - [x] Run affected tests, full pytest -rs, diff check; commit.
-  214 affected tests passed; full suite: 1113 passed, 1 skipped (Windows POSIX), 26.05s.
+  After review fixes: 218 affected tests passed; full suite: 1117 passed, 1 skipped (Windows POSIX), 19.22s.
   Restore-counter Message-ID regression observed RED, fixed by binding the key to the token digest.
+  Review REL-01/REL-02 reproduced RED and corrected: bounded receipt before SMTP;
+  quoted-printable UTF-8 for 7-bit transport. Follow-up review and new-HEAD CI pending.
 - [ ] Create/attach PR; independent full review per local prompt; save ignored reports.
 - [ ] Resolve real findings with regressions/re-review; verify exact final-HEAD CI.
