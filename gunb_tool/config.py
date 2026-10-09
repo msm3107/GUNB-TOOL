@@ -426,7 +426,7 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
     bot = _bot(_section(raw, "bot"))
     if not bot.admins and _CHAT_ID_RE.match(telegram.chat_id):
         bot = replace(bot, admins=(int(telegram.chat_id),))  # bez ADMIN_CHAT_ID adminem jest właściciel bota
-    return AppConfig(
+    config = AppConfig(
         http=_http(_section(raw, "http")),
         gunb=_gunb(_section(raw, "gunb"), base_dir),
         filter=_filter(_section(raw, "filter")),
@@ -442,6 +442,9 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         email=_email(_section(raw, "email"), env),
         whatsapp=WhatsAppConfig(enabled=_prepared_channel(_section(raw, "whatsapp"), "whatsapp")),
     )
+    if config.email.enabled and config.notifications.max_age_days > 365:
+        raise ConfigError('notifications.max_age_days: e-mail wymaga wartości od 1 do 365')
+    return config
 
 
 def _email(data: dict[str, Any], env: Mapping[str, str]) -> EmailConfig:

@@ -64,6 +64,11 @@ def test_short_private_values_masked_in_tracebacks():
     assert 'private-pass' not in formatter.format(record)
 
 
+def test_active_email_rejects_unsupported_history_window(tmp_path):
+    with pytest.raises(ConfigError, match='notifications.max_age_days'):
+        load_config(config_file(tmp_path, ACTIVE + 'notifications:\n  max_age_days: 366\n'), env=ENV)
+
+
 def test_export_removes_smtp_environment_values(tmp_path, monkeypatch):
     for key, value in ENV.items():
         monkeypatch.setenv(key, value)

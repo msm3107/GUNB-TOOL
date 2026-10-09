@@ -256,12 +256,19 @@ class NotificationStore:
             return []
         _, reserved = self._reservations(endpoint.id)
         since = max(since.astimezone(timezone.utc), self.repo.now() - timedelta(days=self.max_age_days), parse_time(user.nowe_od))
+        filters, params = '', []
+        # A place or radius can match outside the selected powiat; keep that OR logic in Python.
+        # This common exact filter can use the existing powiat index without decoding all rows.
+        if user.filtry.powiaty and not user.filtry.miejsca and not user.filtry.radius_active:
+            filters = ' AND i.powiat_teryt IN (' + ','.join('?' for _ in user.filtry.powiaty) + ')'
+            params.extend(user.filtry.powiaty)
         rows = self._conn.execute(
             "SELECT i.* FROM investments i WHERE i.is_noise = 0 AND i.status_zmieniony > ?"
             " AND NOT EXISTS (SELECT 1 FROM user_leads u WHERE u.chat_id = ? AND u.id_sprawy = i.id_sprawy AND u.ukryty = 1)"
             " AND NOT EXISTS (SELECT 1 FROM notification_deliveries d"
             " WHERE d.endpoint_id = ? AND d.id_sprawy = i.id_sprawy AND d.revision = i.status_zmieniony)"
-            " ORDER BY i.status_zmieniony, i.data_aktualizacji, i.nr", (utc_iso(since), chat_id, endpoint.id),
+            + filters + " ORDER BY i.status_zmieniony, i.data_aktualizacji, i.nr",
+            (utc_iso(since), chat_id, endpoint.id, *params),
         )
         matches = []
         try:

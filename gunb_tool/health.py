@@ -66,6 +66,8 @@ def check_health(config: AppConfig, *, now: datetime | None = None) -> tuple[int
         checks += _database(conn)
         if all(c.level < CRITICAL or not c.text.startswith("baza") for c in checks):
             checks += _state(conn, moment, running=running)
+            if config.email.enabled:
+                checks += _email_state(conn, moment, running=running)
     except sqlite3.DatabaseError as exc:
         checks.append(Check(CRITICAL, f"baza uszkodzona albo niedostępna: {exc}"))
     finally:
@@ -142,6 +144,36 @@ def _state(conn: sqlite3.Connection, now: datetime, *, running: bool) -> list[Ch
             checks.append(Check(WARNING, f"nieudane wysyłki z ostatniej doby: {failed}"))
         if not stuck and not failed:
             checks.append(Check(OK, "wysyłki bez zaległości i błędów"))
+    return checks
+
+
+def _email_state(conn: sqlite3.Connection, now: datetime, *, running: bool) -> list[Check]:
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if not {'zadania', 'notification_outbox', 'notification_endpoints'} <= tables:
+        return [Check(WARNING, 'e-mail: kontrola dostępna po aktualizacji schematu')]
+    checks = []
+    if running:
+        row = conn.execute("SELECT ostatnio FROM zadania WHERE nazwa = 'email_worker'").fetchone()
+        try:
+            last = datetime.fromisoformat(row[0]) if row and row[0] else None
+            alive = last is not None and timedelta(0) <= now - last <= LOOP_STALE
+        except (ValueError, TypeError):
+            alive = False
+        checks.append(Check(OK if alive else CRITICAL,
+                            'wątek e-mail działa' if alive else 'wątek e-mail nie odpowiada'))
+    row = conn.execute(
+        "SELECT SUM(CASE WHEN o.state IN ('unknown', 'failed') THEN 1 ELSE 0 END),"
+        " SUM(CASE WHEN (o.state IN ('queued', 'retry') AND o.next_attempt_at < ?)"
+        " OR (o.state = 'sending' AND o.claimed_at < ?) THEN 1 ELSE 0 END)"
+        " FROM notification_outbox o JOIN notification_endpoints e ON e.id = o.endpoint_id WHERE e.channel = 'email'",
+        (_iso(now - SEND_STUCK), _iso(now - timedelta(seconds=120)))).fetchone()
+    unresolved, stuck = row[0] or 0, row[1] or 0
+    if unresolved:
+        checks.append(Check(WARNING, f'e-mail: niepewne lub nieudane wysyłki wymagają sprawdzenia: {unresolved}'))
+    if stuck:
+        checks.append(Check(WARNING, f'e-mail: zalegające wysyłki: {stuck}'))
+    if not unresolved and not stuck:
+        checks.append(Check(OK, 'e-mail: kolejka bez zaległości i błędów'))
     return checks
 
 

@@ -32,6 +32,9 @@ from gunb_tool.bot import IMPORT_JOB, LAST_IMPORT_JOB, JobsWorker, LeadBot
 from gunb_tool.bot_store import BotStore
 from gunb_tool.clock import local, utc_now
 from gunb_tool.config import AppConfig, ConfigError, LoggingConfig, load_config, override_scope
+from gunb_tool.email_bot import EmailCommands, VerificationRequests
+from gunb_tool.email_runtime import EmailJobs, EmailThread, make_email_store, prune_notifications
+from gunb_tool.smtp_process import SupervisedSMTP
 from gunb_tool.exporter import (
     DiscordNotifier,
     ExportError,
@@ -143,12 +146,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"Błąd konfiguracji: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    if args.dry_run and (args.bot or args.bot_once):
+        print('Podgląd --dry-run nie obsługuje --bot ani --bot-once.', file=sys.stderr)
+        return EXIT_USAGE
     if args.zdrowie:  # bez logu do pliku, alertów i otwierania bazy przez repozytorium (to by ją migrowało)
         return _run_health(config, ping_url=args.ping or os.environ.get("HEALTHCHECK_PING_URL"))
     smtp = config.email.smtp
+    smtp_secrets = (smtp.username, smtp.password, smtp.from_address) if smtp else ()
     setup_logging(config.logging, verbose=args.verbose,
                   secrets=(config.telegram.bot_token, config.discord.webhook_url,
-                           *( (smtp.username, smtp.password, smtp.from_address) if smtp else () )))
+                           *smtp_secrets))
 
     telegram = config.telegram
     alerts = None
@@ -433,12 +440,19 @@ def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> in
                   "„💬 Zapytaj o ofertę”: %s", "; ".join(config.bot.offer.problems))
     stop = threading.Event()
     ui_bot = _make_bot(config, repo, interactive=True)
+    email_requests = VerificationRequests() if config.email.enabled else None
+    if email_requests is not None:
+        ui_bot.email_commands = EmailCommands(make_email_store(config, repo), email_requests, ui_bot._send)
     if once:
         jobs_bot = _make_jobs_bot(config, repo, stop)
         ui_bot.setup()
         received = ui_bot.poll_once(timeout=0)
         jobs_bot.recover_interrupted_import()
         ran = jobs_bot.run_due_jobs()
+        if email_requests is not None:
+            sender = SupervisedSMTP(config.email.smtp, should_stop=stop.is_set)
+            EmailJobs(make_email_store(config, repo), email_requests, sender, config.bot,
+                      max_leads=config.notifications.max_leads_per_run, should_stop=stop.is_set).run_once()
         print(f"Bot: odebrano {received} aktualizacji, zadania: {', '.join(ran) or 'brak'}")
         return EXIT_OK
 
@@ -448,17 +462,25 @@ def _run_bot_alone(config: AppConfig, repo: LeadRepository, *, once: bool) -> in
         return _make_jobs_bot(config, jobs_repo, stop), jobs_repo.close
 
     worker = JobsWorker(make_jobs_bot, stop)
+    email_worker = EmailThread(config, email_requests, stop) if email_requests is not None else None
     _stop_on_sigterm(stop)
     worker.start()
+    if email_worker is not None:
+        email_worker.start()
     worker_died = False
     try:
-        ui_bot.run_forever(should_stop=lambda: stop.is_set() or not worker.is_alive())
+        ui_bot.run_forever(should_stop=lambda: stop.is_set() or not worker.is_alive()
+                           or (email_worker is not None and not email_worker.is_alive()))
         worker_died = not stop.is_set()
     except KeyboardInterrupt:
         log.info("Bot zatrzymywany (Ctrl+C)")
     finally:
         stop.set()
+        if email_worker is not None:
+            email_worker.join(timeout=WORKER_JOIN_TIMEOUT)
         worker.join(timeout=WORKER_JOIN_TIMEOUT)
+    if email_worker is not None and email_worker.is_alive():
+        log.warning('Wątek e-mail nie zakończył się w wyznaczonym czasie')
     if worker.is_alive():
         log.warning("Wątek zadań nie skończył się w %d s – zamykam mimo to (import dokończy się po starcie)",
                     WORKER_JOIN_TIMEOUT)
@@ -480,6 +502,7 @@ def _make_jobs_bot(config: AppConfig, repo: LeadRepository, stop: threading.Even
 def scheduled_backup(repo: LeadRepository, config: AppConfig) -> Path | None:
     """Kopia bazy, jeśli od ostatniej minęło ``storage.backup_every_days`` dni (data w czasie polskim)."""
     storage = config.storage
+    prune_notifications(repo, config.notifications.max_age_days)
     return backup_if_due(repo, storage.backup_dir or storage.db_path.parent / "backups",
                          today=local(utc_now()).date(), every_days=storage.backup_every_days, keep=storage.backup_keep)
 
