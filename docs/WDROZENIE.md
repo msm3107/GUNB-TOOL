@@ -192,6 +192,50 @@ trzeba ponownie sprawdzić przed wydaniem. Przed takim powrotem do wydania
 przygotowawczego ustaw oba `enabled: false`, ponieważ odrzuca ono włączone kanały.
 Stan outbox pozostaje w bazie, ale wysyłka nowych kanałów jest w nim zatrzymana.
 
+### PR 2: raporty i trwały outbox bez uruchomienia nadawców
+
+PR 2 zachowuje schemat v13 i procedurę aktualizacji powyżej. Dodaje wyłącznie wewnętrzne
+API raportów, odbiorców, kolejki i workera; bot, CLI i harmonogram nie uruchamiają nowych
+kanałów. Zostaw oba `enabled: false`. Nie dodawaj procesu workera ani danych SMTP/Meta.
+Nie ma nowej migracji ani zależności. Cofnięcie kodu do PR 1 z wyłączonymi kanałami
+zachowuje tabele i zapisany stan outbox bez odtwarzania bazy.
+
+Limity wewnętrznego API: do 20 inwestycji na raport, 32 KiB treści na część i 64 KiB
+JSON; domyślnie do 40 nierozliczonych części na odbiorcę (konfigurowalne w kodzie 1–100).
+Kandydaci przechodzą istniejące filtry i kontrolę dostępu, z historią niezależną od Telegrama;
+domyślne okno obejmuje ostatnie 30 dni i respektuje datę początku raportów użytkownika.
+Raport ma termin ważności do 24 h od enqueue. Worker obsługuje domyślnie do 25 zadań
+na cykl (maks. 100), z jednym aktywnym przejęciem na endpoint. Każdy wątek otwiera własne
+repozytorium SQLite, a wywołanie nadawcy odbywa się poza transakcją bazy.
+Publiczne operacje zapisu `NotificationStore` (odbiorca, enqueue, claim, preflight,
+complete) wymagają połączenia bez zewnętrznej transakcji. Odrzucają ją przez
+`RuntimeError` przed zmianami, aby błąd kolejnej części lub wpisu historii nie
+pozostawił częściowego wyniku po przechwyceniu wyjątku przez wywołującego.
+
+Nadawca musi kończyć żądanie przed upływem lease (domyślnie 120 s). `retry` jest dopuszczalne
+wyłącznie przy pewności, że dostawca nie przyjął wiadomości: backoff od 60 s, podwajany
+do 3600 s plus jitter 0–15 s, z uwzględnieniem dłuższego `Retry-After` do 24 h. Domyślnie
+5 podejść (maks. 10). `accepted` nie oznacza doręczenia ani odczytania. Wygasłe `sending`,
+timeout lub nieoczekiwany wyjątek oznacza `unknown`, bez automatycznego ponowienia.
+`unknown` i trwałe `failed` wyłączają tylko dany endpoint i anulują jego pozostałe zadania;
+inne endpointy i Telegram działają dalej. Późne potwierdzenie tego samego przejęcia może
+zapisać faktyczny wynik, ale nie włącza odbiorcy. Zmiana adresu po rozpoczęciu wysyłki
+nie może cofnąć już wysłanej wiadomości. Stabilny klucz zadania nie zapewnia idempotencji
+u dostawcy, który jej nie obsługuje.
+
+Przed uruchomieniem kanału kolejne PR muszą dodać rzeczywistą weryfikację adresu i limity
+opt-in (sama poprawność formatu nie potwierdza adresu ani dostępności WhatsApp), adapter
+z bezpiecznym przechowywaniem i maskowaniem sekretów, integrację harmonogramu z TTL
+i ciszą nocną, obsługę statusów/webhooków oraz procedurę rozliczania `unknown`/`failed`.
+Potrzebna jest też retencja treści kolejki i webhooków wraz z pomiarem na dużej historii.
+W tym PR nie ma polecenia do ręcznego rozliczania awarii; samo ponowne włączenie endpointu
+nie zwalnia rezerwacji inwestycji z `unknown`/`failed` i nie jest procedurą naprawczą.
+
+Przed podłączeniem harmonogramu jego implementer musi też zmierzyć selekcję kandydatów
+na dysku dla planowanej liczby inwestycji i odbiorców, z selektywnymi filtrami. Limit
+20 wyników nie ogranicza obecnego skanu i sortowania SQLite. Pomiar ma rozstrzygnąć
+potrzebę indeksu lub stronicowania; PR 2 nie zmienia już wydanego schematu v13.
+
 ## E. Wycofanie wersji
 
 ```bash
