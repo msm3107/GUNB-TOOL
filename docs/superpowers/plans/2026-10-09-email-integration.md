@@ -35,10 +35,10 @@ _email(data:dict,env:Mapping)->EmailConfig. Allowed keys and values as spec;
 SMTP_USERNAME/PASSWORD required when active, no YAML credentials. RedactingFormatter
 must include short SMTP private values. Existing export sanitizer verified with real package.
 
-- [ ] Write tests default/valid STARTTLS+implicit/missing auth/invalid values/unknown credentials,
+- [x] Write tests default/valid STARTTLS+implicit/missing auth/invalid values/unknown credentials,
   no private repr/errors, short-log masking and exported package without SMTP values.
-- [ ] Observe RED; implement parsing/privacy; pin old email gate tests to incomplete config semantics.
-- [ ] Run config/foundation/migration/main tests, diffcheck; commit.
+- [x] Observe RED; implement parsing/privacy; pin old email gate tests to incomplete config semantics.
+- [x] Run config/foundation/migration/main tests, diffcheck; commit.
 
 ### Task 2: Supervised SMTP
 
@@ -48,9 +48,9 @@ with send/send_verification matching existing adapters. _smtp_child communicates
 JSON result bytes; spawn/default, daemon child, no DB. Stop before start retry; post-start
 ambiguity unknown. poll<=0.2s; terminate/join1s/kill/join1s cleanup, accepted preserved.
 
-- [ ] Write fake-process tests all outcomes, malformed/EOF/start failure, deadline/stop,
+- [x] Write fake-process tests all outcomes, malformed/EOF/start failure, deadline/stop,
   ack+cleanup, no input logging; real spawn invalid recipient fails before any SMTP.
-- [ ] Observe RED; implement; run sender/process/worker tests; diffcheck; commit.
+- [x] Observe RED; implement; run sender/process/worker tests; diffcheck; commit.
 
 ### Task 3: Owned bot commands and verification request queue
 
@@ -61,10 +61,10 @@ handle(user,args)->None implements exact /email verbs in spec; no provider calls
 Consumes EmailVerification.consume; NotificationStore list_endpoints, set_mode,
 has_unresolved APIs, standalone writes/version checks. LeadBot optional email_commands hook.
 
-- [ ] Write owner/channel/private/access/pause/consent/code/mode/address/version/off/delete,
+- [x] Write owner/channel/private/access/pause/consent/code/mode/address/version/off/delete,
   unknown-quarantine and generic-response tests; queue bounded/TTL/restart/no plaintext.
-- [ ] Observe RED; implement helper/store hooks; unchanged default bot menu/flows.
-- [ ] Run bot/email/store/verification tests, diffcheck; commit.
+- [x] Observe RED; implement helper/store hooks; unchanged default bot menu/flows.
+- [x] Run bot/email/store/verification tests, diffcheck; commit.
 
 ### Task 4: Scheduled worker, retention, health and runtime wiring
 
@@ -76,12 +76,16 @@ called by existing nightly maintenance even if email disabled. Main --bot wires
 only enabled email; --bot-once one cycle; dry-run+bot rejected before DB/network.
 Health reads heartbeat email_worker and ambiguous/failure counts only for enabled email.
 
-- [ ] Write report/DST/quiet/TTL/recheck/restart/paging/backpressure/stop/thread isolation tests;
+- [x] Write report/DST/quiet/TTL/recheck/restart/paging/backpressure/stop/thread isolation tests;
   retention boundaries/dedup/unknown preservation, enabled/disabled lifecycle and health read-only.
-- [ ] Observe RED; implement using existing state and outbox. Deterministic event keys and
+- [x] Observe RED; implement using existing state and outbox. Deterministic event keys and
   per-endpoint schedule markers; no unrelated bot/pipeline refactor or schema mutation.
-- [ ] Benchmark PERF-01 on100k fictitious records; document measured limits and operator gates.
-- [ ] Document config, commands, rollout/off/rollback, no exactly-once/read claims and remaining Meta stage.
-- [ ] Run affected and full pytest, diffcheck; commit/push; create/attach PR.
-- [ ] Fresh independent security/performance/marketing review; save ignored reports; resolve real
+- [x] Benchmark PERF-01 on100k fictitious records; document measured limits and operator gates.
+- [x] Document config, commands, rollout/off/rollback, no exactly-once/read claims and remaining Meta stage.
+- [x] Run affected and full pytest, diffcheck; commit/push; create/attach PR.
+- [x] Fresh independent security/performance/marketing review; save ignored reports; resolve real
   findings with regressions and same-reviewer follow-up. Exact final-HEAD CI; handoff without merge.
+
+## Completion evidence (2026-10-10)
+
+Implemented in PR #10. Independent review accepted code HEAD3c60d740 after SEC-01, SCH-01, SCH-02 and CFG-01 regressions. Full pytest1222 passed/1 Windows POSIX skip;12/12 CI checks succeeded for that code HEAD. Email remains default-off; no merge, deployment or real SMTP send performed. Operational SMTP/domain validation and larger-scale selection measurements remain operator gates in docs/WDROZENIE.md.
