@@ -320,6 +320,8 @@ nie dodaje migracji, bibliotek, usługi systemowej ani zewnętrznego brokera kol
    Dla implicit TLS ustaw `tls: implicit` i port dostawcy (zwykle 465). Nie ma trybu bez TLS
    ani wyłączenia weryfikacji certyfikatu. Aktywna konfiguracja wymaga obu danych logowania;
    błędy zatrzymują start przed otwarciem bazy. `notifications.max_age_days` dla e-mail: 1–365.
+   Port i timeout mogą korzystać z placeholderów, np. `port: ${SMTP_PORT:-587}` oraz
+   `timeout_seconds: ${SMTP_TIMEOUT:-5}`; port musi być całkowity 1–65535, timeout 0.1–10 s.
 4. Zrestartuj istniejącego bota `--bot`. Nie uruchamiaj osobnego nadawcy ani drugiego bota.
    `--bot-once` także wykonuje wysyłkę; te tryby odrzucają `--dry-run`.
 5. Na własnym koncie z aktywnym dostępem, w prywatnym czacie: `/email ustaw ADRES`,

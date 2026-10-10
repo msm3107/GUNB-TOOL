@@ -53,7 +53,6 @@ class EmailJobs:
         rows = self.store.repo.connection.execute(query, (self.cursor,)).fetchall()
         if not rows:
             rows = self.store.repo.connection.execute(query, (0,)).fetchall()
-        self.cursor = rows[-1]['id'] if rows else 0
         return rows
 
     def _schedule(self, now):
@@ -61,6 +60,7 @@ class EmailJobs:
         for row in self._endpoints():
             if self.should_stop() or remaining <= 0:
                 break
+            self.cursor = row['id']  # Advance only after this recipient gets its turn.
             try:
                 endpoint = self.store.get_endpoint(row['chat_id'], row['id'])
                 slot = self._due(endpoint, now)
@@ -100,7 +100,10 @@ class EmailJobs:
         if self.should_stop() or hour >= 22 or hour < 6:
             return 0
         self._schedule(now)
-        return 0 if self.should_stop() else self.worker.run_once(limit=1)
+        # Selection can take long enough to cross 22:00. Do not start a new report then.
+        if self.should_stop() or not 6 <= local(self.store.repo.now()).hour < 22:
+            return 0
+        return self.worker.run_once(limit=1)
 
 
 class EmailThread(threading.Thread):

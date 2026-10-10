@@ -453,15 +453,23 @@ def _email(data: dict[str, Any], env: Mapping[str, str]) -> EmailConfig:
     allowed = {'enabled', 'host', 'port', 'tls', 'from_address', 'timeout_seconds'}
     if set(data) - allowed:
         raise ConfigError('email.enabled: nieobsługiwane ustawienia; dane logowania podaj tylko w środowisku')
-    if not _bool(data, 'email', 'enabled', False):
-        return EmailConfig()
     try:
+        if not _bool(data, 'email', 'enabled', False):
+            return EmailConfig()
         username, password = env.get('SMTP_USERNAME', ''), env.get('SMTP_PASSWORD', '')
         if not username or not password:
             raise ValueError('Incomplete authentication')
-        smtp = SMTPSettings(host=data.get('host', ''), port=data.get('port', 587),
+        port = data.get('port', 587)
+        if isinstance(port, str):
+            if not re.fullmatch(r'[0-9]{1,5}', port.strip()):
+                raise ValueError('Invalid port')
+            port = int(port)
+        timeout = data.get('timeout_seconds', 5)
+        if isinstance(timeout, str):
+            timeout = float(timeout)
+        smtp = SMTPSettings(host=data.get('host', ''), port=port,
                             from_address=data.get('from_address', ''), tls=data.get('tls', 'starttls'),
-                            username=username, password=password, timeout_seconds=data.get('timeout_seconds', 5))
+                            username=username, password=password, timeout_seconds=timeout)
     except (ValueError, TypeError, AttributeError):
         raise ConfigError('email.enabled: wymagane poprawne SMTP z TLS, SMTP_USERNAME i SMTP_PASSWORD') from None
     return EmailConfig(enabled=True, smtp=smtp)

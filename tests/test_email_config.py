@@ -81,3 +81,34 @@ def test_export_removes_smtp_environment_values(tmp_path, monkeypatch):
         for name in archive.namelist():
             data = archive.read(name)
             assert all(value.encode() not in data for value in ENV.values())
+
+
+def test_invalid_enabled_never_exposes_interpolated_secret(tmp_path, monkeypatch, capsys):
+    path = config_file(tmp_path, ACTIVE.replace('enabled: true', 'enabled: ${SMTP_PASSWORD}'))
+    with pytest.raises(ConfigError, match=r'email\.enabled') as exc:
+        load_config(path, env=ENV)
+    assert ENV['SMTP_PASSWORD'] not in str(exc.value)
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    assert main.main(['--config', str(path), '--stats']) == 2
+    assert ENV['SMTP_PASSWORD'] not in capsys.readouterr().err
+    assert not (tmp_path / 'state.sqlite').exists()
+
+
+@pytest.mark.parametrize('port,env', [('${SMTP_PORT}', dict(SMTP_PORT='587')),
+                                    ('${SMTP_PORT:-587}', {}), ('${SMTP_PORT}', dict(SMTP_PORT='465'))])
+def test_port_and_timeout_from_environment(tmp_path, port, env):
+    path = config_file(tmp_path, ACTIVE + f'  port: {port}\n  timeout_seconds: ${{SMTP_TIMEOUT:-2.5}}\n')
+    cfg = load_config(path, env={**ENV, **env})
+    assert cfg.email.smtp.port == int(env.get('SMTP_PORT', '587'))
+    assert cfg.email.smtp.timeout_seconds == 2.5
+
+
+@pytest.mark.parametrize('field,value', [('port', 'true'), ('port', '587.0'), ('port', '-1'),
+                                        ('port', '65536'), ('port', '1e3'), ('port', 'bad'),
+                                        ('timeout_seconds', 'nan'), ('timeout_seconds', 'inf'),
+                                        ('timeout_seconds', '-1'), ('timeout_seconds', 'true')])
+def test_invalid_smtp_environment_numbers_fail_closed(tmp_path, field, value):
+    path = config_file(tmp_path, ACTIVE + f'  {field}: ${{SMTP_NUMBER}}\n')
+    with pytest.raises(ConfigError, match=r'email\.enabled'):
+        load_config(path, env={**ENV, 'SMTP_NUMBER': value})

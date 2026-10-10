@@ -368,3 +368,37 @@ def test_report_split_reserves_unsubscribe_footer(notification_store, monkeypatc
                                              now=store.repo.now(), footer=FOOTER)
     assert len(parts) > 1 and sum(len(part.leads) for part in parts) == 20
     assert all(part.body.endswith(FOOTER) and len(part.body.encode('utf-8')) <= 700 for part in parts)
+
+
+def test_small_budget_rotates_actual_recipients_under_continuous_load(notification_store, clock):
+    store = notification_store
+    bot = BotStore(store.repo)
+    chats = set(range(4000, 4012))  # More recipients than one fetched page.
+    for chat in sorted(chats):
+        bot.register(chat, 'Synthetic', None, status='aktywny', backlog_days=7)
+        bot.set_access(chat, (clock.now_utc() + timedelta(days=2)).isoformat())
+        ep = store.add_endpoint(chat, 'email', f'person{chat}@example.test')
+        ep = store.record_consent(chat, ep.id, expected_version=ep.version, source='test')
+        ep = store.record_verification(chat, ep.id, expected_version=ep.version)
+        store.set_enabled(chat, ep.id, True, expected_version=ep.version)
+    job, sender = jobs(store, max_leads=1)
+    for i in range(12):
+        new_lead(store, clock, f'continuous/{i}')
+        job.run_once()
+    assert {ep.chat_id for ep, _ in sender.reports} == chats
+
+
+def test_quiet_boundary_rechecked_after_scheduling(notification_store, clock, monkeypatch):
+    from tests.test_notification_store import report
+    store = notification_store
+    clock.utc = datetime(2026, 10, 10, 19, 59, 58, tzinfo=timezone.utc)  # 21:59:58 Warsaw
+    BotStore(store.repo).set_access(MIETEK, (clock.now_utc() + timedelta(days=2)).isoformat())
+    ep = ready(store)
+    store.enqueue(MIETEK, ep.id, 'quiet-boundary', report(store, ep),
+                  expires_at=clock.now_utc() + timedelta(hours=24))
+    job, sender = jobs(store)
+    monkeypatch.setattr(job, '_schedule', lambda now: clock.advance(seconds=5))
+    assert job.run_once() == 0 and not sender.reports
+    assert store.repo.connection.execute('SELECT state FROM notification_outbox').fetchone()[0] == 'queued'
+    clock.advance(hours=8)
+    assert job.run_once() == 1 and len(sender.reports) == 1
