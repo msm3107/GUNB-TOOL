@@ -95,9 +95,10 @@ main.py (CLI)
 | `gunb_tool/storage.py` | SQLite (WAL, migracje schematu): tabela `investments`, historia statusów, wykrywanie zmian, kolejka powiadomień per kanał, kolejka synchronizacji arkusza, cache geokodowania. |
 | `gunb_tool/notification_schema.py` | Definicja v13: odbiorcy e-mail/WhatsApp, outbox, niezależna historia doręczeń i deduplikacja webhooków. |
 | `gunb_tool/notification_models.py`, `notification_reports.py` | Niemutowalne części raportu, ograniczenia rozmiaru i wersjonowany JSON kolejki. Fakty GUNB z identyfikatorami i rewizjami inwestycji. |
-| `gunb_tool/notification_store.py`, `notification_worker.py` | Własność i zgody odbiorców, trwałe enqueue/claim, ponowna kontrola dostępu przed wysyłką, retry i rozliczanie wyników. Wewnętrzne API z wstrzykniętym nadawcą; bez podłączenia do harmonogramu. |
+| `gunb_tool/notification_store.py`, `notification_worker.py` | Własność i zgody odbiorców, trwałe enqueue/claim, ponowna kontrola dostępu przed wysyłką, retry i rozliczanie wyników. |
 | `gunb_tool/email_sender.py` | Wewnętrzny adapter SMTP z TLS, jednym odbiorcą i rozróżnieniem odrzucenia od niepewnego wyniku DATA. |
 | `gunb_tool/email_verification.py`, `email_verification_schema.py` | Wewnętrzna jednorazowa weryfikacja adresu oraz schemat v14: skróty tokenów i trwałe limity żądań. |
+| `gunb_tool/email_bot.py`, `email_runtime.py`, `smtp_process.py` | Komendy `/email`, osobny wątek harmonogramu z własną bazą, retencja i nadzorowany proces SMTP. Domyślnie wyłączone. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
 | `gunb_tool/scoring.py` | Scoring 🔥 HOT / 🟡 NORMAL / ⚪ LOW z uzasadnieniem. |
@@ -399,7 +400,7 @@ albo `/nowymodel <chat_id> 2026-12-31`. Starsza wersja programu **nie uruchomi s
 schematem (kod wyjścia 2) – powrót do niej wymaga odtworzenia kopii sprzed aktualizacji, a zmiany
 z czasu po tej kopii przepadają ([docs/WDROZENIE.md](docs/WDROZENIE.md), sekcja E).
 
-### Przygotowanie e-mail i WhatsApp (PR 1–3, schemat v14)
+### Opcjonalne raporty e-mail (PR 4, schemat v14)
 
 Migracja dodaje cztery puste tabele: `notification_endpoints`, `notification_outbox`,
 `notification_deliveries` i `notification_webhook_events` (v13). PR 3 dodaje tabelę
@@ -407,10 +408,11 @@ Migracja dodaje cztery puste tabele: `notification_endpoints`, `notification_out
 wysyłki; zachowuje dane i działanie obecnego bota. Kolejka i historia są przypisane do
 odbiorcy nowego kanału, niezależnie od tabeli `deliveries` Telegrama.
 
-Sekcje `email.enabled` i `whatsapp.enabled` domyślnie mają wartość `false`. Starszy
-`config.yaml` działa bez ich dopisywania. Próba ustawienia `true` kończy się błędem
-konfiguracji przed otwarciem bazy: rzeczywista wysyłka będzie dostępna w kolejnych PR.
-To wydanie nie wymaga danych SMTP ani tokenu Meta i nie dodaje zależności.
+E-mail jest domyślnie wyłączony. Starszy `config.yaml` działa bez nowej sekcji.
+Operator może włączyć `email.enabled: true` po uzupełnieniu hosta, nadawcy, trybu TLS
+i portu w sekcji `email` oraz `SMTP_USERNAME` i `SMTP_PASSWORD` wyłącznie w środowisku/`.env`.
+Wzór znajduje się w `config.yaml` i `.env.example`; niepełne dane są błędem przed otwarciem bazy.
+WhatsApp pozostaje niedostępny; `whatsapp.enabled: true` nadal jest błędem.
 
 PR 2 dodaje wewnętrzne API raportów, magazynu odbiorców i workera outbox. Raport obejmuje
 do 20 inwestycji, dzieli treść na części do 32 KiB i zapisuje pierwszy snapshot w kolejce.
@@ -418,13 +420,29 @@ Historia nowego kanału nie pomija inwestycji dostarczonych przez Telegram. Work
 sprawdza zgodę, adres, dostęp, filtry i rewizje; odbiorcy nie spełniający warunków nie dostają
 zakolejkowanego raportu. Status w rejestrze GUNB nie jest potwierdzeniem etapu robót.
 
-Worker wykonuje ograniczony cykl z nadawcą przekazanym przez kod. PR 3 dodaje adapter
-SMTP i API jednorazowej weryfikacji skrzynki. Obecny bot i CLI nie wywołują tych API;
-konfiguracja SMTP, ustawienia nowych kanałów i weryfikacja nie są jeszcze dostępne użytkownikowi.
+W prywatnej rozmowie z botem użytkownik ustawia `/email ustaw ADRES`, podaje otrzymany kod
+przez `/email potwierdz KOD`, a następnie osobno włącza raporty komendą `/email zgoda`.
+`/email` pokazuje stan i pomoc, `/email ponow` zleca ponowienie kodu.
+`/email tryb rano|wieczor|natychmiast` ustawia harmonogram (domyślnie rano).
+`/email wylacz` wycofuje zgodę i anuluje oczekującą wysyłkę; działa również po utracie
+dostępu lub wstrzymaniu konta. `/email usun` usuwa adres i jego lokalną historię raportów.
+Wiadomość, której wysyłka już się rozpoczęła, może jeszcze dotrzeć.
+Obsługiwany jest jeden adres e-mail na konto w tym interfejsie.
+
+Raporty obejmują zmiany po aktywacji e-mail, zgodne z filtrami konta i oknem
+`notifications.max_age_days` (1–365 dla e-mail). Brak aktywnego dostępu albo pauza
+wstrzymują wysyłkę. Harmonogram korzysta z godzin bota w Europe/Warsaw,
+`natychmiast` z `bot.instant_every_minutes`; cisza nocna trwa od 22:00 do 06:00.
+Jawnie zlecone wiadomości z kodem mogą przyjść także w nocy.
+Osobny wątek ma własne połączenie SQLite, a każde SMTP działa w nadzorowanym procesie.
+Uruchamia się wraz z `--bot`; `--bot-once` wykonuje jeden cykl i może wysyłać.
+`--dry-run` nie łączy się z tymi trybami.
+
 `accepted` oznacza przyjęcie przez dostawcę. Timeout lub crash z nieznanym
 wynikiem zatrzymuje dany endpoint bez automatycznej ponownej wysyłki; nie gwarantujemy
-wysyłki dokładnie raz. Limity i warunki przyszłego uruchomienia opisuje
-[docs/WDROZENIE.md](docs/WDROZENIE.md#pr-2-raporty-i-trwały-outbox-bez-uruchomienia-nadawców).
+wysyłki dokładnie raz ani dotarcia do skrzynki. Taki stan wymaga sprawdzenia przez operatora
+przed wznowieniem. Limity, retencję i procedurę włączenia opisuje
+[wdrożenie PR 4](docs/WDROZENIE.md#pr-4-uruchomienie-e-mail-bez-zmiany-v14).
 
 Weryfikacja ma token ważny 15 minut, do 5 prób i trwałe limity owner/adres/globalnie.
 Baza przechowuje skróty tokenu i adresu; surowy token trafia tylko do wiadomości.
@@ -432,8 +450,9 @@ Potwierdzenie skrzynki nie zapisuje zgody ani nie włącza raportów. SMTP wymag
 lub implicit TLS; Message-ID nie gwarantuje wysyłki dokładnie raz. Szczegóły i ograniczenia:
 [wdrożenie PR 3](docs/WDROZENIE.md#pr-3-smtp-i-weryfikacja-adresu-v13--v14).
 
-Kolejne kroki to integracja e-mail z konfiguracją, zgodami/UI i harmonogramem oraz
-WhatsApp API z szablonami i webhookiem HTTPS. PR 3 wymaga v14 dla trwałej weryfikacji;
+Kolejny etap to WhatsApp API z szablonami i webhookiem HTTPS. PR 4 zachowuje v14,
+więc powrót do PR 3 wymaga wyłączenia e-mail i usunięcia nowych kluczy konfiguracji.
+PR 3 wymaga v14 dla trwałej weryfikacji;
 **powrót do PR 1–2/v13 wymaga odtworzenia kopii sprzed migracji** i cofa późniejsze dane.
 Samo przełączenie kodu nie wystarcza. Aktualizacja robi kopię przez istniejący mechanizm.
 

@@ -367,8 +367,8 @@ def test_explicit_disabled_channel_uses_existing_boolean_rules(tmp_path, caplog,
 
 @pytest.mark.parametrize("channel", ["email", "whatsapp"])
 @pytest.mark.parametrize("value", ["true", "'true'", "1", "'tak'", "'on'"])
-def test_unavailable_sender_cannot_be_enabled(tmp_path, channel, value):
-    with pytest.raises(ConfigError, match=rf"{channel}\.enabled.*niedostępn"):
+def test_incomplete_or_unavailable_sender_cannot_be_enabled(tmp_path, channel, value):
+    with pytest.raises(ConfigError, match=rf"{channel}\.enabled"):
         load_config(config_file(tmp_path, f"{channel}:\n  enabled: {value}\n"), env={})
 
 

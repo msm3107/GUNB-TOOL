@@ -8,7 +8,8 @@ import unicodedata
 from urllib.parse import parse_qs, urlsplit
 
 from .models import Investment, Status
-from .notification_models import MAX_BODY_BYTES, MAX_REPORT_LEADS, LeadRef, NotificationEndpoint, ReportPart, bounded_int, utc_iso
+from .notification_models import (MAX_BODY_BYTES, MAX_REPORT_LEADS, LeadRef, NotificationEndpoint, ReportPart,
+                                  bounded_int, bounded_text, utc_iso)
 
 
 def _clean(value: str | None, limit: int = 200) -> str:
@@ -31,10 +32,13 @@ def _map_url(value: str | None) -> str | None:
 
 
 def build_report(endpoint: NotificationEndpoint, investments: Sequence[Investment], *,
-                 now: datetime, part_size: int = 20) -> tuple[ReportPart, ...]:
+                 now: datetime, part_size: int = 20, footer: str = '') -> tuple[ReportPart, ...]:
     """Do 20 jawnie wybranych inwestycji; filtry i dostęp sprawdza store przy zapisie i dispatch."""
     utc_iso(now)
     bounded_int(part_size, 1, MAX_REPORT_LEADS)
+    if footer:
+        bounded_text(footer, 1024)
+    footer_bytes = len(footer.encode('utf-8'))
     if len(investments) > MAX_REPORT_LEADS or any(not isinstance(inv, Investment) for inv in investments):
         raise ValueError("Niepoprawna partia inwestycji")
     refs = tuple(LeadRef(inv.id_sprawy, inv.status_zmieniony or "") for inv in investments)
@@ -56,11 +60,12 @@ def build_report(endpoint: NotificationEndpoint, investments: Sequence[Investmen
         url = _map_url(inv.google_maps_url)
         if url:
             entry.append(f"Mapa: {url}")
-        if selected and (len(selected) == part_size or len("\n".join(lines + entry).encode("utf-8")) > MAX_BODY_BYTES):
-            parts.append(ReportPart(endpoint.chat_id, endpoint.version, title, "\n".join(lines), tuple(selected)))
+        if selected and (len(selected) == part_size
+                         or len("\n".join(lines + entry).encode("utf-8")) + footer_bytes > MAX_BODY_BYTES):
+            parts.append(ReportPart(endpoint.chat_id, endpoint.version, title, "\n".join(lines) + footer, tuple(selected)))
             lines, selected = list(header), []
         lines.extend(entry)
         selected.append(ref)
     if selected:
-        parts.append(ReportPart(endpoint.chat_id, endpoint.version, title, "\n".join(lines), tuple(selected)))
+        parts.append(ReportPart(endpoint.chat_id, endpoint.version, title, "\n".join(lines) + footer, tuple(selected)))
     return tuple(parts)

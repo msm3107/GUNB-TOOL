@@ -164,6 +164,9 @@ i dalej działa stara wersja. Bot celowo zatrzymany zostaje zatrzymany.
 
 ### Wydanie przygotowawcze powiadomień (PR 1: v12 → v13)
 
+Sekcje PR 1–3 poniżej opisują historyczne etapy. Bieżące uruchomienie e-mail opisuje
+[PR 4](#pr-4-uruchomienie-e-mail-bez-zmiany-v14).
+
 Wdrażaj przypięty tag lub commit wydania po scaleniu PR. Zostaw `email.enabled: false`
 i `whatsapp.enabled: false`; starszy config bez tych sekcji również działa. Nie wpisuj
 jeszcze danych SMTP ani tokenu Meta. W tej wersji `enabled: true` jest błędem
@@ -289,6 +292,104 @@ Socket timeout wynosi domyślnie 5 s (0.1–10 s); budżet 45 s jest sprawdzany 
 poleceniami, bez twardego przerwania DNS/polecenia w toku. Przed podłączeniem
 workera trzeba dobrać lease i nadzór czasu. Nadal wymagane są operacyjne unknown/failed,
 zgody/UI/rezygnacja, harmonogram/TTL/cisza nocna, retencja i pomiar PERF-01 z PR 2.
+
+### PR 4: uruchomienie e-mail bez zmiany v14
+
+E-mail pozostaje domyślnie wyłączony; WhatsApp nie jest jeszcze dostępny. Ten etap
+nie dodaje migracji, bibliotek, usługi systemowej ani zewnętrznego brokera kolejki.
+
+1. Zrób kopię i zaktualizuj do przypiętego commitu po review/scaleniu. Zachowaj początkowo
+   `email.enabled: false`. Dotychczasowe komendy, filtry, zamówienia i Telegram działają dalej.
+2. Przygotuj konto SMTP oraz domenę nadawcy; sprawdź u dostawcy konfigurację SPF/DKIM/DMARC,
+   limity, uprawnienia nadawcy i dostarczalność do własnej skrzynki. Kod i CI nie sprawdzają
+   rzeczywistej konfiguracji domeny ani nie gwarantują folderu odbiorczego.
+3. W środowisku usługi/jej prywatnym `.env` ustaw `SMTP_HOST`, `SMTP_FROM_ADDRESS`,
+   `SMTP_USERNAME`, `SMTP_PASSWORD`. Chroń plik tak samo jak token Telegrama (prawa 600).
+   Hasła i loginu nie wpisuj do YAML ani do argumentów poleceń. Sekcja `email`:
+
+   ```yaml
+   email:
+     enabled: true
+     host: ${SMTP_HOST:-}
+     port: 587
+     tls: starttls
+     from_address: ${SMTP_FROM_ADDRESS:-}
+     timeout_seconds: 5
+   ```
+
+   Dla implicit TLS ustaw `tls: implicit` i port dostawcy (zwykle 465). Nie ma trybu bez TLS
+   ani wyłączenia weryfikacji certyfikatu. Aktywna konfiguracja wymaga obu danych logowania;
+   błędy zatrzymują start przed otwarciem bazy. `notifications.max_age_days` dla e-mail: 1–365.
+   Port i timeout mogą korzystać z placeholderów, np. `port: ${SMTP_PORT:-587}` oraz
+   `timeout_seconds: ${SMTP_TIMEOUT:-5}`; port musi być całkowity 1–65535, timeout 0.1–10 s.
+4. Zrestartuj istniejącego bota `--bot`. Nie uruchamiaj osobnego nadawcy ani drugiego bota.
+   `--bot-once` także wykonuje wysyłkę; te tryby odrzucają `--dry-run`.
+5. Na własnym koncie z aktywnym dostępem, w prywatnym czacie: `/email ustaw ADRES`,
+   `/email potwierdz KOD`, osobno `/email zgoda`. Sprawdź rzeczywiste odebranie kodu,
+   nowy pasujący rekord po aktywacji, tryby, wstrzymanie konta i `/email wylacz`.
+   Kod ma 15 minut, do 5 prób; ponowienie `/email ponow` wymaga odczekania i podlega
+   trwałym limitom 3/h na konto i adres, 100/h globalnie oraz odstępowi 60 s.
+   Zgoda jest wersjonowana; jej wycofanie działa także po wygaśnięciu dostępu i w pauzie.
+6. Sprawdź `--zdrowie`: przy włączonym e-mail bada heartbeat `email_worker` (5 min)
+   i podaje liczby wysyłek zalegających/unknown/failed, bez adresów i treści.
+   Pilotaż zaczynaj od małej liczby odbiorców; przed zwiększeniem skali zmierz selekcję
+   na kopii danych i kontroluj CPU, czas cyklu oraz wzrost WAL.
+
+Osobny wątek tworzy własne połączenie SQLite. Kolejka kodów mieści 25 żądań, jedno na konto,
+ważne 60 s; trzyma wyłącznie ID i znika przy restarcie. Ogólny komunikat o przyjęciu zlecenia
+nie potwierdza istnienia skrzynki ani wykonania SMTP. Zmiana adresu/trybu może wymagać nowego kodu.
+Raporty rano/wieczorem stosują `bot.morning_time`/`evening_time` w Europe/Warsaw, a
+`natychmiast` — `bot.instant_every_minutes`. Cisza nocna 22–06 dotyczy raportów, nie jawnego
+żądania kodu. Nowe e-maile zaczynają od zmian po aktywacji, bez historycznego zalewu.
+W jednym cyklu selekcja obejmuje do 10 odbiorców i 200 pasujących leadów
+(dodatkowo `notifications.max_leads_per_run`), partie do 20 leadów, kolejkę do 40 części/odbiorcę
+i TTL 24 h. Cykl wysyła najwyżej jeden raport i jeden kod; oczekiwanie między cyklami wynosi 1 s.
+Brak miejsca w kolejce nie zatwierdza ukończenia harmonogramu; następny cykl kontynuuje pracę.
+
+Pomiar PERF-01, Windows/Python 3.12, 2026-10-09: 100 tys. syntetycznych inwestycji,
+5 zapytań na wariant, limit 20 wyników; p95 metodą nearest-rank jest tu najwolniejszą próbką.
+
+| Selekcja | p50 | p95 |
+|---|---:|---:|
+| Pasujące rekordy | 0,1816 s | 0,1982 s |
+| Powiat bez dopasowań (istniejący indeks) | 0,0001 s | 0,0003 s |
+| Nazwa miejsca bez dopasowań | 8,2639 s | 8,6114 s |
+
+Przed poprawką filtr powiatu bez dopasowań miał p50 3,7253 s / p95 5,0007 s.
+SQL ogranicza teraz powiat tylko wtedy, gdy nie ma alternatywy nazwy miejsca/promienia;
+zachowuje istniejące reguły OR. Nie dodano indeksu ani migracji. Filtry tekstowe i promień
+nadal mogą przeglądać cały zbiór: limit 200 dotyczy **pasujących** leadów, nie liczby
+czytanych wierszy. Dziesięciu odbiorców z takimi filtrami może zająć ponad minutę selekcji.
+To ograniczenie pilotażu, nie SLA ani pomiar rzeczywistego serwera. Szersze wdrożenie wymaga
+ponownego pomiaru i w razie potrzeby osobnego PR z kontynuowalnym skanem/indeksem.
+
+Każda operacja SMTP działa w procesie `spawn` bez bazy. Nadzór ma budżet 45 s
+obejmujący oczekiwanie na DNS/SMTP, następnie kończy proces (dwa ograniczone join po 1 s).
+Lease outbox wynosi 120 s. Potwierdzone accepted nie znika wskutek błędu zamykania procesu.
+Brak potwierdzenia po rozpoczęciu, crash lub przekroczenie czasu daje unknown, bez automatycznego
+retry. Nie jest to gwarancja czasu przy awarii samego systemu operacyjnego. SMTP Message-ID
+służy do korelacji, nie gwarantuje deduplikacji; accepted nie oznacza doręczenia ani odczytu.
+
+**Unknown/failed:** endpoint jest automatycznie wyłączany, rezerwacje pozostają w outbox,
+a `/email zgoda` nie omija tej blokady. Operator sprawdza ID zadania i potwierdzenie u dostawcy,
+kontaktując się z odbiorcą zwykłym procesem obsługi. Nie kasuj zadania, nie zmieniaj stanu na
+retry i nie wznawiaj w ciemno: wiadomość mogła zostać przyjęta. Ten etap nie dodaje automatycznego
+uzgadniania statusów ani komendy operatora do naprawy. `/email usun` jest świadomym usunięciem
+adresu i lokalnych raportów, a nie mechanizmem naprawy niepewnej wysyłki.
+
+Nocna konserwacja istniejącego bota usuwa do 2000 rekordów na tabelę: weryfikacje starsze
+niż 7 dni, zakończone outbox (accepted/delivered/read/cancelled/expired) starsze niż 30 dni,
+historię doręczeń starszą niż `max(90, max_age_days+7)` dni i osierocone znaczniki harmonogramu.
+Nie usuwa unknown/failed/sending. Retencja wymaga działającego bota; duży zaległy zbiór schodzi
+partiami, więc nie obiecujemy usunięcia dokładnie siódmego dnia. Usunięcie adresu usuwa jego
+outbox i historię, pozostawiając czasowo skróty weryfikacji/limity. Kopie zapasowe i wiadomości
+już dostarczone mają własny cykl przechowywania. Pakiet migracji usuwa wartości SMTP z `.env`;
+po imporcie operator ponownie uzupełnia je przed startem aktywnego kanału.
+
+Wyłączenie/rollback: ustaw `email.enabled: false` i zrestartuj bota; wysyłka rozpoczęta może
+jeszcze dotrzeć. Przy powrocie do PR 3 usuń dodatkowe klucze z sekcji `email`, zostawiając
+`enabled: false` (stary walidator je ignoruje, ale nie ma integracji). Baza pozostaje v14;
+nie odtwarzaj starej bazy dla samego cofnięcia PR 4. Powrót do PR 1–2/v13 nadal wymaga kopii sprzed v14.
 
 ## E. Wycofanie wersji
 

@@ -10,10 +10,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import yaml
 
@@ -22,6 +22,9 @@ from .teryt import get_voivodeship
 from .text import fold_polish
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .email_sender import SMTPSettings
 
 
 class ConfigError(ValueError):
@@ -190,9 +193,10 @@ class DiscordConfig:
 
 @dataclass(frozen=True)
 class EmailConfig:
-    """Flaga przyszłego nadawcy e-mail; wydanie przygotowawcze wymaga wyłączenia."""
+    """Optional SMTP runtime; private settings never appear in config repr."""
 
     enabled: bool = False
+    smtp: SMTPSettings | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -422,7 +426,7 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
     bot = _bot(_section(raw, "bot"))
     if not bot.admins and _CHAT_ID_RE.match(telegram.chat_id):
         bot = replace(bot, admins=(int(telegram.chat_id),))  # bez ADMIN_CHAT_ID adminem jest właściciel bota
-    return AppConfig(
+    config = AppConfig(
         http=_http(_section(raw, "http")),
         gunb=_gunb(_section(raw, "gunb"), base_dir),
         filter=_filter(_section(raw, "filter")),
@@ -435,9 +439,40 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
         logging=_logging(_section(raw, "logging"), base_dir),
         segments=_segments(_section(raw, "segments")),
         bot=bot,
-        email=EmailConfig(enabled=_prepared_channel(_section(raw, "email"), "email")),
+        email=_email(_section(raw, "email"), env),
         whatsapp=WhatsAppConfig(enabled=_prepared_channel(_section(raw, "whatsapp"), "whatsapp")),
     )
+    if config.email.enabled and config.notifications.max_age_days > 365:
+        raise ConfigError('notifications.max_age_days: e-mail wymaga wartości od 1 do 365')
+    return config
+
+
+def _email(data: dict[str, Any], env: Mapping[str, str]) -> EmailConfig:
+    from .email_sender import SMTPSettings
+
+    allowed = {'enabled', 'host', 'port', 'tls', 'from_address', 'timeout_seconds'}
+    if set(data) - allowed:
+        raise ConfigError('email.enabled: nieobsługiwane ustawienia; dane logowania podaj tylko w środowisku')
+    try:
+        if not _bool(data, 'email', 'enabled', False):
+            return EmailConfig()
+        username, password = env.get('SMTP_USERNAME', ''), env.get('SMTP_PASSWORD', '')
+        if not username or not password:
+            raise ValueError('Incomplete authentication')
+        port = data.get('port', 587)
+        if isinstance(port, str):
+            if not re.fullmatch(r'[0-9]{1,5}', port.strip()):
+                raise ValueError('Invalid port')
+            port = int(port)
+        timeout = data.get('timeout_seconds', 5)
+        if isinstance(timeout, str):
+            timeout = float(timeout)
+        smtp = SMTPSettings(host=data.get('host', ''), port=port,
+                            from_address=data.get('from_address', ''), tls=data.get('tls', 'starttls'),
+                            username=username, password=password, timeout_seconds=timeout)
+    except (ValueError, TypeError, AttributeError):
+        raise ConfigError('email.enabled: wymagane poprawne SMTP z TLS, SMTP_USERNAME i SMTP_PASSWORD') from None
+    return EmailConfig(enabled=True, smtp=smtp)
 
 
 def _prepared_channel(data: dict[str, Any], section: str) -> bool:
