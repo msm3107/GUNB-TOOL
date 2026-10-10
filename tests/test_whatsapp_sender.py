@@ -7,6 +7,7 @@ import pytest
 import requests
 
 from gunb_tool.notification_models import LeadRef, NotificationEndpoint, ReportPart
+from tests.test_notification_store import notification_store, ready, report as stored_report
 
 
 PHONE = '48111222333'
@@ -222,3 +223,63 @@ def test_cooperative_response_deadline_is_checked_between_chunks(monkeypatch):
     values = iter([0, 0, 31])
     monkeypatch.setattr(module.time, 'monotonic', lambda: next(values))
     assert adapter.send(endpoint(), report(), idempotency_key=KEY).outcome == 'unknown'
+
+
+def test_unicode_parameters_at_capacity_are_sent_without_truncation(monkeypatch):
+    adapter, transport = sender(monkeypatch)
+    part = report(title='T', body='ą' * 899)
+    assert adapter.send(endpoint(), part, idempotency_key=KEY).outcome == 'accepted'
+    params = json.loads(transport.calls[0][1]['data'])['template']['components'][0]['parameters']
+    assert params == [{'type': 'text', 'text': 'T'}, {'type': 'text', 'text': 'ą' * 899}]
+
+
+def test_compressed_response_is_not_decompressed_or_consumed(monkeypatch):
+    response = Response(headers={'Content-Encoding': 'gzip'}, raw=b'fake compressed bytes')
+    adapter, _ = sender(monkeypatch, response)
+    assert adapter.send(endpoint(), report(), idempotency_key=KEY).outcome == 'unknown'
+    assert response.consumed == 0 and response.closed
+
+
+@pytest.mark.parametrize('outcome', ['accepted', 'unknown', 'retry'])
+def test_real_worker_persists_result_and_isolates_channels_without_http_transaction(
+        monkeypatch, notification_store, clock, outcome):
+    from datetime import timedelta
+    from gunb_tool.notification_worker import NotificationWorker
+    store = notification_store
+    wa = ready(store, 'whatsapp', '+' + PHONE)
+    email = ready(store)
+    original, = stored_report(store, wa)
+    part = replace(original, body='Dane z rejestru GUNB. Inwestycja A/1 do sprawdzenia. Etap robót wymaga sprawdzenia.')
+    ident, = store.enqueue(wa.chat_id, wa.id, 'meta:synthetic', (part,),
+                          expires_at=store.repo.now() + timedelta(hours=1))
+    response = (Response() if outcome == 'accepted' else requests.Timeout('synthetic-private')
+                if outcome == 'unknown' else Response({'error': {'code': 130429}}, status=429))
+    adapter, transport = sender(monkeypatch, response)
+    post = transport.post
+    def checked_post(url, **kwargs):
+        assert not store.repo.connection.in_transaction
+        return post(url, **kwargs)
+    transport.post = checked_post
+    worker = NotificationWorker(store, {'whatsapp': adapter})
+    assert worker.run_once() == 1
+    row = store.repo.connection.execute('SELECT * FROM notification_outbox WHERE id=?', (ident,)).fetchone()
+    assert row['state'] == outcome
+    assert bool(store.get_endpoint(wa.chat_id, wa.id).enabled) == (outcome != 'unknown')
+    assert store.get_endpoint(email.chat_id, email.id).enabled
+    history = store.repo.connection.execute('SELECT * FROM notification_deliveries').fetchall()
+    assert len(history) == (1 if outcome == 'accepted' else 0)
+    assert store.repo.connection.execute('SELECT COUNT(*) FROM deliveries').fetchone()[0] == 0
+    if outcome == 'accepted':
+        assert row['provider_message_id'] == 'wamid.synthetic_1='
+        assert history[0]['endpoint_id'] == wa.id and history[0]['outbox_id'] == ident
+        assert history[0]['outcome'] == 'accepted'
+    if outcome == 'unknown':
+        assert worker.run_once() == 0 and len(transport.calls) == 1
+    if outcome == 'retry':
+        immutable = row['payload']
+        transport.response = Response()
+        clock.advance(seconds=80)
+        assert worker.run_once() == 1
+        after = store.repo.connection.execute('SELECT * FROM notification_outbox WHERE id=?', (ident,)).fetchone()
+        assert after['state'] == 'accepted' and after['payload'] == immutable and after['attempts'] == 2
+        assert transport.calls[0][1]['data'] == transport.calls[1][1]['data']

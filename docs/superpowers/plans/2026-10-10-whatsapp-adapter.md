@@ -25,18 +25,18 @@ produces `WhatsAppSettings(api_version, phone_number_id, access_token, template_
 language='pl', timeout_seconds=5)` and `WhatsAppSender(settings).send(endpoint,
 report, *, idempotency_key)`. Common `strict_json(bytes, limit)`, ID validators.
 
-- [ ] Write tests with literal response/payload expectations. Parameterize invalid settings,
+- [x] Write tests with literal response/payload expectations. Parameterize invalid settings,
   wrong channel/owner/version/consent, overlong text, Unicode/control chars. Assert failed
   and no HTTP. Capture real sender's outgoing boundary through a fake requests transport.
-- [ ] Run `python -m pytest tests/test_whatsapp_sender.py -rs`.
+- [x] Run `python -m pytest tests/test_whatsapp_sender.py -rs`.
   Expected RED because new adapter is absent.
-- [ ] Implement exact spec: fixed HTTPS, private session, TLS/no env/redirect/retry,
+- [x] Implement exact spec: fixed HTTPS, private session, TLS/no env/redirect/retry,
   two flattened BODY parameters <=900 combined characters, one POST, streamed <=16KiB,
   30s cooperative budget and validated single contact/message, generic result/errors.
   Tests cover HTTP200/4xx/429/408/409/5xx, malformed/duplicate/deep JSON, oversize,
   network and cleanup failure, no raw secrets in logs/repr. No hidden test-only API.
-- [ ] Run same test command. Expected all PASS; `git diff --check` clean.
-- [ ] Commit adapter + tests. Task verification: same pytest command.
+- [x] Run same test command. Expected all PASS; `git diff --check` clean.
+- [x] Commit adapter + tests. Task verification: same pytest command.
 
 ### Task 2: Signed webhook boundary
 
@@ -48,17 +48,17 @@ produces `WhatsAppWebhookSettings(waba_id, phone_number_id, app_secret, verify_t
 `.parse_statuses(raw_body: bytes, signature: str|None) -> tuple[WhatsAppStatus,...]`.
 Status fields: provider_message_id, recipient_id, outcome, timestamp (UTC ISO), event_key.
 
-- [ ] Write tests: known HMAC vector using literal signed body; changed bytes/wrong key,
+- [x] Write tests: known HMAC vector using literal signed body; changed bytes/wrong key,
   missing/duplicate/non-ASCII header; authentication before JSON; separate GET token,
   own WABA/phone only; sent/delivered/read/failed literal outcomes; ignore inbound;
   timestamp/ID/shape limits, duplicate keys/NaN/UTF8/depth/64KiB/100 events, batch dedup,
   stable key across requests and privacy of error/repr. All no DB/network.
-- [ ] Run `python -m pytest tests/test_whatsapp_webhook.py -rs`.
+- [x] Run `python -m pytest tests/test_whatsapp_webhook.py -rs`.
   Expected RED because webhook module is absent.
-- [ ] Implement bounded settings, compare_digest on raw bytes before JSON, generic
+- [x] Implement bounded settings, compare_digest on raw bytes before JSON, generic
   WebhookError, scoped parser, typed minimal statuses/hash event key per spec.
-- [ ] Run both new test modules. Expected all PASS; `git diff --check` clean.
-- [ ] Commit webhook boundary + tests. Task verification: both new test modules.
+- [x] Run both new test modules. Expected all PASS; `git diff --check` clean.
+- [x] Commit webhook boundary + tests. Task verification: both new test modules.
 
 ### Task 3: Worker evidence, docs and PR review
 
@@ -66,13 +66,13 @@ Status fields: provider_message_id, recipient_id, outcome, timestamp (UTC ISO), 
 **Interfaces:** Consume Task1 Sender and existing real NotificationStore/Worker;
 no production wiring. Final reviewer consumes BASE..HEAD and spec/plan/ledger.
 
-- [ ] Write/run integration tests with real temporary SQLite and fake HTTP:
+- [x] Write/run integration tests with real temporary SQLite and fake HTTP:
   accepted persists correct provider ID/history, timeout unknown quarantines only WA,
   429 retry preserves immutable payload/key, no transaction during transport.
   Expected PASS using existing worker contracts (or fix a demonstrated adapter defect).
-- [ ] Document internal-only stage, exact template contract/limits, no schema change,
+- [x] Document internal-only stage, exact template contract/limits, no schema change,
   accepted vs delivery, no provider idempotency, no live config, future activation gates.
-- [ ] Run `python -m pytest -rs`, `git diff --check`. Expected all PASS, only Windows
+- [x] Run `python -m pytest -rs`, `git diff --check`. Expected all PASS, only Windows
   POSIX permissions skip. Commit tests/docs, push feature branch, create and attach PR.
 - [ ] Dispatch fresh read-only independent reviewer (local CODE_REVIEWER_PROMPT.local.md)
   with exact BASE/HEAD/PR/spec/plan/tests; save ignored report; verify/fix findings with
