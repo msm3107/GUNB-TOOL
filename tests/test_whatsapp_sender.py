@@ -187,7 +187,8 @@ def test_retry_after_is_bounded_and_not_interpreted_as_provider_text(monkeypatch
 
 
 @pytest.mark.parametrize('raw', [b'{', b'\xff', b'{"error":NaN}', b'{"error":{},"error":{}}',
-                                 b'[' * 25 + b'0' + b']' * 25, b' ' * 17000])
+                                 b'[' * 25 + b'0' + b']' * 25, b' ' * 17000],
+                         ids=['syntax', 'utf8', 'nan', 'duplicate', 'depth', 'size'])
 def test_invalid_or_oversize_response_is_unknown_and_closed(monkeypatch, raw):
     response = Response(raw=raw)
     adapter, transport = sender(monkeypatch, response)

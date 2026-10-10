@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
+import math
 import re
 
 
@@ -45,6 +47,19 @@ def strict_json(raw: bytes, limit: int):
                 pending.extend((child, depth + 1) for child in node.values())
             elif isinstance(node, list):
                 pending.extend((child, depth + 1) for child in node)
+            elif isinstance(node, float) and not math.isfinite(node):
+                raise ValueError('Nieskończona liczba')
         return result
     except (ValueError, TypeError, RecursionError):
         raise ValueError('Niepoprawny JSON Meta') from None
+
+
+@dataclass(frozen=True)
+class WhatsAppStatus:
+    """Minimal authenticated event DTO. Persistence/replay protection is external."""
+
+    provider_message_id: str = field(repr=False)
+    recipient_id: str = field(repr=False)
+    outcome: str
+    timestamp: str
+    event_key: str
