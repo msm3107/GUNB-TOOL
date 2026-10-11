@@ -391,6 +391,55 @@ jeszcze dotrzeć. Przy powrocie do PR 3 usuń dodatkowe klucze z sekcji `email`,
 `enabled: false` (stary walidator je ignoruje, ale nie ma integracji). Baza pozostaje v14;
 nie odtwarzaj starej bazy dla samego cofnięcia PR 4. Powrót do PR 1–2/v13 nadal wymaga kopii sprzed v14.
 
+### PR 5: adapter Meta i granica webhooka (v14 bez zmian)
+
+To etap wewnętrzny. `whatsapp.enabled: true` wciąż jest błędem konfiguracji przed
+otwarciem bazy. Nie dodawaj tokenów Meta do YAML, nie podłączaj adaptera ręcznie
+do produkcyjnego workera i nie wystawiaj parsera jako samodzielnego webhooka.
+Telegram i e-mail korzystają z dotychczasowych ścieżek. Brak migracji bazy,
+nowej usługi, automatycznych wysyłek i zmian w eksporcie konfiguracji.
+
+`WhatsAppSender` realizuje istniejący protokół nadawcy: jeden POST HTTPS do
+`graph.facebook.com`, zweryfikowany TLS, bez proxy/netrc z otoczenia, redirectów
+i retry transportu. Wersja API, ID numeru, token, szablon i język to jawne argumenty
+wewnętrznego API, bez produkcyjnych kluczy config/env w tym etapie. Odpowiedź do 16 KiB.
+Timeout connect/read 0.1–10 s i współpracujący budżet 30 s nie zatrzymują twardo DNS;
+przyszła integracja musi dodać nadzór procesu krótszy od lease.
+
+Szablon musi mieć dwa pozycyjne parametry BODY: tytuł oraz pełną treść snapshotu.
+Adapter składa białe znaki do spacji i rozdziela linie ` | `; nie obcina danych.
+Łącznie do 900 znaków w parametrach to limit aplikacji, nie deklaracja maksymalnej
+pojemności Meta. Dłuższy raport daje failed bez HTTP; przyszły planner musi dopasować
+raport przed zakolejkowaniem. Operator zatwierdza rzeczywisty szablon z maksymalnymi
+przykładami i statycznym tekstem przed aktywacją. Przekaz powinien jasno podawać dane
+GUNB, datę, inwestycje „do sprawdzenia”, niepewność etapu oraz działającą rezygnację.
+Nie ma deklaracji kategorii UTILITY, bezpłatności, zgodności prawnej czy zatwierdzenia
+szablonu przez Meta. Brak fallbacku do wiadomości sesyjnej i automatycznego tworzenia
+szablonów. Aktualną kategorię, limity, koszty i wersję API sprawdza operator na pilotażu.
+
+ACK API to wyłącznie accepted, po sprawdzeniu numeru kontaktu i ID wiadomości.
+Timeout, 5xx, redirect, 408/409, błędna lub niespójna odpowiedź to unknown,
+bez automatycznej powtórki. Potwierdzone odrzucenie 429 może dać retry z ograniczonym
+Retry-After; pozostałe jednoznaczne 4xx dają failed. Istniejący worker zapisuje wynik
+i izoluje endpoint; nie zmienia historii Telegrama/e-mail. Meta nie otrzymuje
+nieudokumentowanego klucza idempotencji. Zgubiony ACK wymaga operacyjnego rozliczenia.
+
+`WhatsAppWebhook` weryfikuje HMAC-SHA256 niezmienionych bajtów z oddzielnym app secret
+przed JSON; verify token służy tylko challenge GET. Odrzuca dane >64 KiB, duplikaty
+kluczy, niepoprawny UTF-8, niefinitywne liczby i nadmierne zagnieżdżenie. Odczytuje
+do 100 statusów z własnego WABA i ID numeru. Wynik nie zawiera surowych błędów,
+treści wiadomości, kontaktów ani danych rozliczeniowych. sent odpowiada accepted;
+delivered/read/failed są oddzielnymi zdarzeniami. Nie zapisuje ich do bazy i nie
+wykonuje poleceń z wiadomości przychodzących. Powtórzone zdarzenia w paczce są
+łączone, ale podpis i hash event_key nie zastępują trwałej ochrony przed replay.
+
+Kolejny PR musi zapewnić trwały inbox przed ACK, korelację z pierwotną wiadomością
+i odbiorcą, monotoniczne statusy, retencję oraz HTTPS z limitem body przed odczytem.
+Potem potrzebne są weryfikacja numeru, osobny opt-in i rezygnacja, krótszy raport,
+harmonogram/tempo oraz nadzór DNS/HTTP. Testy tego etapu używają wyłącznie atrap
+transportu i syntetycznej bazy; rzeczywista wysyłka i deliverability pozostają
+bramką pilotażu. Powrót do kodu PR 4 zachowuje bazę i konfigurację bez zmian.
+
 ## E. Wycofanie wersji
 
 ```bash

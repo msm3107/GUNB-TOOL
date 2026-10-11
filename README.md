@@ -450,7 +450,12 @@ Potwierdzenie skrzynki nie zapisuje zgody ani nie włącza raportów. SMTP wymag
 lub implicit TLS; Message-ID nie gwarantuje wysyłki dokładnie raz. Szczegóły i ograniczenia:
 [wdrożenie PR 3](docs/WDROZENIE.md#pr-3-smtp-i-weryfikacja-adresu-v13--v14).
 
-Kolejny etap to WhatsApp API z szablonami i webhookiem HTTPS. PR 4 zachowuje v14,
+PR 5 dodaje wewnętrzny adapter szablonów Meta i parser podpisanych statusów webhooka.
+WhatsApp pozostaje wyłączony: brak komend użytkownika, listenera HTTPS i automatycznej
+wysyłki. Adapter korzysta z istniejącego outboxa; parser nie aktualizuje jeszcze bazy.
+Szczegóły kontraktu i bramek aktywacji: [wdrożenie PR 5](docs/WDROZENIE.md#pr-5-adapter-meta-i-granica-webhooka-v14-bez-zmian).
+Kolejny etap po PR 5 to trwały inbox/statusy i kontrolowane HTTPS, następnie opt-in
+numeru oraz harmonogram. PR 4 i PR 5 zachowują v14,
 więc powrót do PR 3 wymaga wyłączenia e-mail i usunięcia nowych kluczy konfiguracji.
 PR 3 wymaga v14 dla trwałej weryfikacji;
 **powrót do PR 1–2/v13 wymaga odtworzenia kopii sprzed migracji** i cofa późniejsze dane.
