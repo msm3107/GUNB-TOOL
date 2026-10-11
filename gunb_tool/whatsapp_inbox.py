@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import hashlib
+import hmac
 import json
+import re
+import sqlite3
 from typing import Iterator
 
-from .notification_models import bounded_int, utc_iso
-from .notification_store import NotificationStore
+from .notification_models import ReportPart, bounded_int, parse_time, utc_iso
+from .notification_store import NotificationStore, normalize_address
+from .whatsapp_models import message_id, strict_json
 from .whatsapp_webhook import WhatsAppWebhook, WhatsAppWebhookSettings
 
 
@@ -20,6 +24,27 @@ def _recipient_digest(ident: str, recipient: str) -> str:
     return hashlib.sha256((ident + '\0' + recipient).encode('ascii')).hexdigest()
 
 
+_RANK = {'accepted': 1, 'delivered': 2, 'read': 3}
+
+
+def _decode(row: sqlite3.Row) -> tuple[str, str]:
+    """Validate the durable minimal format; never expose a corrupt payload."""
+    message_id(row['provider_message_id'])
+    if not re.fullmatch(r'meta:[0-9a-f]{64}', row['event_key']):
+        raise ValueError('Niepoprawny klucz')
+    data = strict_json(row['payload'].encode('utf-8'), 1024)
+    if (not isinstance(data, dict) or set(data) != {'version', 'outcome', 'timestamp', 'recipient_digest'}
+            or type(data['version']) is not int or data['version'] != 1
+            or not isinstance(data['outcome'], str) or data['outcome'] not in (*_RANK, 'failed')
+            or not isinstance(data['timestamp'], str) or not isinstance(data['recipient_digest'], str)
+            or not re.fullmatch(r'[0-9a-f]{64}', data['recipient_digest'])):
+        raise ValueError('Niepoprawny status')
+    timestamp = data['timestamp']
+    if utc_iso(parse_time(timestamp)) != timestamp or timestamp < '1970':
+        raise ValueError('Niepoprawny czas')
+    return data['outcome'], data['recipient_digest']
+
+
 class WhatsAppInbox:
     def __init__(self, store: NotificationStore, settings: WhatsAppWebhookSettings, *, max_events: int = 10000) -> None:
         if not isinstance(store, NotificationStore):
@@ -29,6 +54,7 @@ class WhatsAppInbox:
         self.store = store
         self.repo = store.repo
         self._conn = self.repo.connection
+        self._cursor: tuple[str, int] | None = None
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -67,3 +93,92 @@ class WhatsAppInbox:
                     }, separators=(',', ':')), stamp) for event in novel],
                 )
         return len(novel)
+
+    def _pending(self, limit: int, cursor: tuple[str, int] | None) -> list[sqlite3.Row]:
+        after = '' if cursor is None else ' AND (received_at, id) > (?, ?)'
+        return self._conn.execute(
+            "SELECT * FROM notification_webhook_events WHERE processed_at IS NULL AND channel = 'whatsapp'"
+            + after + ' ORDER BY received_at, id LIMIT ?', (*(() if cursor is None else cursor), limit),
+        ).fetchall()
+
+    def _match(self, provider_id: str, digest: str) -> tuple[sqlite3.Row, ReportPart] | None:
+        # Detect collisions across ALL channels before considering ownership/recipient.
+        rows = self._conn.execute(
+            'SELECT * FROM notification_outbox WHERE provider_message_id = ? LIMIT 2', (provider_id,),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        if row['state'] not in (*_RANK, 'failed', 'unknown'):
+            return None
+        endpoint = self._conn.execute(
+            'SELECT chat_id, channel, address FROM notification_endpoints WHERE id = ?', (row['endpoint_id'],),
+        ).fetchone()
+        if endpoint is None or endpoint['channel'] != 'whatsapp':
+            return None
+        try:
+            address = normalize_address('whatsapp', endpoint['address'])
+            part = ReportPart.from_json(row['payload'])
+            if (address != endpoint['address'] or part.chat_id != endpoint['chat_id']
+                    or not hmac.compare_digest(digest, _recipient_digest(provider_id, address[1:]))):
+                return None
+        except (ValueError, TypeError):
+            return None
+        return row, part
+
+    def _apply(self, row: sqlite3.Row, part: ReportPart, outcome: str, stamp: str) -> None:
+        current = row['state']
+        if outcome == 'failed':
+            if current not in ('delivered', 'read'):
+                # Reuse the existing in-transaction quarantine, never revoke consent.
+                self.store._mark(row['id'], 'failed')
+                self.store._quarantine(row['endpoint_id'])
+            return
+        if current == 'failed' and outcome == 'accepted':
+            return
+        if _RANK[outcome] > _RANK.get(current, 0):
+            self.store._mark(row['id'], outcome)
+        # ACK already recorded original revisions. Do not create histories or touch
+        # another outbox, skipped decision, endpoint, or a newer lead revision.
+        self._conn.executemany(
+            'UPDATE notification_deliveries SET outcome = ?, processed_at = ?'
+            ' WHERE outbox_id = ? AND endpoint_id = ? AND id_sprawy = ? AND revision = ?'
+            " AND outcome IN ('accepted', 'delivered') AND (? = 'read' OR (? = 'delivered' AND outcome = 'accepted'))",
+            [(outcome, stamp, row['id'], row['endpoint_id'], ref.id_sprawy, ref.revision, outcome, outcome)
+             for ref in part.leads],
+        )
+
+    def reconcile(self, *, limit: int = 100) -> int:
+        """Bounded fair sweep; unmatched events wait for an ACK or retention.
+
+        Delivery bookkeeping may finish after pause/revocation. It never authorizes
+        a new send, reenables an endpoint or resolves a lost ACK by phone alone.
+        """
+        bounded_int(limit, 1, 100)
+        with self._transaction():
+            rows = self._pending(limit, self._cursor)
+            if not rows and self._cursor is not None:
+                rows = self._pending(limit, None)
+            processed = 0
+            stamp = utc_iso(self.repo.now())
+            for event in rows:
+                try:
+                    outcome, digest = _decode(event)
+                except (ValueError, TypeError, AttributeError):
+                    self._conn.execute('UPDATE notification_webhook_events SET processed_at = ? WHERE id = ?',
+                                       (stamp, event['id']))
+                else:
+                    match = self._match(event['provider_message_id'], digest)
+                    if match is None:
+                        continue
+                    row, part = match
+                    self._apply(row, part, outcome, stamp)
+                    self._conn.execute(
+                        'UPDATE notification_webhook_events SET endpoint_id = ?, processed_at = ? WHERE id = ?',
+                        (row['endpoint_id'], stamp, event['id']),
+                    )
+                processed += 1
+            cursor = (rows[-1]['received_at'], rows[-1]['id']) if rows else None
+        # Do not skip work if any statement or COMMIT failed.
+        self._cursor = cursor
+        return processed
