@@ -60,8 +60,15 @@ class WhatsAppInbox:
     def _transaction(self) -> Iterator[None]:
         if self._conn.in_transaction:
             raise RuntimeError('Inbox wymaga połączenia bez zewnętrznej transakcji')
-        with self.repo.transaction():
-            yield
+        try:
+            with self.repo.transaction():
+                yield
+        except BaseException:
+            # The repository rolls back statement errors, but COMMIT itself may
+            # fail (deferred FK/full disk). This transaction belongs only to us.
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
 
     def receive(self, raw_body: bytes, signature: str | None) -> int:
         """Authenticate first; return only after the complete batch commits.
@@ -97,7 +104,10 @@ class WhatsAppInbox:
     def _pending(self, limit: int, cursor: tuple[str, int] | None) -> list[sqlite3.Row]:
         after = '' if cursor is None else ' AND (received_at, id) > (?, ?)'
         return self._conn.execute(
-            "SELECT * FROM notification_webhook_events WHERE processed_at IS NULL AND channel = 'whatsapp'"
+            # Otherwise SQLite may choose (channel,event_key) and sort the whole
+            # inbox for every batch. This ordered partial index is present since v13.
+            "SELECT * FROM notification_webhook_events INDEXED BY ix_notification_webhook_pending"
+            " WHERE processed_at IS NULL AND channel = 'whatsapp'"
             + after + ' ORDER BY received_at, id LIMIT ?', (*(() if cursor is None else cursor), limit),
         ).fetchall()
 

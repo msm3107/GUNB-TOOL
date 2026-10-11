@@ -452,10 +452,15 @@ lub implicit TLS; Message-ID nie gwarantuje wysyłki dokładnie raz. Szczegóły
 
 PR 5 dodaje wewnętrzny adapter szablonów Meta i parser podpisanych statusów webhooka.
 WhatsApp pozostaje wyłączony: brak komend użytkownika, listenera HTTPS i automatycznej
-wysyłki. Adapter korzysta z istniejącego outboxa; parser nie aktualizuje jeszcze bazy.
+wysyłki. Adapter korzysta z istniejącego outboxa; parser jest granicą uwierzytelniania.
 Szczegóły kontraktu i bramek aktywacji: [wdrożenie PR 5](docs/WDROZENIE.md#pr-5-adapter-meta-i-granica-webhooka-v14-bez-zmian).
-Kolejny etap po PR 5 to trwały inbox/statusy i kontrolowane HTTPS, następnie opt-in
-numeru oraz harmonogram. PR 4 i PR 5 zachowują v14,
+PR 6 dodaje wewnętrzny trwały inbox, deduplikację, siedmiodniową retencję i statusy
+`accepted → delivered → read` odporne na zmianę kolejności webhooków. Zapis obejmuje
+minimalny status i skrót odbiorcy; zmiana numeru pozostawia stare statusy do ręcznego
+rozliczenia. Kanał nadal jest niedostępny. Szczegóły limitów i umowy ACK:
+[wdrożenie PR 6](docs/WDROZENIE.md#pr-6-trwaly-inbox-i-statusy-whatsapp-v14-bez-zmian).
+Kolejne etapy to kontrolowane HTTPS, dowód pierwotnego odbiorcy/nadawcy, opt-in
+numeru oraz harmonogram. PR 4–6 zachowują v14,
 więc powrót do PR 3 wymaga wyłączenia e-mail i usunięcia nowych kluczy konfiguracji.
 PR 3 wymaga v14 dla trwałej weryfikacji;
 **powrót do PR 1–2/v13 wymaga odtworzenia kopii sprzed migracji** i cofa późniejsze dane.

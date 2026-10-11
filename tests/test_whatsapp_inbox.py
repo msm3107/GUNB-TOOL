@@ -475,3 +475,63 @@ def test_api_ack_and_webhook_race_on_separate_connections_converges(notification
     inbox(store).reconcile()
     assert outbox(store, ident)['state'] == 'read' and outcomes(store, ident) == ['read']
     assert events(store)[0]['processed_at']
+
+
+@pytest.mark.parametrize('advance_cursor', [False, True])
+def test_pending_batch_uses_ordered_pending_index_without_sort(notification_store, advance_cursor):
+    store = notification_store
+    receiver = inbox(store)
+    receiver.receive(*signed(status(ident='wamid.orphan1'), status(ident='wamid.orphan2')))
+    if advance_cursor:
+        receiver.reconcile(limit=1)
+    statements = []
+    store.repo.connection.set_trace_callback(statements.append)
+    try:
+        receiver.reconcile(limit=1)
+    finally:
+        store.repo.connection.set_trace_callback(None)
+    query, = [sql for sql in statements if sql.startswith('SELECT * FROM notification_webhook_events')]
+    plan = '\n'.join(row[3] for row in store.repo.connection.execute('EXPLAIN QUERY PLAN ' + query))
+    assert 'ix_notification_webhook_pending' in plan and 'USE TEMP B-TREE' not in plan
+
+
+@pytest.mark.parametrize('operation', ['receive', 'reconcile'])
+def test_commit_failure_rolls_back_owned_transaction_and_allows_safe_retry(notification_store, operation):
+    store = notification_store
+    receiver = inbox(store)
+    if operation == 'reconcile':
+        _, ident, _ = acknowledged(store)
+        receiver.receive(*signed(status(ident='wamid.orphan'), status('read')))
+        assert receiver.reconcile(limit=1) == 0
+    # Deferred FK fails at COMMIT rather than inside a statement. Model a real
+    # commit failure without filesystem damage or altering the repository helper.
+    store.repo.connection.execute(
+        'CREATE TABLE commit_guard(endpoint_id INTEGER REFERENCES notification_endpoints(id)'
+        ' DEFERRABLE INITIALLY DEFERRED)')
+    trigger_event = 'INSERT' if operation == 'receive' else 'UPDATE OF processed_at'
+    store.repo.connection.execute(
+        f'CREATE TRIGGER fail_commit AFTER {trigger_event} ON notification_webhook_events'
+        ' BEGIN INSERT INTO commit_guard(endpoint_id) VALUES (999999); END')
+    with pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY'):
+        if operation == 'receive':
+            receiver.receive(*signed())
+        else:
+            receiver.reconcile(limit=1)
+    assert not store.repo.connection.in_transaction
+    assert not store.repo.connection.execute('SELECT * FROM commit_guard').fetchall()
+    if operation == 'receive':
+        assert not events(store)
+    else:
+        assert outbox(store, ident)['state'] == 'accepted' and outcomes(store, ident) == ['accepted']
+        assert all(event['processed_at'] is None for event in events(store))
+    store.repo.connection.execute('DROP TRIGGER fail_commit')
+    if operation == 'receive':
+        assert receiver.receive(*signed()) == 1
+    else:
+        assert receiver.reconcile(limit=1) == 1 and outbox(store, ident)['state'] == 'read'
+
+
+def test_authenticated_unsupported_status_is_successful_empty_batch(notification_store):
+    store = notification_store
+    assert inbox(store).receive(*signed(status('future_status'))) == 0
+    assert not events(store) and not store.repo.connection.in_transaction

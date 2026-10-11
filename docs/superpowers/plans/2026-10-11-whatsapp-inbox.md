@@ -26,13 +26,13 @@
 produce `WhatsAppInbox(store, settings, *, max_events=10000).receive(raw_body, signature) -> int`
 and `WebhookInboxFull`. Private v1 payload contains outcome/timestamp/recipient_digest only.
 
-- [ ] Write real SQLite tests for signed minimal storage, durable reopen, replay, invalid batch/auth
+- [x] Write real SQLite tests for signed minimal storage, durable reopen, replay, invalid batch/auth
   rejection, no plaintext private data, capacity including duplicates/full batch, outer transaction
   rejection, trigger-induced rollback and concurrent independent connections.
-- [ ] Run `python -m pytest tests/test_whatsapp_inbox.py -rs`. Expected RED: absent inbox module.
-- [ ] Implement bounded authenticated ingress, own transaction, novelty/capacity and atomic inserts.
-- [ ] Run same tests, inspect output and `git diff --check`. Expected PASS. Commit intake/tests.
-- [ ] Complete task with same pytest verification command.
+- [x] Run `python -m pytest tests/test_whatsapp_inbox.py -rs`. Expected RED: absent inbox module.
+- [x] Implement bounded authenticated ingress, own transaction, novelty/capacity and atomic inserts.
+- [x] Run same tests, inspect output and `git diff --check`. Expected PASS. Commit intake/tests.
+- [x] Complete task with same pytest verification command.
 
 ### Task 2: Correlation and monotonic status transitions
 
@@ -40,14 +40,14 @@ and `WebhookInboxFull`. Private v1 payload contains outcome/timestamp/recipient_
 **Interfaces:** Consume Task1 persisted rows; produce `.reconcile(*, limit=100) -> int`,
 bounded keyset traversal and atomic delivery/outbox/event bookkeeping.
 
-- [ ] Add tests for all status order pairs, failure quarantine/late success, early event then ACK,
+- [x] Add tests for all status order pairs, failure quarantine/late success, early event then ACK,
   late ACK, lost ACK without ID, wrong/changed recipient, ownership, email/ambiguous provider IDs,
   revoked/pause with unchanged address, malformed rows, no fabricated histories, worker races,
   restart, concurrent reconcilers, fair sweep/limits and DB rollback including cursor.
-- [ ] Run inbox tests. Expected RED: reconciliation absent.
-- [ ] Implement spec matching/ordering/quarantine/history updates and fair cursor after commit.
-- [ ] Run inbox and notification store/worker/webhook tests. Expected PASS; diff clean.
-- [ ] Commit implementation/tests; complete task with those tests.
+- [x] Run inbox tests. Expected RED: reconciliation absent.
+- [x] Implement spec matching/ordering/quarantine/history updates and fair cursor after commit.
+- [x] Run inbox and notification store/worker/webhook tests. Expected PASS; diff clean.
+- [x] Commit implementation/tests; complete task with those tests.
 
 ### Task 3: Retention, integration evidence and PR
 
