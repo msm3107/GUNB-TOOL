@@ -132,7 +132,7 @@ class WhatsAppInbox:
             if (address != endpoint['address'] or part.chat_id != endpoint['chat_id']
                     or not hmac.compare_digest(digest, _recipient_digest(provider_id, address[1:]))):
                 return None
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             return None
         return row, part
 
@@ -174,7 +174,7 @@ class WhatsAppInbox:
             for event in rows:
                 try:
                     outcome, digest = _decode(event)
-                except (ValueError, TypeError, AttributeError):
+                except (ValueError, TypeError, AttributeError, OverflowError):
                     self._conn.execute('UPDATE notification_webhook_events SET processed_at = ? WHERE id = ?',
                                        (stamp, event['id']))
                 else:

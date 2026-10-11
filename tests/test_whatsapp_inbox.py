@@ -535,3 +535,43 @@ def test_authenticated_unsupported_status_is_successful_empty_batch(notification
     store = notification_store
     assert inbox(store).receive(*signed(status('future_status'))) == 0
     assert not events(store) and not store.repo.connection.in_transaction
+
+
+@pytest.mark.parametrize('timestamp', ['9999-12-31T23:59:59.000000-01:00', '0001-01-01T00:00:00.000000+01:00'])
+def test_corrupt_event_timezone_overflow_cannot_block_valid_status_behind_it(notification_store, timestamp):
+    store = notification_store
+    ep, ident, _ = acknowledged(store)
+    receiver = inbox(store)
+    receiver.receive(*signed(status('sent'), status('read')))
+    first = events(store)[0]
+    malformed = json.loads(first['payload'])
+    malformed['timestamp'] = timestamp
+    store.repo.connection.execute('UPDATE notification_webhook_events SET payload = ? WHERE id = ?',
+                                  (json.dumps(malformed), first['id']))
+    assert receiver.reconcile() == 2
+    assert outbox(store, ident)['state'] == 'read' and outcomes(store, ident) == ['read']
+    assert store.get_endpoint(MIETEK, ep.id) == ep
+    assert events(store)[0]['endpoint_id'] is None and all(event['processed_at'] for event in events(store))
+    receiver.receive(*signed(status('failed', timestamp='1700000001')))
+    assert receiver.reconcile() == 1 and outbox(store, ident)['state'] == 'read'
+
+
+@pytest.mark.parametrize('revision', ['9999-12-31T23:59:59.000000-01:00', '0001-01-01T00:00:00.000000+01:00'])
+def test_corrupt_snapshot_timezone_overflow_stays_pending_without_blocking_next_job(notification_store, revision):
+    store = notification_store
+    ep, ident, _ = acknowledged(store)
+    other, other_id, _ = acknowledged(store, address='+48999888777', ident='wamid.other')
+    malformed = json.loads(outbox(store, ident)['payload'])
+    malformed['leads'][0]['revision'] = revision
+    store.repo.connection.execute('UPDATE notification_outbox SET payload = ? WHERE id = ?', (json.dumps(malformed), ident))
+    receiver = inbox(store)
+    receiver.receive(*signed(status('read'), status('read', ident='wamid.other', recipient='48999888777')))
+    assert receiver.reconcile(limit=1) == 0
+    assert receiver.reconcile(limit=1) == 1
+    assert outbox(store, ident)['state'] == 'accepted' and outcomes(store, ident) == ['accepted']
+    assert events(store)[0]['processed_at'] is None
+    assert store.get_endpoint(MIETEK, ep.id) == ep
+    assert outbox(store, other_id)['state'] == 'read' and outcomes(store, other_id) == ['read']
+    assert store.get_endpoint(MIETEK, other.id) == other
+    receiver.receive(*signed(status('delivered', ident='wamid.other', recipient='48999888777', timestamp='1700000001')))
+    assert receiver.reconcile(limit=1) == 1 and outbox(store, other_id)['state'] == 'read'
