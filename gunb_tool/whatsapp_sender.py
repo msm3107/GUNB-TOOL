@@ -14,6 +14,7 @@ import requests
 from .notification_models import DeliveryResult, NotificationEndpoint, ReportPart, bounded_text
 from .notification_store import normalize_address
 from .whatsapp_models import message_id, numeric_id, strict_json
+from .whatsapp_routing import WhatsAppRouting
 
 MAX_RESPONSE_BYTES = 16384
 MAX_TEMPLATE_TEXT_CHARS = 900
@@ -25,6 +26,7 @@ class WhatsAppSettings:
     phone_number_id: str = field(repr=False)
     access_token: str = field(repr=False)
     template_name: str
+    waba_id: str = field(repr=False)
     language: str = 'pl'
     timeout_seconds: float = 5
 
@@ -33,6 +35,7 @@ class WhatsAppSettings:
             if not isinstance(self.api_version, str) or not re.fullmatch(r'v[1-9][0-9]{0,2}\.0', self.api_version):
                 raise ValueError
             numeric_id(self.phone_number_id)
+            numeric_id(self.waba_id)
             if (not isinstance(self.access_token, str) or not 1 <= len(self.access_token) <= 4096
                     or not re.fullmatch(r'[!-~]+', self.access_token)):
                 raise ValueError
@@ -65,6 +68,7 @@ class WhatsAppSender:
         if not isinstance(settings, WhatsAppSettings):
             raise ValueError('Niepoprawna konfiguracja WhatsApp')
         self.settings = settings
+        self.routing = WhatsAppRouting(settings.waba_id, settings.phone_number_id)
 
     def send(self, endpoint: NotificationEndpoint, report: ReportPart, *, idempotency_key: str) -> DeliveryResult:
         try:

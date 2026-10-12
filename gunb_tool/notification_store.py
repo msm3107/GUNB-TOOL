@@ -18,6 +18,7 @@ from .notification_models import (CHANNELS, MAX_REPORT_LEADS, Claim, DeliveryRes
                                   bounded_int, bounded_text, parse_time, utc_iso)
 from .storage import LeadRepository, investment_from_row
 from .scoring import HOT
+from .whatsapp_routing import WhatsAppRouting
 
 _RESERVING = ("queued", "retry", "sending", "unknown", "failed")
 _CHANGING = frozenset({"address", "enabled", "verified_at", "consent_at", "consent_source",
@@ -75,8 +76,15 @@ class NotificationStore:
         """Każdy zapis jest samodzielny: repo nie cofa osobno zagnieżdżonej operacji."""
         if self._conn.in_transaction:
             raise RuntimeError("Operacja powiadomień wymaga połączenia bez zewnętrznej transakcji")
-        with self.repo.transaction():
-            yield
+        try:
+            with self.repo.transaction():
+                yield
+        except BaseException:
+            # COMMIT can fail after the repository's statement-error handler.
+            # This connection had no outer transaction; rollback belongs to us.
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
 
     def get_endpoint(self, chat_id: int, endpoint_id: int) -> NotificationEndpoint:
         bounded_int(chat_id, -(2**63) + 1, 2**63 - 1)
@@ -415,7 +423,8 @@ class NotificationStore:
             (claim.id, claim.endpoint_id, claim.claim_owner, claim.claimed_at),
         ).fetchone()
 
-    def prepare_send(self, claim: Claim) -> tuple[NotificationEndpoint, ReportPart] | None:
+    def prepare_send(self, claim: Claim, *, whatsapp_routing: WhatsAppRouting | None = None
+                     ) -> tuple[NotificationEndpoint, ReportPart] | None:
         """Ostatnia kontrola; zwracamy niemutowalnego odbiorcę zamiast czytać nowy adres po jej zakończeniu."""
         with self._transaction():
             row = self._claimed_row(claim)
@@ -444,7 +453,32 @@ class NotificationStore:
             if not valid:
                 self._mark(claim.id, "cancelled")
                 return None
+            if endpoint.channel == 'whatsapp':
+                if not self._prepare_whatsapp_route(claim.id, endpoint, whatsapp_routing):
+                    self._mark(claim.id, 'failed')
+                    self._quarantine(endpoint.id)
+                    return None
             return endpoint, part
+
+    def _prepare_whatsapp_route(self, outbox_id: int, endpoint: NotificationEndpoint,
+                                routing: WhatsAppRouting | None) -> bool:
+        """Own preflight transaction only. Retries must use the original proof."""
+        if not isinstance(routing, WhatsAppRouting):
+            return False
+        expected = (routing.scope, routing.recipient_digest(endpoint.address[1:]),
+                    endpoint.chat_id, endpoint.version)
+        saved = self._conn.execute(
+            'SELECT sender_scope, recipient_digest, chat_id, endpoint_version'
+            ' FROM whatsapp_dispatch_routes WHERE outbox_id = ?', (outbox_id,),
+        ).fetchone()
+        if saved is not None:
+            return tuple(saved) == expected
+        self._conn.execute(
+            'INSERT INTO whatsapp_dispatch_routes'
+            ' (outbox_id, sender_scope, recipient_digest, chat_id, endpoint_version, created_at)'
+            ' VALUES (?, ?, ?, ?, ?, ?)', (outbox_id, *expected, utc_iso(self.repo.now())),
+        )
+        return True
 
     def complete(self, claim: Claim, result: DeliveryResult, *, max_attempts: int = 5) -> bool:
         bounded_int(max_attempts, 1, 10)

@@ -13,11 +13,14 @@ from gunb_tool.notification_models import DeliveryResult, parse_time
 from gunb_tool.notification_store import NotificationStore
 from gunb_tool.notification_worker import NotificationWorker
 from gunb_tool.storage import LeadRepository
+from gunb_tool.whatsapp_routing import WhatsAppRouting
 from tests.bot_helpers import MIETEK, lead
 from tests.test_notification_store import enqueue, notification_store, ready, report
 
 
 class FakeSender:
+    routing = WhatsAppRouting('1234', '5678')
+
     def __init__(self, *results, callback=None):
         self.results = list(results)
         self.calls = []

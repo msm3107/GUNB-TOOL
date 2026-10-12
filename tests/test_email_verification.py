@@ -340,7 +340,14 @@ def version(path):
         return conn.execute('PRAGMA user_version').fetchone()[0]
 
 
-def test_v14_preserves_v13_and_makes_exactly_one_backup(v13_state, clock):
+@pytest.fixture
+def v14_migrations(monkeypatch):
+    """Pin historical migration checks to the released v14 step."""
+    monkeypatch.setattr(storage, '_MIGRATIONS', storage._MIGRATIONS[:14])
+    monkeypatch.setattr(storage, 'SCHEMA_VERSION', 14)
+
+
+def test_v14_preserves_v13_and_makes_exactly_one_backup(v13_state, clock, v14_migrations):
     path = v13_state
     before = dump(path)
     with LeadRepository(path, now=clock.now_utc) as repo:
@@ -356,7 +363,7 @@ def test_v14_preserves_v13_and_makes_exactly_one_backup(v13_state, clock):
     assert dump(path) == after and list((path.parent / 'backups').glob('*-przed-v14-*.sqlite')) == [backup]
 
 
-def test_v14_partial_failure_rolls_back(v13_state, monkeypatch):
+def test_v14_partial_failure_rolls_back(v13_state, monkeypatch, v14_migrations):
     before = dump(v13_state)
     broken = storage._MIGRATIONS[:-1] + (storage._MIGRATIONS[-1] + '\nSELECT broken_v14;',)
     monkeypatch.setattr(storage, '_MIGRATIONS', broken)
@@ -365,7 +372,7 @@ def test_v14_partial_failure_rolls_back(v13_state, monkeypatch):
     assert version(v13_state) == 13 and dump(v13_state) == before
 
 
-def test_v13_backup_restore_allows_actual_old_code(v13_state, tmp_path, clock, monkeypatch):
+def test_v13_backup_restore_allows_actual_old_code(v13_state, tmp_path, clock, monkeypatch, v14_migrations):
     before = dump(v13_state)
     with LeadRepository(v13_state):
         pass
@@ -379,7 +386,7 @@ def test_v13_backup_restore_allows_actual_old_code(v13_state, tmp_path, clock, m
         pass
 
 
-def test_v14_backup_failure_and_old_code_refusal(v13_state, tmp_path, monkeypatch):
+def test_v14_backup_failure_and_old_code_refusal(v13_state, tmp_path, monkeypatch, v14_migrations):
     before = dump(v13_state)
     blocked = tmp_path / 'blocked'
     blocked.write_text('fixture', encoding='utf-8')
