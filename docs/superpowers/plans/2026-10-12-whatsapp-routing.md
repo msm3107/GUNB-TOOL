@@ -22,7 +22,7 @@
 ### Task 1: Routing model and additive schema
 
 **Files:** Create gunb_tool/whatsapp_routing.py, gunb_tool/whatsapp_routing_schema.py,
-tests/test_whatsapp_routing.py; extend storage.py migration list. Pin five historical
+tests/test_whatsapp_routing.py; extend storage.py migration list. Pin four historical
 v14 migration tests in tests/test_email_verification.py to their released step.
 **Interfaces:** Produce frozen WhatsAppRouting(waba_id,phone_number_id), .scope,
 .recipient_digest(recipient_id), and v15 whatsapp_dispatch_routes keyed by outbox_id.
