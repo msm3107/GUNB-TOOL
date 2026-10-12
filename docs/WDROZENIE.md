@@ -434,13 +434,16 @@ wykonuje poleceń z wiadomości przychodzących. Powtórzone zdarzenia w paczce 
 łączone, ale podpis i hash event_key nie zastępują trwałej ochrony przed replay.
 
 PR 6 poniżej zapewnia trwały inbox, konserwatywną korelację statusów i retencję.
-Do aktywacji nadal potrzebne są HTTPS z limitem body przed odczytem, trwały dowód
-pierwotnego odbiorcy/nadawcy, weryfikacja numeru, osobny opt-in i rezygnacja, krótszy raport,
+PR 7 dodaje trwały dowód pierwotnego odbiorcy/nadawcy. Do aktywacji nadal potrzebne są
+HTTPS z limitem body przed odczytem, weryfikacja numeru, osobny opt-in i rezygnacja, krótszy raport,
 harmonogram/tempo oraz nadzór DNS/HTTP. Testy tego etapu używają wyłącznie atrap
 transportu i syntetycznej bazy; rzeczywista wysyłka i deliverability pozostają
 bramką pilotażu. Powrót do kodu PR 4 zachowuje bazę i konfigurację bez zmian.
 
 ### PR 6: trwaly inbox i statusy WhatsApp (v14 bez zmian)
+
+Ten opis dokumentuje zakres pierwotnego PR 6. PR 7 poniżej zmienia format zapisu
+nowych zdarzeń i korelację; zachowuje limity, podpis, deduplikację oraz umowę ACK.
 
 To nadal etap wewnętrzny. `whatsapp.enabled: true` pozostaje błędem konfiguracji
 przed otwarciem bazy. Nie ma publicznego endpointu, nowych komend, procesu WhatsApp
@@ -501,9 +504,69 @@ indeksu ID dostawcy. Retencja może sortować ograniczoną tabelę; wyższe limi
 ponownego pomiaru i ewentualnie nowej migracji indeksu. Nie zmieniamy schematu v14,
 konfiguracji ani zależności. Powrót do PR 5 pozostawia bazę czytelną, lecz przestaje
 rozliczać inbox i usuwać jego stare zdarzenia. Przed przyszłym uruchomieniem usługi
-potrzebne są jeszcze obsługa HTTPS/ACK, cykliczne rozliczanie i nadzór, routing,
+potrzebne są jeszcze obsługa HTTPS/ACK, cykliczne rozliczanie i nadzór,
 opt-in/weryfikacja/rezygnacja, krótkie raporty, tempo/cisza nocna, procedura błędów,
 aktualna ocena wymagań Meta oraz rzeczywisty test pilotażowy.
+
+### PR 7: dowod routingu WhatsApp (v14 → v15)
+
+WhatsApp nadal jest niedostępny i `whatsapp.enabled: true` nadal kończy się błędem
+przed otwarciem bazy. Nie ma nowej usługi, listenera, komend, tokenów config/env
+ani rzeczywistych wysyłek. Telegram i e-mail zachowują dotychczasowe ścieżki.
+
+Pierwsze otwarcie v14 przez nowy kod tworzy kopię `…-przed-v15-….sqlite` i w jednej
+transakcji dodaje pustą tabelę `whatsapp_dispatch_routes` oraz wersję v15. Istniejące
+tabele i dane pozostają bez zmian. Błąd kopii zatrzymuje migrację, a błąd DDL cofa
+nową tabelę i wersję. Czas wykonania kopii zależy od wielkości bazy i dysku.
+
+Wewnętrzne `WhatsAppSettings` wymaga teraz także WABA ID; to kontekst routingu,
+bez nowego pola requestu Meta. `WhatsAppSender.routing` udostępnia walidowany
+`WhatsAppRouting`. Worker odrzuca nadawcę WhatsApp bez tego kontekstu przed przejęciem
+zadań. `prepare_send(claim, whatsapp_routing=...)`, po istniejących kontrolach
+własności/zgody/dostępu i wersji, zapisuje dowód dla danej części i zatwierdza go
+**przed HTTP**. Zapis nie jest potwierdzeniem przyjęcia przez Meta.
+
+Dowód zawiera hash przestrzeni WABA/ID numeru, hash numeru odbiorcy w tej przestrzeni,
+pierwotny chat_id, wersję endpointu i czas utworzenia. Hashe SHA256 mają oddzielne
+domeny; tabela nie zawiera jawnych telefonów, ID kont Meta, body ani sekretów.
+To pseudonimizacja, nie szyfrowanie ani anonimizacja. Ponowienie porównuje zapisany
+dowód i go nie nadpisuje; zmiana konta/numeru nadawcy zatrzymuje wysyłkę, oznacza
+zadanie failed i izoluje endpoint. Błąd COMMIT uniemożliwia wywołanie nadawcy.
+
+Nowe zdarzenia inboxa mają payload v2: status, czas Meta, hash odbiorcy i przestrzeni
+nadawcy. Korelacja wymaga jednego ID wiadomości w całym outboxie, kanału WhatsApp,
+zgodnego pierwotnego właściciela i wersji raportu/dowodu oraz obu hashy. Obecny numer
+endpointu nie służy do zgadywania odbiorcy. Zapisany status ze starego konta Meta może
+zostać rozliczony także po zmianie konfiguracji inboxa. Unknown bez ACK/ID nadal
+wymaga operatora; nie dodajemy automatycznych powtórek ani gwarancji exactly-once.
+
+Read/delivered dla starego numeru aktualizuje tylko jego część i istniejącą historię.
+Failed izoluje endpoint i anuluje jego queued/retry tylko przy niezmienionej wersji
+z wysyłki. Po zmianie numeru/zgody/ustawień oznacza wyłącznie starą część jako failed;
+nie wyłącza nowego odbiorcy. Nigdy nie odnawia zgody ani nie włącza endpointu.
+
+Zdarzenia v1 z PR 6 nie mają dowodu przestrzeni nadawcy. Pozostają oczekujące,
+tak jak statusy zadań bez routingu; nie są oznaczane jako uszkodzone ani automatycznie
+uzupełniane obecną konfiguracją. Deduplikacja nie zamienia istniejącego v1 w v2.
+Obowiązuje dotychczasowa retencja inboxa. Dowód znika kaskadowo z częścią outboxa
+(retencja), endpointem lub kontem; starsze kopie bazy pozostają objęte swoją polityką.
+
+Aktualizację wykonuj według [D. Aktualizacja](#d-aktualizacja), zachowując dotychczasowy
+stan, token Telegrama i jedną instancję odbierającą aktualizacje. Migracja wymaga
+kontrolowanego restartu; nie deklarujemy aktualizacji bez przerwy. **Wycofanie do
+PR 3–6/v14 wymaga odtworzenia kopii sprzed v15** według sekcji E. Sam poprzedni kod
+odmówi otwarcia v15. Restore cofa również nowe dane Telegrama/e-mail zapisane od kopii;
+przed wycofaniem zachowaj aktualną bazę. Nie usuwaj tabel ani nie zmieniaj user_version.
+
+Warunkiem ostatniego PR wdrożeniowego jest kompletna instrukcja operatora: skąd
+wziąć i gdzie ustawić wszystkie potrzebne tokeny/ID/sekrety (SMTP, Meta, WABA, numer,
+szablon, osobny app secret i verify token, istniejący Telegram i używane opcjonalnie
+Discord/Sheets), prawa plików, kopie, DNS/TLS/reverse proxy,
+instalacja/aktualizacja serwera przy wyłączonych nowych kanałach, kontrola zdrowia,
+pilotaż i stopniowe włączenie oraz wycofanie chroniące działającego bota. To wymóg
+końcowego przekazania użytkownikowi z 2026-10-12. Ten PR nie uruchamia produkcji
+ani nie wymaga podania sekretów. Aktualne wymagania Meta i rzeczywisty pilotaż
+pozostają bramkami aktywacji, a dane GUNB nadal opisujemy jako inwestycje do sprawdzenia.
 
 ## E. Wycofanie wersji
 

@@ -98,6 +98,7 @@ main.py (CLI)
 | `gunb_tool/notification_store.py`, `notification_worker.py` | Własność i zgody odbiorców, trwałe enqueue/claim, ponowna kontrola dostępu przed wysyłką, retry i rozliczanie wyników. |
 | `gunb_tool/email_sender.py` | Wewnętrzny adapter SMTP z TLS, jednym odbiorcą i rozróżnieniem odrzucenia od niepewnego wyniku DATA. |
 | `gunb_tool/email_verification.py`, `email_verification_schema.py` | Wewnętrzna jednorazowa weryfikacja adresu oraz schemat v14: skróty tokenów i trwałe limity żądań. |
+| `gunb_tool/whatsapp_routing.py`, `whatsapp_routing_schema.py` | Schemat v15: niezmienny dowód pierwotnego odbiorcy i konta Meta dla części outboxa, zapisany przed HTTP. |
 | `gunb_tool/email_bot.py`, `email_runtime.py`, `smtp_process.py` | Komendy `/email`, osobny wątek harmonogramu z własną bazą, retencja i nadzorowany proces SMTP. Domyślnie wyłączone. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
@@ -456,15 +457,25 @@ wysyłki. Adapter korzysta z istniejącego outboxa; parser jest granicą uwierzy
 Szczegóły kontraktu i bramek aktywacji: [wdrożenie PR 5](docs/WDROZENIE.md#pr-5-adapter-meta-i-granica-webhooka-v14-bez-zmian).
 PR 6 dodaje wewnętrzny trwały inbox, deduplikację, siedmiodniową retencję i statusy
 `accepted → delivered → read` odporne na zmianę kolejności webhooków. Zapis obejmuje
-minimalny status i skrót odbiorcy; zmiana numeru pozostawia stare statusy do ręcznego
-rozliczenia. Kanał nadal jest niedostępny. Szczegóły limitów i umowy ACK:
+minimalny status i skrót odbiorcy. Kanał nadal jest niedostępny. Szczegóły limitów i umowy ACK:
 [wdrożenie PR 6](docs/WDROZENIE.md#pr-6-trwaly-inbox-i-statusy-whatsapp-v14-bez-zmian).
-Kolejne etapy to kontrolowane HTTPS, dowód pierwotnego odbiorcy/nadawcy, opt-in
-numeru oraz harmonogram. PR 4–6 zachowują v14,
-więc powrót do PR 3 wymaga wyłączenia e-mail i usunięcia nowych kluczy konfiguracji.
+PR 7 dodaje v15 i dowód pierwotnego numeru oraz konta Meta zapisany przed HTTP.
+Nowe statusy można przypisać do oryginalnej części po zmianie numeru, bez wyłączania
+świeżo skonfigurowanego odbiorcy z powodu starego błędu. Dawne zdarzenia v1 i zadania
+bez dowodu pozostają do ręcznego rozliczenia/retencji; migracja nie zgaduje ich routingu.
+Szczegóły: [wdrożenie PR 7](docs/WDROZENIE.md#pr-7-dowod-routingu-whatsapp-v14--v15).
+Kolejne etapy to kontrolowane HTTPS, opt-in/weryfikacja numeru oraz harmonogram i nadzór.
+**Powrót z PR 7/v15 do dowolnego kodu v14 wymaga kopii sprzed v15** i cofa późniejsze dane.
+Historyczne PR 4–6 zachowywały v14; ich powrót do PR 3 wymagał wyłączenia e-mail
+i usunięcia nowych kluczy konfiguracji.
 PR 3 wymaga v14 dla trwałej weryfikacji;
 **powrót do PR 1–2/v13 wymaga odtworzenia kopii sprzed migracji** i cofa późniejsze dane.
 Samo przełączenie kodu nie wystarcza. Aktualizacja robi kopię przez istniejący mechanizm.
+
+Ostatni PR uruchamiający kanały musi zawierać kompletną instrukcję tokenów/ID/sekretów,
+SMTP, HTTPS i instalacji/aktualizacji serwera z kopią, kontrolą zdrowia oraz wycofaniem.
+Procedura ma chronić bieżącą pracę bota i jasno wskazać wymagany kontrolowany restart.
+Na obecnym wewnętrznym etapie nie potrzeba danych dostępowych Meta.
 
 Powrót z v13 do kodu znającego tylko v12 wymaga odtworzenia kopii sprzed migracji;
 instrukcja i kontrola po aktualizacji są w [docs/WDROZENIE.md](docs/WDROZENIE.md#d-aktualizacja).

@@ -27,11 +27,11 @@ v14 migration tests in tests/test_email_verification.py to their released step.
 **Interfaces:** Produce frozen WhatsAppRouting(waba_id,phone_number_id), .scope,
 .recipient_digest(recipient_id), and v15 whatsapp_dispatch_routes keyed by outbox_id.
 
-- [ ] Write model/privacy/domain separation and real populated-v14 migration/backup/
+- [x] Write model/privacy/domain separation and real populated-v14 migration/backup/
   DDL rollback/backup refusal/old-code restore/FK/export-import tests.
-- [ ] Run routing tests. Expected RED: missing model/schema.
-- [ ] Implement model/table/migration and historical release fixture boundaries.
-- [ ] Run routing + email verification migration tests and diff check. Expected PASS.
+- [x] Run routing tests. RED: missing model.
+- [x] Implement model/table/migration and historical release fixture boundaries.
+- [x] Run routing + email verification migration tests and diff check. PASS (80 cases).
   Commit; complete task with that test command.
 
 ### Task 2: Dispatch proof and scoped inbox
@@ -41,23 +41,23 @@ whatsapp_inbox.py; extend routing tests and update affected sender/worker/inbox 
 **Interfaces:** Task1 model; prepare_send(claim,*,whatsapp_routing=None), sender.routing,
 required WhatsAppSettings.waba_id; inbox durable v2 payload with scope and scoped digest.
 
-- [ ] Write RED tests for route committed before intercepted HTTP, retry immutability,
+- [x] Write RED tests for route committed before intercepted HTTP, retry immutability,
   missing/conflicting route, COMMIT failure/no HTTP, v2 exact privacy, original-number
   status after change, old failure isolation, wrong scope/owner/version, legacy/routeless
   events, early event/ACK, route cascade. Update existing synthetic ACK helpers to
   create genuine preflight routing proof; no production compatibility bypass.
-- [ ] Run targeted routing/sender/inbox/worker/store tests. Expected RED for missing behavior.
-- [ ] Implement narrow changes, preserving direct email behavior and all transaction limits.
-- [ ] Run same targeted tests. Expected PASS; inspect diff/commit and complete task.
+- [x] Run targeted routing/sender/inbox/worker/store tests. RED for missing behavior.
+- [x] Implement narrow changes, preserving direct email behavior and all transaction limits.
+- [x] Run same targeted tests. PASS: 327 tests, 5.03s; clean diff check.
 
 ### Task 3: Operator docs, review and final PR
 
 **Files:** README.md, docs/WDROZENIE.md, plan status; tests if demonstrated integration gaps.
 **Interfaces:** Task1 backup/restore and Task2 routing behavior; final reviewer consumes whole diff.
 
-- [ ] Document v15/backup rollback, routing and legacy pending limits, inactive status,
+- [x] Document v15/backup rollback, routing and legacy pending limits, inactive status,
   remaining rollout and mandatory complete final token/server guide; no premature setup commands.
-- [ ] Run full python -m pytest -rs and git diff --check. Expected PASS, only POSIX Windows skip.
+- [x] Run full python -m pytest -rs and git diff --check. 1513 passed, 1 POSIX Windows skip, 21.10s.
 - [ ] Commit/push own branch; create/attach PR; dispatch independent readonly whole-PR reviewer
   with exact BASE/HEAD/spec/plan/tests/CI; save ignored report and fix verified findings.
 - [ ] Material corrections get same-reviewer followup and new exact-head CI. Record status,
