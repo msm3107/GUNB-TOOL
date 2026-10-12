@@ -17,7 +17,7 @@ STAMP = '2026-10-10T07:00:00+00:00'
 
 def settings(**changes):
     from gunb_tool.whatsapp_sender import WhatsAppSettings
-    args = dict(api_version='v24.0', phone_number_id='123456', access_token='synthetic-secret',
+    args = dict(api_version='v24.0', phone_number_id='123456', waba_id='1234', access_token='synthetic-secret',
                 template_name='gunb_report', language='pl', timeout_seconds=2)
     args.update(changes)
     return WhatsAppSettings(**args)
@@ -119,6 +119,7 @@ def test_template_request_is_fixed_tls_scoped_and_contains_complete_snapshot(mon
     ('api_version', 'https://attacker.example'), ('api_version', 'v24.0/../../other'),
     ('api_version', 'v0.0'), ('phone_number_id', '0123'), ('phone_number_id', '1?token=x'),
     ('phone_number_id', 123), ('phone_number_id', '1' * 33),
+    ('waba_id', ''), ('waba_id', True), ('waba_id', '01'), ('waba_id', '1' * 33),
     ('access_token', ''), ('access_token', 'secret\r\nX-Other: bad'), ('access_token', 'é'),
     ('template_name', 'UPPER'), ('template_name', 'a/b'), ('template_name', 'a' * 513),
     ('language', 'pl\n'), ('language', 'pl-PL'), ('timeout_seconds', True),
@@ -258,6 +259,12 @@ def test_real_worker_persists_result_and_isolates_channels_without_http_transact
     post = transport.post
     def checked_post(url, **kwargs):
         assert not store.repo.connection.in_transaction
+        from gunb_tool.storage import LeadRepository
+        with LeadRepository(store.repo._file) as separate:
+            route = separate.connection.execute('SELECT * FROM whatsapp_dispatch_routes WHERE outbox_id=?', (ident,)).fetchone()
+            assert route is not None
+            assert (route['sender_scope'], route['recipient_digest'], route['chat_id'], route['endpoint_version']) == (
+                adapter.routing.scope, adapter.routing.recipient_digest(PHONE), wa.chat_id, wa.version)
         return post(url, **kwargs)
     transport.post = checked_post
     worker = NotificationWorker(store, {'whatsapp': adapter})

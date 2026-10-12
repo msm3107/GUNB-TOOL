@@ -7,6 +7,7 @@ from typing import Mapping, Protocol
 
 from .notification_models import CHANNELS, DeliveryResult, NotificationEndpoint, ReportPart, bounded_int
 from .notification_store import NotificationStore
+from .whatsapp_routing import WhatsAppRouting
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,9 @@ class NotificationWorker:
             raise ValueError("Niepoprawny rejestr nadawców")
         self.store = store
         self.senders = dict(senders)
+        self.whatsapp_routing = getattr(self.senders.get('whatsapp'), 'routing', None)
+        if 'whatsapp' in self.senders and not isinstance(self.whatsapp_routing, WhatsAppRouting):
+            raise ValueError('Nadawca WhatsApp wymaga poprawnego routing')
         self.max_attempts = bounded_int(max_attempts, 1, 10)
 
     def run_once(self, *, limit: int = 25) -> int:
@@ -40,7 +44,7 @@ class NotificationWorker:
             if claim is None:
                 break
             handled += 1
-            prepared = self.store.prepare_send(claim)
+            prepared = self.store.prepare_send(claim, whatsapp_routing=self.whatsapp_routing)
             if prepared is None:
                 continue
             endpoint, report = prepared

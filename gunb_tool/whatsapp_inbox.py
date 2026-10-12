@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import hashlib
 import hmac
 import json
 import re
@@ -11,8 +10,9 @@ import sqlite3
 from typing import Iterator
 
 from .notification_models import ReportPart, bounded_int, parse_time, utc_iso
-from .notification_store import NotificationStore, normalize_address
+from .notification_store import NotificationStore
 from .whatsapp_models import message_id, strict_json
+from .whatsapp_routing import WhatsAppRouting
 from .whatsapp_webhook import WhatsAppWebhook, WhatsAppWebhookSettings
 
 
@@ -20,29 +20,32 @@ class WebhookInboxFull(RuntimeError):
     """Retryable intake failure: a future HTTP boundary must not ACK this batch."""
 
 
-def _recipient_digest(ident: str, recipient: str) -> str:
-    return hashlib.sha256((ident + '\0' + recipient).encode('ascii')).hexdigest()
-
-
 _RANK = {'accepted': 1, 'delivered': 2, 'read': 3}
 
 
-def _decode(row: sqlite3.Row) -> tuple[str, str]:
+def _decode(row: sqlite3.Row) -> tuple[str, str, str | None]:
     """Validate the durable minimal format; never expose a corrupt payload."""
     message_id(row['provider_message_id'])
     if not re.fullmatch(r'meta:[0-9a-f]{64}', row['event_key']):
         raise ValueError('Niepoprawny klucz')
     data = strict_json(row['payload'].encode('utf-8'), 1024)
-    if (not isinstance(data, dict) or set(data) != {'version', 'outcome', 'timestamp', 'recipient_digest'}
-            or type(data['version']) is not int or data['version'] != 1
+    if (not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] not in (1, 2)):
+        raise ValueError('Niepoprawna wersja statusu')
+    keys = {'version', 'outcome', 'timestamp', 'recipient_digest'}
+    if data['version'] == 2:
+        keys.add('sender_scope')
+    if (set(data) != keys
             or not isinstance(data['outcome'], str) or data['outcome'] not in (*_RANK, 'failed')
             or not isinstance(data['timestamp'], str) or not isinstance(data['recipient_digest'], str)
             or not re.fullmatch(r'[0-9a-f]{64}', data['recipient_digest'])):
         raise ValueError('Niepoprawny status')
+    scope = data.get('sender_scope')
+    if data['version'] == 2 and (not isinstance(scope, str) or not re.fullmatch(r'[0-9a-f]{64}', scope)):
+        raise ValueError('Niepoprawny routing')
     timestamp = data['timestamp']
     if utc_iso(parse_time(timestamp)) != timestamp or timestamp < '1970':
         raise ValueError('Niepoprawny czas')
-    return data['outcome'], data['recipient_digest']
+    return data['outcome'], data['recipient_digest'], scope
 
 
 class WhatsAppInbox:
@@ -51,6 +54,7 @@ class WhatsAppInbox:
             raise ValueError('Niepoprawny magazyn powiadomień')
         self.max_events = bounded_int(max_events, 1, 100000)
         self._webhook = WhatsAppWebhook(settings)
+        self._routing = WhatsAppRouting(settings.waba_id, settings.phone_number_id)
         self.store = store
         self.repo = store.repo
         self._conn = self.repo.connection
@@ -95,8 +99,9 @@ class WhatsAppInbox:
                     ' (channel, event_key, provider_message_id, payload, received_at)'
                     " VALUES ('whatsapp', ?, ?, ?, ?)",
                     [(event.event_key, event.provider_message_id, json.dumps({
-                        'version': 1, 'outcome': event.outcome, 'timestamp': event.timestamp,
-                        'recipient_digest': _recipient_digest(event.provider_message_id, event.recipient_id),
+                        'version': 2, 'outcome': event.outcome, 'timestamp': event.timestamp,
+                        'recipient_digest': self._routing.recipient_digest(event.recipient_id),
+                        'sender_scope': self._routing.scope,
                     }, separators=(',', ':')), stamp) for event in novel],
                 )
         return len(novel)
@@ -111,7 +116,10 @@ class WhatsAppInbox:
             + after + ' ORDER BY received_at, id LIMIT ?', (*(() if cursor is None else cursor), limit),
         ).fetchall()
 
-    def _match(self, provider_id: str, digest: str) -> tuple[sqlite3.Row, ReportPart] | None:
+    def _match(self, provider_id: str, digest: str, scope: str | None) -> tuple[sqlite3.Row, ReportPart] | None:
+        # v1 has no authenticated sender scope. Never guess from current config.
+        if scope is None:
+            return None
         # Detect collisions across ALL channels before considering ownership/recipient.
         rows = self._conn.execute(
             'SELECT * FROM notification_outbox WHERE provider_message_id = ? LIMIT 2', (provider_id,),
@@ -122,15 +130,19 @@ class WhatsAppInbox:
         if row['state'] not in (*_RANK, 'failed', 'unknown'):
             return None
         endpoint = self._conn.execute(
-            'SELECT chat_id, channel, address FROM notification_endpoints WHERE id = ?', (row['endpoint_id'],),
+            'SELECT chat_id, channel FROM notification_endpoints WHERE id = ?', (row['endpoint_id'],),
         ).fetchone()
         if endpoint is None or endpoint['channel'] != 'whatsapp':
             return None
+        route = self._conn.execute('SELECT * FROM whatsapp_dispatch_routes WHERE outbox_id = ?', (row['id'],)).fetchone()
+        if route is None:
+            return None
         try:
-            address = normalize_address('whatsapp', endpoint['address'])
             part = ReportPart.from_json(row['payload'])
-            if (address != endpoint['address'] or part.chat_id != endpoint['chat_id']
-                    or not hmac.compare_digest(digest, _recipient_digest(provider_id, address[1:]))):
+            if (part.chat_id != endpoint['chat_id'] or part.chat_id != route['chat_id']
+                    or part.endpoint_version != route['endpoint_version']
+                    or not hmac.compare_digest(scope, route['sender_scope'])
+                    or not hmac.compare_digest(digest, route['recipient_digest'])):
                 return None
         except (ValueError, TypeError, OverflowError):
             return None
@@ -140,9 +152,13 @@ class WhatsAppInbox:
         current = row['state']
         if outcome == 'failed':
             if current not in ('delivered', 'read'):
-                # Reuse the existing in-transaction quarantine, never revoke consent.
                 self.store._mark(row['id'], 'failed')
-                self.store._quarantine(row['endpoint_id'])
+                # The old message can fail after address/consent/settings changed.
+                # Only quarantine the endpoint version that actually dispatched it.
+                endpoint = self._conn.execute('SELECT version FROM notification_endpoints WHERE id = ?',
+                                              (row['endpoint_id'],)).fetchone()
+                if endpoint is not None and endpoint['version'] == part.endpoint_version:
+                    self.store._quarantine(row['endpoint_id'])
             return
         if current == 'failed' and outcome == 'accepted':
             return
@@ -173,12 +189,12 @@ class WhatsAppInbox:
             stamp = utc_iso(self.repo.now())
             for event in rows:
                 try:
-                    outcome, digest = _decode(event)
+                    outcome, digest, scope = _decode(event)
                 except (ValueError, TypeError, AttributeError, OverflowError):
                     self._conn.execute('UPDATE notification_webhook_events SET processed_at = ? WHERE id = ?',
                                        (stamp, event['id']))
                 else:
-                    match = self._match(event['provider_message_id'], digest)
+                    match = self._match(event['provider_message_id'], digest, scope)
                     if match is None:
                         continue
                     row, part = match

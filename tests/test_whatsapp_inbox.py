@@ -1,7 +1,6 @@
 """Signed synthetic bodies and real temporary SQLite, never network/production."""
 
 from concurrent.futures import ThreadPoolExecutor
-import hashlib
 import json
 import sqlite3
 import threading
@@ -14,6 +13,7 @@ from gunb_tool.notification_models import DeliveryResult
 from gunb_tool.notification_store import NotificationStore
 from gunb_tool.storage import LeadRepository
 from gunb_tool.whatsapp_webhook import WebhookError
+from gunb_tool.whatsapp_routing import WhatsAppRouting
 from tests.bot_helpers import MIETEK, OBCY, lead
 from tests.test_notification_store import enqueue, notification_store, ready
 from tests.test_whatsapp_webhook import SECRET, TOKEN, payload, settings, signature, value
@@ -52,8 +52,9 @@ def test_signed_intake_commits_only_minimal_private_event(notification_store, ca
     assert row['endpoint_id'] is None and row['processed_at'] is None
     assert row['event_key'].startswith('meta:') and len(row['event_key']) == 69
     assert json.loads(row['payload']) == {
-        'version': 1, 'outcome': 'delivered', 'timestamp': '2023-11-14T22:13:20.000000+00:00',
-        'recipient_digest': hashlib.sha256(b'wamid.test1\x0048111222333').hexdigest(),
+        'version': 2, 'outcome': 'delivered', 'timestamp': '2023-11-14T22:13:20.000000+00:00',
+        'recipient_digest': WhatsAppRouting('1234', '5678').recipient_digest(PHONE),
+        'sender_scope': WhatsAppRouting('1234', '5678').scope,
     }
     assert not store.repo.connection.in_transaction
     saved = json.dumps(dict(row)) + caplog.text + repr(inbox(store))
@@ -170,7 +171,8 @@ def acknowledged(store, *, channel='whatsapp', address='+' + PHONE, ident='wamid
     endpoint = ready(store, channel=channel, address=address)
     ident_outbox, = enqueue(store, endpoint)
     claim = store.claim([channel])
-    assert claim.id == ident_outbox and store.prepare_send(claim) is not None
+    assert claim.id == ident_outbox and store.prepare_send(
+        claim, whatsapp_routing=WhatsAppRouting('1234', '5678') if channel == 'whatsapp' else None) is not None
     assert store.complete(claim, DeliveryResult('accepted', provider_message_id=ident))
     return endpoint, ident_outbox, claim
 
@@ -238,7 +240,7 @@ def test_event_before_send_ack_survives_restart_and_then_reconciles(notification
     ep = ready(store, 'whatsapp', '+' + PHONE)
     ident, = enqueue(store, ep)
     claim = store.claim(['whatsapp'])
-    assert store.prepare_send(claim)
+    assert store.prepare_send(claim, whatsapp_routing=WhatsAppRouting('1234', '5678'))
     receiver = inbox(store)
     receiver.receive(*signed(status('read')))
     assert receiver.reconcile() == 0
@@ -263,7 +265,7 @@ def test_unknown_without_ack_id_cannot_be_assigned_by_recipient(notification_sto
     assert not store.get_endpoint(MIETEK, ep.id).enabled
 
 
-@pytest.mark.parametrize('mismatch', ['recipient', 'address_changed', 'owner', 'email', 'invalid_address', 'queued'])
+@pytest.mark.parametrize('mismatch', ['recipient', 'owner', 'email', 'queued'])
 def test_mismatched_status_stays_pending_without_any_delivery_mutation(notification_store, mismatch):
     store = notification_store
     if mismatch == 'email':
@@ -271,14 +273,10 @@ def test_mismatched_status_stays_pending_without_any_delivery_mutation(notificat
     else:
         ep, ident, _ = acknowledged(store)
     recipient = '48999888777' if mismatch == 'recipient' else PHONE
-    if mismatch == 'address_changed':
-        store.change_address(MIETEK, ep.id, '+48999888777')
-    elif mismatch == 'owner':
+    if mismatch == 'owner':
         snapshot = json.loads(outbox(store, ident)['payload'])
         snapshot['chat_id'] = OBCY
         store.repo.connection.execute('UPDATE notification_outbox SET payload = ? WHERE id = ?', (json.dumps(snapshot), ident))
-    elif mismatch == 'invalid_address':
-        store.repo.connection.execute('UPDATE notification_endpoints SET address = ? WHERE id = ?', ('not a phone', ep.id))
     elif mismatch == 'queued':
         store.repo.connection.execute("UPDATE notification_outbox SET state = 'queued' WHERE id = ?", (ident,))
     before = outbox(store, ident)
@@ -459,6 +457,7 @@ def test_api_ack_and_webhook_race_on_separate_connections_converges(notification
     ep = ready(store, 'whatsapp', '+' + PHONE)
     ident, = enqueue(store, ep)
     claim = store.claim(['whatsapp'])
+    assert store.prepare_send(claim, whatsapp_routing=WhatsAppRouting('1234', '5678'))
     gate = threading.Barrier(2)
     def run(is_ack):
         with LeadRepository(store.repo._file, now=store.repo.now) as own_repo:
