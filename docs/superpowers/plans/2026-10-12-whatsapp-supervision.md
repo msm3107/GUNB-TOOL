@@ -57,6 +57,20 @@
 
 - [x] Document internal supervisor, budget/cleanup/OS limitations and future >=60s lease/thread requirement, classification, partial frame handling, no activation/schema changes, rollback to PR #13 and final token/server-guide gate.
 - [x] Inspect whole PR for scope/privacy, run `git diff --check`; expected exit 0. Commit docs; full suite evidence remains valid if only prose changed.
-- [ ] Push feature branch and create/attach PR; dispatch independent readonly reviewer with exact base/head, whole diff, spec/plan/ledger and tests/CI. Save report in ignored `.local-review/`; verify findings and same-reviewer followup if material changes.
-- [ ] Check exact final HEAD CI; expected all jobs SUCCESS with hasMore false. Save evidence and mark plan complete. A bookkeeping-only final commit requires exact-head CI and code-unchanged verification rather than another full suite.
-- [ ] Run local final verifier: accepted implementation unchanged apart from this plan, clean checkout/diff, saved passing full suite and complete exact-head CI. Expected PASS; task-done uses this verifier. Hand off without merge/deploy.
+- [x] Push feature branch and create/attach PR; dispatch independent readonly reviewer with exact base/head, whole diff, spec/plan/ledger and tests/CI. Save report in ignored `.local-review/`; verify findings and same-reviewer followup if material changes.
+- [x] Check exact final HEAD CI; expected all jobs SUCCESS with hasMore false. Save evidence and mark plan complete. A bookkeeping-only final commit requires exact-head CI and code-unchanged verification rather than another full suite.
+- [x] Run local final verifier: accepted implementation unchanged apart from this plan, clean checkout/diff, saved passing full suite and complete exact-head CI. Expected PASS; task-done uses this verifier. Hand off without merge/deploy.
+
+## Acceptance snapshot — 2026-10-12
+
+PR [#14](https://github.com/msm3107/GUNB-TOOL/pull/14). Independent readonly review
+of `f5bcc75964e7fba3981b5537bcde80b67f83a466`: **AKCEPTUJ**, no confirmed defects
+or requested fixes. Reviewer independently ran all 55 supervisor tests (PASS,
+3.07s) and confirmed exact-head CI 12/12 SUCCESS, hasMore false. Author's full
+suite: 1568 passed, 1 skipped (Windows POSIX permissions), 24.90s; focused boundary
+suite: 254 passed, 6.21s. All reports remain local and ignored.
+
+This completion commit changes only plan bookkeeping. Its own exact-head CI and
+code-unchanged verification are required before handoff; the local final ledger
+records their results. WhatsApp remains inactive and the final token/server guide
+is still a release gate. No merge, deployment or real notification was performed.
