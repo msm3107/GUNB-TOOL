@@ -146,6 +146,11 @@ def prune_notifications(repo, max_age_days: int) -> None:
         conn.execute('DELETE FROM email_verifications WHERE id IN'
                      ' (SELECT id FROM email_verifications WHERE issued_at < ? ORDER BY issued_at, id LIMIT 2000)',
                      (utc_iso(now - timedelta(days=7)),))
+        # First local receipt bounds even unmatched/replayed events with future provider timestamps.
+        conn.execute("DELETE FROM notification_webhook_events WHERE id IN"
+                     " (SELECT id FROM notification_webhook_events WHERE channel = 'whatsapp'"
+                     " AND received_at < ? ORDER BY received_at, id LIMIT 2000)",
+                     (utc_iso(now - timedelta(days=7)),))
         conn.execute("DELETE FROM notification_outbox WHERE id IN (SELECT id FROM notification_outbox"
                      " WHERE state IN ('accepted', 'delivered', 'read', 'cancelled', 'expired')"
                      " AND updated_at < ? ORDER BY updated_at, id LIMIT 2000)", (utc_iso(now - timedelta(days=30)),))

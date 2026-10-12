@@ -193,6 +193,78 @@ def test_verification_retention_seven_days(notification_store, clock):
     assert store.repo.connection.execute('SELECT COUNT(*) FROM email_verifications').fetchone()[0] == 0
 
 
+@pytest.mark.parametrize('processed', [False, True])
+def test_whatsapp_retention_uses_first_receipt_even_for_replay_and_future_status(notification_store, clock, processed):
+    from gunb_tool.email_runtime import prune_notifications
+    from tests.test_whatsapp_inbox import acknowledged, events, inbox, outbox, signed, status
+    store = notification_store
+    receiver = inbox(store)
+    if processed:
+        _, ident, _ = acknowledged(store)
+    body = signed(status('read', timestamp='253402300799'))
+    receiver.receive(*body)
+    assert receiver.reconcile() == int(processed)
+    first_receipt = events(store)[0]['received_at']
+    store.repo.connection.execute(
+        "INSERT INTO notification_webhook_events(channel,event_key,payload,received_at)"
+        " VALUES ('email','unrelated','{}',?)", (first_receipt,))
+    clock.advance(days=6)
+    assert receiver.receive(*body) == 0
+    prune_notifications(store.repo, 30)
+    assert len(events(store)) == 2 and events(store)[0]['received_at'] == first_receipt
+    clock.advance(days=1)
+    prune_notifications(store.repo, 30)
+    assert len(events(store)) == 2  # exact seven-day boundary retained
+    clock.advance(seconds=1)
+    prune_notifications(store.repo, 30)
+    remaining, = events(store)
+    assert remaining['channel'] == 'email'
+    assert receiver.receive(*body) == 1  # bounded dedup window, not permanent exactly-once
+    assert receiver.reconcile() == int(processed)
+    if processed:
+        assert outbox(store, ident)['state'] == 'read'
+        assert store.repo.connection.execute('SELECT COUNT(*) FROM notification_outbox').fetchone()[0] == 1
+
+
+def test_whatsapp_retention_is_bounded_and_leaves_email_events_alone(notification_store, clock):
+    from gunb_tool.email_runtime import prune_notifications
+    store = notification_store
+    old = utc_iso(clock.now_utc() - timedelta(days=8))
+    fresh = utc_iso(clock.now_utc())
+    with store.repo.transaction():
+        store.repo.connection.executemany(
+            'INSERT INTO notification_webhook_events(channel,event_key,payload,received_at,processed_at)'
+            " VALUES ('whatsapp', ?, '{}', ?, ?)",
+            [(f'synthetic:{i}', old, old if i % 2 else None) for i in range(2005)] + [('fresh', fresh, None)],
+        )
+        store.repo.connection.execute(
+            "INSERT INTO notification_webhook_events(channel,event_key,payload,received_at)"
+            " VALUES ('email','keep','{}',?)", (old,))
+    prune_notifications(store.repo, 30)
+    counts = dict(store.repo.connection.execute('SELECT channel, COUNT(*) FROM notification_webhook_events GROUP BY channel'))
+    assert counts == {'whatsapp': 6, 'email': 1}
+    prune_notifications(store.repo, 30)
+    assert dict(store.repo.connection.execute('SELECT channel, COUNT(*) FROM notification_webhook_events GROUP BY channel')) == {
+        'whatsapp': 1, 'email': 1,
+    }
+
+
+def test_linked_whatsapp_events_cascade_but_orphans_expire_by_receipt(notification_store, clock):
+    from gunb_tool.email_runtime import prune_notifications
+    from tests.test_whatsapp_inbox import acknowledged, events, inbox, signed, status
+    store = notification_store
+    ep, _, _ = acknowledged(store)
+    receiver = inbox(store)
+    receiver.receive(*signed(status('read'), status('read', ident='wamid.orphan')))
+    assert receiver.reconcile() == 1
+    store.delete_endpoint(MIETEK, ep.id)
+    remaining, = events(store)
+    assert remaining['provider_message_id'] == 'wamid.orphan' and remaining['endpoint_id'] is None
+    clock.advance(days=8)
+    prune_notifications(store.repo, 30)
+    assert not events(store)
+
+
 @pytest.mark.parametrize('flag', ['--bot', '--bot-once'])
 def test_bot_dry_run_rejected_before_database(tmp_path, capsys, flag):
     path = config_file(tmp_path, '')

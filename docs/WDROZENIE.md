@@ -433,12 +433,77 @@ delivered/read/failed są oddzielnymi zdarzeniami. Nie zapisuje ich do bazy i ni
 wykonuje poleceń z wiadomości przychodzących. Powtórzone zdarzenia w paczce są
 łączone, ale podpis i hash event_key nie zastępują trwałej ochrony przed replay.
 
-Kolejny PR musi zapewnić trwały inbox przed ACK, korelację z pierwotną wiadomością
-i odbiorcą, monotoniczne statusy, retencję oraz HTTPS z limitem body przed odczytem.
-Potem potrzebne są weryfikacja numeru, osobny opt-in i rezygnacja, krótszy raport,
+PR 6 poniżej zapewnia trwały inbox, konserwatywną korelację statusów i retencję.
+Do aktywacji nadal potrzebne są HTTPS z limitem body przed odczytem, trwały dowód
+pierwotnego odbiorcy/nadawcy, weryfikacja numeru, osobny opt-in i rezygnacja, krótszy raport,
 harmonogram/tempo oraz nadzór DNS/HTTP. Testy tego etapu używają wyłącznie atrap
 transportu i syntetycznej bazy; rzeczywista wysyłka i deliverability pozostają
 bramką pilotażu. Powrót do kodu PR 4 zachowuje bazę i konfigurację bez zmian.
+
+### PR 6: trwaly inbox i statusy WhatsApp (v14 bez zmian)
+
+To nadal etap wewnętrzny. `whatsapp.enabled: true` pozostaje błędem konfiguracji
+przed otwarciem bazy. Nie ma publicznego endpointu, nowych komend, procesu WhatsApp
+ani automatycznej wysyłki. Nie podłączaj nowych klas samodzielnie do produkcji.
+
+`WhatsAppInbox(store, settings, max_events=10000).receive(raw_body, signature)`
+korzysta z podpisu i zakresu WABA/numeru z PR 5. Dopiero po poprawnej walidacji całej
+paczki zapisuje zdarzenia w istniejącej tabeli `notification_webhook_events`.
+Zwraca liczbę nowych rekordów po COMMIT; zero oznacza poprawne duplikaty albo
+uwierzytelnione zdarzenia nieobsługiwanego rodzaju. **Przyszła warstwa HTTP może
+potwierdzić odbiór tylko po poprawnym powrocie z tej metody.** Błędny podpis/body,
+`WebhookInboxFull` lub błąd bazy nie może zostać zamieniony w sukces HTTP.
+Oddzielny limit body musi działać przed odczytem requestu; ta klasa nie jest serwerem.
+
+W bazie pozostają ID wiadomości, hash klucza zdarzenia, rodzaj statusu, czas Meta,
+czas pierwszego odbioru i skrót `SHA256(wamid + NUL + recipient_id)`. Nie zapisujemy
+całego requestu, jawnego numeru, treści wiadomości, błędów Meta ani sekretów.
+Skróty i ID nadal są danymi pseudonimowymi wymagającymi retencji i ochrony kopii.
+Domyślny limit całej tabeli to 10 000 rekordów (wewnętrzny zakres 1–100 000).
+Nowa paczka musi zmieścić się w całości; duplikaty są przyjmowane również przy
+pełnej tabeli. W pilotażu należy dobrać pojemność do tempa zdarzeń i czyszczenia.
+
+`reconcile(limit=100)` przegląda do 100 oczekujących zdarzeń na wywołanie. Kursor
+przechodzi także przez zdarzenia bez dopasowania, aby nie blokowały następnych.
+Restart zeruje kursor, zachowując rekordy; zdrowy proces potrzebuje pełnego obiegu
+do ponownego sprawdzenia starych niedopasowanych zdarzeń. Wywołania mają własne
+krótkie transakcje i wymagają połączenia należącego do danego wątku. Przedwczesny
+webhook czeka na zapis ID wiadomości przez workera po odpowiedzi API.
+
+Dopasowanie wymaga dokładnie jednego ID dostawcy w całym outboxie, kanału WhatsApp,
+zgodnego właściciela migawki i skrótu **obecnego** poprawnego numeru endpointu.
+Wiele pasujących ID, zły numer lub nieznane ID pozostają oczekujące. Nie przypisujemy
+wiadomości wyłącznie po telefonie; `unknown` po zgubionym ACK bez ID nadal wymaga
+operatora. Migawka raportu v1 nie zawiera pierwotnego adresu, dlatego status po
+zmianie numeru nie zostanie rozliczony automatycznie. Trwały dowód pierwotnego
+odbiorcy oraz przestrzeni nadawcy przy zmianach kont Meta jest bramką aktywacji.
+
+`accepted < delivered < read` opisuje siłę potwierdzenia, niezależnie od kolejności
+zdarzeń. Późniejsze `sent` ani `failed` nie cofa delivered/read. Failed po accepted
+izoluje tylko ten endpoint i anuluje jego queued/retry, zachowując historię jako
+rezerwację przed duplikacją. Późniejsze delivered/read może rozliczyć błąd, ale
+**nigdy nie włącza** endpointu. Status po pauzie lub cofnięciu zgody przy niezmienionym
+numerze aktualizuje wyłącznie historię. Żaden webhook nie ponawia wysyłki, nie
+odnawia zgody, nie zmienia konta ani historii Telegrama/e-mail. Aktualizowane są
+wyłącznie istniejące doręczenia tej części i jej pierwotnych rewizji inwestycji.
+
+Istniejące nocne czyszczenie, również przy wyłączonych kanałach, usuwa najwyżej
+2000 rekordów WhatsApp starszych niż siedem dni od **pierwszego odbioru**, także
+niedopasowanych. Replay nie przedłuża tego terminu; stare daty Meta ani daty z
+przyszłości nie sterują retencją. Zdarzenia przypisane do endpointu znikają razem
+z nim; pseudonimowe sieroty wygasają przez czyszczenie. Po usunięciu rekordu replay
+może zapisać go ponownie, ale monotoniczne statusy nie wywołają kolejnej wysyłki.
+Nie jest to deklaracja dostarczenia dokładnie raz. Retencja nie usuwa starszych
+kopii bazy; ich dotychczasowa polityka nadal ma zastosowanie.
+
+Przegląd kolejki korzysta z istniejącego indeksu częściowego v13, a korelacja z
+indeksu ID dostawcy. Retencja może sortować ograniczoną tabelę; wyższe limity wymagają
+ponownego pomiaru i ewentualnie nowej migracji indeksu. Nie zmieniamy schematu v14,
+konfiguracji ani zależności. Powrót do PR 5 pozostawia bazę czytelną, lecz przestaje
+rozliczać inbox i usuwać jego stare zdarzenia. Przed przyszłym uruchomieniem usługi
+potrzebne są jeszcze obsługa HTTPS/ACK, cykliczne rozliczanie i nadzór, routing,
+opt-in/weryfikacja/rezygnacja, krótkie raporty, tempo/cisza nocna, procedura błędów,
+aktualna ocena wymagań Meta oraz rzeczywisty test pilotażowy.
 
 ## E. Wycofanie wersji
 
