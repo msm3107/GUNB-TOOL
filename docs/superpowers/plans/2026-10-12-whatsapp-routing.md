@@ -58,10 +58,26 @@ required WhatsAppSettings.waba_id; inbox durable v2 payload with scope and scope
 - [x] Document v15/backup rollback, routing and legacy pending limits, inactive status,
   remaining rollout and mandatory complete final token/server guide; no premature setup commands.
 - [x] Run full python -m pytest -rs and git diff --check. 1513 passed, 1 POSIX Windows skip, 21.10s.
-- [ ] Commit/push own branch; create/attach PR; dispatch independent readonly whole-PR reviewer
+- [x] Commit/push own branch; create/attach PR; dispatch independent readonly whole-PR reviewer
   with exact BASE/HEAD/spec/plan/tests/CI; save ignored report and fix verified findings.
-- [ ] Material corrections get same-reviewer followup and new exact-head CI. Record status,
+- [x] Material corrections get same-reviewer followup and new exact-head CI. Record status,
   verify final CI and hand off without merge/deploy. Preserve ignored scratch evidence.
+
+## Acceptance snapshot
+
+PR #13: https://github.com/msm3107/GUNB-TOOL/pull/13.
+Independent readonly whole-PR review: **AKCEPTUJ**, no P0/P1/P2/P3 findings,
+BASE `9b6e0eff0e5eed9785e039a66db655810728c677`,
+implementation HEAD `2de1f958a7347f4570ea12e5c462c2c50e123a7e`.
+Reviewer independently ran 81 focused tests (all passed) and inspected query plans.
+That HEAD CI: 12/12 SUCCESS (Python 3.10–3.14 + deploy-scripts, push and PR).
+No correction/followup required. Reports and CI evidence stay in ignored local review files.
+
+Only plan bookkeeping follows that snapshot. Before handoff the coordinator must
+verify unchanged accepted code, clean diff/worktree and exact final-HEAD CI;
+no redundant full suite for the status-only commit. Full suite evidence:
+1513 passed, 1 POSIX-on-Windows skip, 21.10s. No real Meta/server test, activation,
+merge or deployment. Final token/HTTPS/server operator guide remains a release gate.
 
 ## Review Focus
 
