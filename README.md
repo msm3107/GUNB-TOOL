@@ -99,6 +99,7 @@ main.py (CLI)
 | `gunb_tool/email_sender.py` | Wewnętrzny adapter SMTP z TLS, jednym odbiorcą i rozróżnieniem odrzucenia od niepewnego wyniku DATA. |
 | `gunb_tool/email_verification.py`, `email_verification_schema.py` | Wewnętrzna jednorazowa weryfikacja adresu oraz schemat v14: skróty tokenów i trwałe limity żądań. |
 | `gunb_tool/whatsapp_routing.py`, `whatsapp_routing_schema.py` | Schemat v15: niezmienny dowód pierwotnego odbiorcy i konta Meta dla części outboxa, zapisany przed HTTP. |
+| `gunb_tool/whatsapp_process.py` | Wewnętrzny nadzór jednej wysyłki Meta w osobnym procesie spawn; ograniczone oczekiwanie i zachowawczy wynik przy utracie ACK. |
 | `gunb_tool/email_bot.py`, `email_runtime.py`, `smtp_process.py` | Komendy `/email`, osobny wątek harmonogramu z własną bazą, retencja i nadzorowany proces SMTP. Domyślnie wyłączone. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
@@ -464,7 +465,13 @@ Nowe statusy można przypisać do oryginalnej części po zmianie numeru, bez wy
 świeżo skonfigurowanego odbiorcy z powodu starego błędu. Dawne zdarzenia v1 i zadania
 bez dowodu pozostają do ręcznego rozliczenia/retencji; migracja nie zgaduje ich routingu.
 Szczegóły: [wdrożenie PR 7](docs/WDROZENIE.md#pr-7-dowod-routingu-whatsapp-v14--v15).
-Kolejne etapy to kontrolowane HTTPS, opt-in/weryfikacja numeru oraz harmonogram i nadzór.
+PR 8 dodaje wewnętrzny `SupervisedWhatsApp`: osobny proces dla jednej operacji,
+budżet oczekiwania do 45 s i sprzątanie przez terminate/kill. Wynik po przekroczeniu
+czasu jest nieznany, bez automatycznej ponownej wysyłki. Odczyt ACK wymaga zakończenia
+dziecka; niepełna ramka IPC nie blokuje workera. To nadal nie uruchamia WhatsApp.
+Szczegóły ograniczeń OS, lease i wycofania:
+[wdrożenie PR 8](docs/WDROZENIE.md#pr-8-nadzor-procesu-nadawcy-whatsapp-v15-bez-zmian).
+Kolejne etapy to kontrolowane HTTPS, opt-in/weryfikacja numeru oraz harmonogram i wątek workera.
 **Powrót z PR 7/v15 do dowolnego kodu v14 wymaga kopii sprzed v15** i cofa późniejsze dane.
 Historyczne PR 4–6 zachowywały v14; ich powrót do PR 3 wymagał wyłączenia e-mail
 i usunięcia nowych kluczy konfiguracji.

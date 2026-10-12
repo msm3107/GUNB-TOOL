@@ -568,6 +568,58 @@ końcowego przekazania użytkownikowi z 2026-10-12. Ten PR nie uruchamia produkc
 ani nie wymaga podania sekretów. Aktualne wymagania Meta i rzeczywisty pilotaż
 pozostają bramkami aktywacji, a dane GUNB nadal opisujemy jako inwestycje do sprawdzenia.
 
+### PR 8: nadzor procesu nadawcy WhatsApp (v15 bez zmian)
+
+Wewnętrzny `SupervisedWhatsApp` realizuje protokół istniejącego workera i udostępnia
+ten sam kontekst `.routing`. Dla każdej operacji tworzy jeden jednorazowy proces
+`spawn`, według wzorca SMTP. Dziecko otrzymuje ustawienia, przygotowany snapshot
+odbiorcy/raportu i klucz części. Nie otrzymuje połączenia SQLite, repozytorium ani bota.
+Worker nadal zatwierdza dowód routingu przed rozpoczęciem operacji, a transakcja nie
+obejmuje pracy sieciowej.
+
+Budżet oczekiwania wynosi domyślnie 45 s (można go skrócić, nie wydłużyć). Obejmuje
+start i DNS/HTTP; socket timeout adaptera pozostaje dodatkowym ograniczeniem.
+Po upływie budżetu lub zatrzymaniu rozpoczętej operacji wynik jest `unknown`.
+Brak ACK, awaria startu/dziecka i błędna odpowiedź IPC również nie pozwalają zgadnąć,
+że można bezpiecznie ponowić wysyłkę. Worker wyłącza taki endpoint do sprawdzenia,
+bez automatycznego ponowienia. Zatrzymanie/wyczerpanie budżetu jeszcze przed próbą
+startu dziecka zwraca `retry`, ponieważ wtedy żadna wysyłka nie mogła się rozpocząć.
+
+Rodzic czeka na zakończenie dziecka w porcjach do 0,2 s i dopiero wtedy odczytuje
+ograniczony komunikat JSON (do 2048 bajtów). Sama czytelność pipe nie dowodzi, że
+ramka jest kompletna. Proces zawieszony podczas zapisu jest przerywany po terminie,
+zamiast blokować odbiór. `accepted` wymaga poprawnego ID `wamid`; `retry`, `failed`
+i `unknown` nie mogą zawierać ID, a `Retry-After` należy wyłącznie do `retry`.
+Nie przyjmujemy `delivered`/`read` z tego kanału — pochodzą z podpisanych statusów.
+ACK oznacza przyjęcie przez API, nie doręczenie ani odczyt. Nie ma gwarancji exactly-once.
+
+Sprzątanie zamyka oba końce pipe, próbuje `terminate`, czeka do 1 s, używa `kill`,
+jeśli potrzeba, i czeka jeszcze do 1 s; zamyka uchwyt zakończonego procesu. Błąd
+sprzątania nie usuwa już zwalidowanego ACK. Budżet 45 s oraz dwa oczekiwania po 1 s
+mieszczą się w obecnym domyślnym lease 120 s przy normalnej pracy OS. **Nie jest to
+absolutny limit czasu systemu operacyjnego:** start procesu, wywołania OS i planowanie
+mogą się opóźnić. Przyszły runtime musi używać lease co najmniej 60 s i własnego
+wątku/połączenia SQLite, poza obsługą Telegrama. Nie wolno uznać tego modułu za
+gotową integrację runtime ani od razu użyć krótszego lease.
+
+Brak nowych kluczy config/env, zmian schematu i czynnej ścieżki wysyłki.
+`whatsapp.enabled: true` nadal kończy się błędem przed otwarciem bazy. Nie podawaj
+jeszcze sekretów Meta ani nie uruchamiaj dodatkowego pollera Telegrama. Testy używają
+fikcyjnych danych i przechwyconych granic procesu; rzeczywisty spawn sprawdzono dla
+syntetycznego ACK, odrzucenia błędnego odbiorcy bez HTTP i zawieszonego dziecka.
+Nie wykonano wysyłki Meta ani testu produkcyjnego serwera.
+
+Powrót z tego etapu do PR 7 pozostaje na v15 i nie wymaga cofnięcia schematu.
+Aktualizację kodu wykonuj dotychczasową procedurą D, z kopią i kontrolowanym restartem;
+powrót do v14 nadal wymaga kopii sprzed v15 i cofa późniejsze dane bota/e-mail.
+Pozostają HTTPS z ograniczonym body i trwałym ACK, opt-in/weryfikacja numeru/rezygnacja,
+zwarty raport, tempo i cisza nocna, runtime i ręczna obsługa nieznanych wyników,
+aktualna weryfikacja wymagań Meta oraz pilotaż.
+
+Ostatni PR wdrożeniowy nadal musi dostarczyć kompletną instrukcję wszystkich
+tokenów/ID/sekretów i instalacji/aktualizacji serwera z ochroną bieżącej pracy bota,
+zgodnie z warunkiem z PR 7. Ten etap nie wdraża zmian na serwer i nie wymaga sekretów.
+
 ## E. Wycofanie wersji
 
 ```bash
