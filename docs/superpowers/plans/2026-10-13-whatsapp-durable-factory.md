@@ -34,11 +34,11 @@
 
 **Interfaces:** LeadRepository(existing_only=False) default compatible; WhatsAppInboxFactory(db_path, settings, max_events=10000) returns context manager consumed by WhatsAppWebhookApplication(settings, factory).
 
-- [ ] Write synthetic tests for existing-only rejection/no migration/creation, normal defaults, escaped paths, cleanup, factory FULL/ownership and WSGI ACK/error/replay integration.
-- [ ] Run new tests RED and save evidence; no product implementation before RED.
-- [ ] Implement minimal existing-only branch and context factory; generic failures/cleanup, no global setting changes.
-- [ ] Run factory+ingress+storage/migration tests, full pytest; expect pass with existing Windows POSIX skip. Check diff and commit.
-- [ ] Task-done focused tests PASS; record reviewed assumptions/rulings in ledger.
+- [x] Write synthetic tests for existing-only rejection/no migration/creation, normal defaults, escaped paths, cleanup, factory FULL/ownership and WSGI ACK/error/replay integration.
+- [x] Run new tests RED and save evidence; no product implementation before RED.
+- [x] Implement minimal existing-only branch and context factory; generic failures/cleanup, no global setting changes.
+- [x] Run factory+ingress+storage/migration tests, full pytest; expect pass with existing Windows POSIX skip. Check diff and commit.
+- [x] Task-done focused tests PASS; record reviewed assumptions/rulings in ledger.
 
 ### Task 2: Operator contract and independent handoff
 
@@ -46,7 +46,7 @@
 
 **Interfaces:** document completed storage gate and remaining server/activation gates; open reviewed PR.
 
-- [ ] Document factory/default preservation/local storage and failure/rollback boundaries; preserve final all-token server guide requirement.
+- [x] Document factory/default preservation/local storage and failure/rollback boundaries; preserve final all-token server guide requirement.
 - [ ] Inspect whole diff/privacy, git diff --check; commit/push/create/attach PR.
 - [ ] Independent readonly full-PR security/performance/marketing reviewer with exact BASE/HEAD, spec/plan/ledger/test/CI. Save full ignored report, verify/fix findings and same reviewer follow-up for material changes.
 - [ ] Final exact-head CI all SUCCESS/hasMore false; accepted review and plan/ledger evidence. Status-only commit requires new exact-head CI and unchanged accepted-code check.

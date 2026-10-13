@@ -101,6 +101,7 @@ main.py (CLI)
 | `gunb_tool/whatsapp_routing.py`, `whatsapp_routing_schema.py` | Schemat v15: niezmienny dowód pierwotnego odbiorcy i konta Meta dla części outboxa, zapisany przed HTTP. |
 | `gunb_tool/whatsapp_process.py` | Wewnętrzny nadzór jednej wysyłki Meta w osobnym procesie spawn; ograniczone oczekiwanie i zachowawczy wynik przy utracie ACK. |
 | `gunb_tool/whatsapp_ingress.py` | Wewnętrzna aplikacja WSGI: ograniczone żądania, podpis przed dostępem do bazy i ACK po zatwierdzeniu zapisu inboxa. Bez listenera. |
+| `gunb_tool/whatsapp_inbox_factory.py` | Osobne połączenie istniejącej bazy na żądanie webhooka; sprawdzone WAL/FULL przed odbiorem, bez migracji podczas HTTP. |
 | `gunb_tool/email_bot.py`, `email_runtime.py`, `smtp_process.py` | Komendy `/email`, osobny wątek harmonogramu z własną bazą, retencja i nadzorowany proces SMTP. Domyślnie wyłączone. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
@@ -484,6 +485,14 @@ musi zapewnić plikową SQLite WAL z `synchronous=FULL` na każdym połączeniu 
 przed odbiorem, albo równoważny trwały magazyn. Ustawienia bazy bota pozostają bez zmian.
 Wymagania zaufanego serwera HTTPS, timeoutów i ochrony logów:
 [wdrożenie PR 9](docs/WDROZENIE.md#pr-9-aplikacja-wsgi-webhooka-whatsapp-v15-bez-zmian).
+PR 10 realizuje tę bramkę magazynu przez `WhatsAppInboxFactory`: każde żądanie
+otrzymuje własne połączenie istniejącej bazy v15/WAL, z ustawionym i sprawdzonym FULL
+przed odbiorem. Brakująca/starsza/nowsza baza lub inny dziennik kończy się błędem;
+żądanie nie tworzy bazy ani nie wykonuje migracji. Domyślne połączenia bota/e-mail
+zachowują WAL/NORMAL. Przyszły runtime musi użyć tej fabryki lub równoważnej trwałości;
+potrzebny jest lokalny dysk respektujący synchronizację. Nie symulowano awarii zasilania.
+To nadal etap bez listenera i aktywacji. Szczegóły:
+[wdrożenie PR 10](docs/WDROZENIE.md#pr-10-fabryka-polaczen-webhooka-whatsapp-v15-bez-zmian).
 Kolejne etapy to serwer HTTPS/runtime, opt-in/weryfikacja numeru oraz harmonogram i wątek workera.
 **Powrót z PR 7/v15 do dowolnego kodu v14 wymaga kopii sprzed v15** i cofa późniejsze dane.
 Historyczne PR 4–6 zachowywały v14; ich powrót do PR 3 wymagał wyłączenia e-mail
