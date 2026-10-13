@@ -620,6 +620,71 @@ Ostatni PR wdrożeniowy nadal musi dostarczyć kompletną instrukcję wszystkich
 tokenów/ID/sekretów i instalacji/aktualizacji serwera z ochroną bieżącej pracy bota,
 zgodnie z warunkiem z PR 7. Ten etap nie wdraża zmian na serwer i nie wymaga sekretów.
 
+### PR 9: aplikacja WSGI webhooka WhatsApp (v15 bez zmian)
+
+`WhatsAppWebhookApplication(settings, inbox_factory, max_inflight=4)` to wewnętrzna
+aplikacja WSGI obsługująca wyłącznie `/webhooks/whatsapp`. Nie uruchamia serwera,
+nie otwiera portu ani nie podłącza się do procesu bota. Brak nowych kluczy config/env,
+zależności i migracji; `whatsapp.enabled: true` nadal jest błędem przed otwarciem bazy.
+Nie wpisuj jeszcze sekretów Meta i nie uruchamiaj dodatkowego pollera Telegrama.
+
+Kontrakt żądania:
+
+- Wymagane `wsgi.url_scheme=https` ustawione przez zaufany serwer. Aplikacja nie
+  ufa klientowskim `Forwarded` ani `X-Forwarded-Proto`; HTTP zwraca 403.
+- GET przyjmuje tylko `hub.mode`, `hub.verify_token`, `hub.challenge`, bez duplikatów,
+  z query ASCII do 2048 znaków i poprawnym dekodowaniem UTF-8. Brak body (długość
+  niepodana lub 0). Poprawna weryfikacja zwraca dokładny liczbowy challenge, bez
+  czytania wejścia i dostępu do bazy; zła struktura daje 400, zła weryfikacja 403.
+- POST wymaga pustego query, `application/json` (opcjonalnie charset UTF-8) i
+  `Content-Length` 1–65536 bajtów. Brak długości daje 411, błędna/zerowa 400,
+  przekroczenie 413, niewłaściwy format lub kompresja 415. Transfer-Encoding jest
+  odrzucane z 400. Inna ścieżka daje 404; inna metoda 405 z `Allow: GET, POST`.
+- Odczyt następuje porcjami do 8192 bajtów, dokładnie do zadeklarowanej długości,
+  bez zamykania wejścia serwera. Niepełne/niewłaściwe wejście daje 400; błąd odczytu
+  503. HMAC i cały batch są walidowane przed wywołaniem fabryki połączenia;
+  odrzucenie podpisu lub struktury JSON daje ogólne 403.
+- Semafor ogranicza POST od odczytu do wyjścia z kontekstu, domyślnie do czterech
+  żądań (dozwolone 1–16). Nadmiar dostaje 503 bez odczytu body. To limit na jedną
+  instancję aplikacji, nie globalny limit ruchu.
+
+Fabryka jest zaufanym elementem przyszłej integracji. Zwraca kontekst z nowym,
+należącym do żądania `WhatsAppInbox` i połączeniem SQLite utworzonym/zamkniętym
+w wywołującym wątku. Wszystkie cztery ustawienia webhooka muszą być identyczne
+z ustawieniami aplikacji; niezgodność daje 503. Bazę trzeba zainicjalizować/migrować
+przed rozpoczęciem obsługi. Nie wolno współdzielić połączenia bota między wątkami.
+
+**200 `OK` oznacza trwałe przyjęcie statusów do inboxa**, również duplikatów lub
+uwierzytelnionego nieistotnego batcha. Wymaga sukcesu `receive` (COMMIT) i wyjścia
+z kontekstu; tłumienie wyjątku przez kontekst nie uprawnia do ACK. Błąd otwarcia,
+odbioru, COMMIT, przepełnienia lub zamknięcia zwraca 503 z `Retry-After: 5`.
+Błąd zamknięcia po COMMIT może spowodować powtórzenie, które deduplikuje inbox.
+To nie potwierdzenie doręczenia wiadomości użytkownikowi. Żądanie nie wysyła
+wiadomości, nie uzgadnia statusów z outboxem i nie zmienia zgód.
+
+Odpowiedzi są ogólne, tekstowe, z długością, `Cache-Control: no-store` i
+`X-Content-Type-Options: nosniff`. Moduł nie loguje query, body, podpisów ani wyjątków.
+**Przed publicznym uruchomieniem wymagany jest osobny sprawdzony serwer/proxy:**
+TLS i zaufana konfiguracja schematu, buforowanie/limit body, limity nagłówków/query,
+odrzucanie sprzecznych/zdublowanych nagłówków framingu, timeouty odczytu/zapisu
+i workerów, globalne limity ruchu oraz redakcja/wyłączenie query, nagłówków i body
+w logach dostępowych/błędów. GET zawiera token weryfikacyjny w query. WSGI nie
+odtwarza surowych nagłówków i nie narzuca twardego terminu na blokujące `input.read`.
+Nie używaj `wsgiref` ani `http.server` jako listenera produkcyjnego.
+
+Testy obejmują żądania w procesie, walidator WSGI, osobne połączenia tymczasowej
+SQLite, COMMIT przed odpowiedzią, deduplikację, błędy i przeciążenie. Nie wykonano
+testu publicznego HTTPS/proxy ani wysyłki Meta. To bramki późniejszej aktywacji.
+
+Powrót do PR 8 pozostaje na v15 bez cofania schematu. Aktualizacja kodu nadal
+korzysta z procedury D, kopii i kontrolowanego restartu. Powrót do v14 wymaga kopii
+sprzed v15 i cofa późniejsze dane. Pozostają serwer/runtime, opt-in i dowód numeru,
+rezygnacja, zwarty raport, tempo/cisza nocna, rozliczanie statusów oraz pilotaż Meta.
+Ostatni PR wdrożeniowy musi zawierać instrukcję wszystkich tokenów/ID/sekretów
+(SMTP, Meta, Telegram i opcjonalnych integracji) oraz instalacji/aktualizacji serwera,
+kopii, uprawnień, jednej instancji pollera, kontroli zdrowia, aktywacji i wycofania
+z opisem restartu oraz utraty danych przy odtworzeniu kopii. Ten PR niczego nie wdraża.
+
 ## E. Wycofanie wersji
 
 ```bash

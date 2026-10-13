@@ -100,6 +100,7 @@ main.py (CLI)
 | `gunb_tool/email_verification.py`, `email_verification_schema.py` | Wewnętrzna jednorazowa weryfikacja adresu oraz schemat v14: skróty tokenów i trwałe limity żądań. |
 | `gunb_tool/whatsapp_routing.py`, `whatsapp_routing_schema.py` | Schemat v15: niezmienny dowód pierwotnego odbiorcy i konta Meta dla części outboxa, zapisany przed HTTP. |
 | `gunb_tool/whatsapp_process.py` | Wewnętrzny nadzór jednej wysyłki Meta w osobnym procesie spawn; ograniczone oczekiwanie i zachowawczy wynik przy utracie ACK. |
+| `gunb_tool/whatsapp_ingress.py` | Wewnętrzna aplikacja WSGI: ograniczone żądania, podpis przed dostępem do bazy i ACK po trwałym zapisie inboxa. Bez listenera. |
 | `gunb_tool/email_bot.py`, `email_runtime.py`, `smtp_process.py` | Komendy `/email`, osobny wątek harmonogramu z własną bazą, retencja i nadzorowany proces SMTP. Domyślnie wyłączone. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
@@ -471,7 +472,14 @@ czasu jest nieznany, bez automatycznej ponownej wysyłki. Odczyt ACK wymaga zako
 dziecka; niepełna ramka IPC nie blokuje workera. To nadal nie uruchamia WhatsApp.
 Szczegóły ograniczeń OS, lease i wycofania:
 [wdrożenie PR 8](docs/WDROZENIE.md#pr-8-nadzor-procesu-nadawcy-whatsapp-v15-bez-zmian).
-Kolejne etapy to kontrolowane HTTPS, opt-in/weryfikacja numeru oraz harmonogram i wątek workera.
+PR 9 dodaje wewnętrzną aplikację WSGI `/webhooks/whatsapp`: GET weryfikuje challenge,
+POST sprawdza podpis surowych bajtów i potwierdza dopiero trwały zapis inboxa oraz
+zamknięcie kontekstu połączenia. Błąd zapisu lub przepełnienie zwraca 503;
+powtórzenia są deduplikowane. Body ma limit 64 KiB, a równoległość POST jest ograniczona.
+To nadal moduł bez listenera i podłączenia do runtime; WhatsApp pozostaje niedostępny.
+Wymagania zaufanego serwera HTTPS, timeoutów i ochrony logów:
+[wdrożenie PR 9](docs/WDROZENIE.md#pr-9-aplikacja-wsgi-webhooka-whatsapp-v15-bez-zmian).
+Kolejne etapy to serwer HTTPS/runtime, opt-in/weryfikacja numeru oraz harmonogram i wątek workera.
 **Powrót z PR 7/v15 do dowolnego kodu v14 wymaga kopii sprzed v15** i cofa późniejsze dane.
 Historyczne PR 4–6 zachowywały v14; ich powrót do PR 3 wymagał wyłączenia e-mail
 i usunięcia nowych kluczy konfiguracji.

@@ -38,11 +38,11 @@
 - Validate `WhatsAppInbox.webhook_settings` against all application settings before receive; mismatched scope must not silently ACK ignored statuses.
 - Produces `WhatsAppWebhookApplication(settings, inbox_factory, *, max_inflight=4).__call__(environ, start_response)` with byte-list responses and request-scoped inbox context.
 
-- [ ] Write tests proving the spec's request/response/error matrix, raw byte integrity, no reads/DB on early rejection, real SQLite commit before ACK, capacity/COMMIT faults and concurrent ownership. Use literal expected HTTP statuses and synthetic signed batches; no server launch.
-- [ ] Run `python -m pytest tests/test_whatsapp_ingress.py -rs`; expected failures for absent application. Save RED evidence locally.
-- [ ] Implement minimal WSGI application and private helpers, preserving parser/inbox public boundary and request ownership.
-- [ ] Run `python -m pytest tests/test_whatsapp_ingress.py tests/test_whatsapp_webhook.py tests/test_whatsapp_inbox.py -rs`; expected PASS. Full `python -m pytest -rs`; expected PASS except existing Windows POSIX skip.
-- [ ] Check diff and commit module/tests; task-done runs focused suite, expected PASS.
+- [x] Write tests proving the spec's request/response/error matrix, raw byte integrity, no reads/DB on early rejection, real SQLite commit before ACK, capacity/COMMIT faults and concurrent ownership. Use literal expected HTTP statuses and synthetic signed batches; no server launch.
+- [x] Run `python -m pytest tests/test_whatsapp_ingress.py -rs`; expected failures for absent application. Save RED evidence locally.
+- [x] Implement minimal WSGI application and private helpers, preserving parser/inbox public boundary and request ownership.
+- [x] Run `python -m pytest tests/test_whatsapp_ingress.py tests/test_whatsapp_webhook.py tests/test_whatsapp_inbox.py -rs`; expected PASS. Full `python -m pytest -rs`; expected PASS except existing Windows POSIX skip.
+- [x] Check diff and commit module/tests; task-done runs focused suite, expected PASS.
 
 ### Task 2: Operator contract, independent review and handoff
 
@@ -50,7 +50,7 @@
 
 **Interfaces:** consumes Task 1 callable contract; produces truthful inactive-stage docs and accepted open PR.
 
-- [ ] Document request limits/statuses/durable ACK, factory ownership, external HTTPS/body/header/deadline/global limit/logging requirements, v15 rollback and final all-token server handoff gate.
+- [x] Document request limits/statuses/durable ACK, factory ownership, external HTTPS/body/header/deadline/global limit/logging requirements, v15 rollback and final all-token server handoff gate.
 - [ ] Inspect complete diff/privacy and `git diff --check`; expected exit 0. Commit docs, push and create/attach PR.
 - [ ] Dispatch independent readonly whole-PR reviewer with exact SHA, spec/plan/ledger/tests/CI. Save ignored report; verify/fix findings, same reviewer follows material fixes.
 - [ ] Confirm exact final HEAD CI all SUCCESS/hasMore false. Record accepted review and completion; bookkeeping-only commit requires new exact-head CI and unchanged implementation verification.
