@@ -1,0 +1,62 @@
+# WhatsApp WSGI Ingress Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** ACK HTTP status batches only after authenticated inbox commit; host-failure durability requires the factory/runtime storage gate below.
+
+**Architecture:** A bounded WSGI callable wraps existing parser/inbox; a request-owned context factory supplies its connection. No active listener or framework.
+
+**Tech Stack:** Python >=3.10, stdlib WSGI/threading, existing SQLite/pytest.
+
+**Spec:** `docs/superpowers/specs/2026-10-12-whatsapp-ingress-design.md`
+
+## Global Constraints
+
+- Preserve Telegram/email, schema v15 and disabled WhatsApp config gate.
+- No new dependencies, listener, runtime/config/env changes, real sends or deployment.
+- `/webhooks/whatsapp`, HTTPS scheme from WSGI only, GET/POST; exact request contract in spec.
+- Body 1..65536 bytes, reads <=8192 and never beyond Content-Length; query <=2048.
+- Per-app POST semaphore default 4, exact integer 1..16; nonblocking overflow 503.
+- Authenticate before factory, own connection per request thread, 200 only after commit/context exit.
+- SEC-01 activation gate: factory/runtime owner must configure/verify each request connection as file-backed local-disk WAL/FULL (PRAGMA synchronous=2) before receive, or equivalent durable storage. Existing WAL/NORMAL survives application crashes but may lose a committed status on host failure; no global bot setting change. Acceptance holds a second bot connection open and checks FULL before receipt; no power-loss test claimed.
+- Generic private errors, no logging/query/body leak; 503 includes Retry-After: 5.
+- Final rollout must include complete token/API/secret and bot-preserving server guide.
+
+## Review Focus
+
+- WSGI cannot detect original duplicate framing headers; front-server requirements must be explicit (Task 1/2).
+- A body stream may short-read, fail or never return; enforce byte limits here and document external deadline gate (Task 1/2).
+- Factory enter/receive/exit failure after commit must not create a false ACK or leak details (Task 1).
+- Concurrent requests must own separate SQLite connections, release capacity on all paths and ACK duplicates safely (Task 1).
+- Verification query tokens must never appear in app diagnostics or be trusted as TLS proof; external log redaction remains mandatory (Task 1/2).
+
+### Task 1: Bounded application and durable request tests
+
+**Files:** create `gunb_tool/whatsapp_ingress.py`, `tests/test_whatsapp_ingress.py`; modify `gunb_tool/whatsapp_inbox.py` (readonly settings property).
+
+**Interfaces:**
+- Consumes `WhatsAppWebhook(settings).challenge/parse_statuses` and `WhatsAppInbox.receive(raw, signature)`.
+- Validate `WhatsAppInbox.webhook_settings` against all application settings before receive; mismatched scope must not silently ACK ignored statuses.
+- Produces `WhatsAppWebhookApplication(settings, inbox_factory, *, max_inflight=4).__call__(environ, start_response)` with byte-list responses and request-scoped inbox context.
+
+- [x] Write tests proving the spec's request/response/error matrix, raw byte integrity, no reads/DB on early rejection, real SQLite commit before ACK, capacity/COMMIT faults and concurrent ownership. Use literal expected HTTP statuses and synthetic signed batches; no server launch.
+- [x] Run `python -m pytest tests/test_whatsapp_ingress.py -rs`; expected failures for absent application. Save RED evidence locally.
+- [x] Implement minimal WSGI application and private helpers, preserving parser/inbox public boundary and request ownership.
+- [x] Run `python -m pytest tests/test_whatsapp_ingress.py tests/test_whatsapp_webhook.py tests/test_whatsapp_inbox.py -rs`; expected PASS. Full `python -m pytest -rs`; expected PASS except existing Windows POSIX skip.
+- [x] Check diff and commit module/tests; task-done runs focused suite, expected PASS.
+
+### Task 2: Operator contract, independent review and handoff
+
+**Files:** modify `README.md`, `docs/WDROZENIE.md`, this plan.
+
+**Interfaces:** consumes Task 1 callable contract; produces truthful inactive-stage docs and accepted open PR.
+
+- [x] Document request limits/statuses/durable ACK, factory ownership, external HTTPS/body/header/deadline/global limit/logging requirements, v15 rollback and final all-token server handoff gate.
+- [x] Inspect complete diff/privacy and `git diff --check`; expected exit 0. Commit docs, push and create/attach PR.
+- [x] Dispatch independent readonly whole-PR reviewer with exact SHA, spec/plan/ledger/tests/CI. Save ignored report; verify/fix findings, same reviewer follows material fixes.
+- [x] Confirm exact final HEAD CI all SUCCESS/hasMore false. Record accepted review and completion; bookkeeping-only commit requires new exact-head CI and unchanged implementation verification.
+- [x] Task-done runs local verifier for clean checkout/diff, unchanged accepted code, saved full-suite and final-head CI. Expected PASS; preserve local evidence and hand off without merge/deploy.
+
+## Completion evidence
+
+PR #15: independent whole-PR review (4c85a3e) and follow-up (1af9d1f) accepted after SEC-01 documentation correction. Runtime WAL/FULL gate remains required before activation. Full pytest: 1634 passed, 1 Windows POSIX skip; focused: 205 passed; reviewer: 66 passed. Exact reviewed HEAD CI: 12/12 success, hasMore false. Final bookkeeping changes only this plan; final-head CI and local unchanged-code verifier remain the handoff gate. Reports and ledger stored locally, ignored. No merge or deployment.
