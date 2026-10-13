@@ -31,10 +31,11 @@
 
 ### Task 1: Bounded application and durable request tests
 
-**Files:** create `gunb_tool/whatsapp_ingress.py`, `tests/test_whatsapp_ingress.py`.
+**Files:** create `gunb_tool/whatsapp_ingress.py`, `tests/test_whatsapp_ingress.py`; modify `gunb_tool/whatsapp_inbox.py` (readonly settings property).
 
 **Interfaces:**
 - Consumes `WhatsAppWebhook(settings).challenge/parse_statuses` and `WhatsAppInbox.receive(raw, signature)`.
+- Validate `WhatsAppInbox.webhook_settings` against all application settings before receive; mismatched scope must not silently ACK ignored statuses.
 - Produces `WhatsAppWebhookApplication(settings, inbox_factory, *, max_inflight=4).__call__(environ, start_response)` with byte-list responses and request-scoped inbox context.
 
 - [ ] Write tests proving the spec's request/response/error matrix, raw byte integrity, no reads/DB on early rejection, real SQLite commit before ACK, capacity/COMMIT faults and concurrent ownership. Use literal expected HTTP statuses and synthetic signed batches; no server launch.

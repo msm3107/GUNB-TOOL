@@ -13,7 +13,10 @@ This PR adds no listener, runtime wiring, config/env keys or real network sends.
 `WhatsAppWebhookApplication(settings, inbox_factory, *, max_inflight=4)` is a
 WSGI callable at `/webhooks/whatsapp`. Settings must be WhatsAppWebhookSettings,
 factory callable, capacity an exact integer 1..16. Factory returns a context
-manager yielding a WhatsAppInbox for this request, with the same settings. Future
+manager yielding a WhatsAppInbox for this request, with the same settings.
+The inbox exposes immutable `webhook_settings` for this equality check (all four
+fields); a mismatch returns 503 before receive, preventing a false ACK for a
+different sender scope. Future
 runtime must create/close a separate SQLite connection in the calling thread and
 initialize/migrate the database before serving; never share the bot connection.
 The app does not open or migrate a database itself. Validate/authenticate the

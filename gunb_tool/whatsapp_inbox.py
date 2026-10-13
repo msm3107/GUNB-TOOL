@@ -60,6 +60,11 @@ class WhatsAppInbox:
         self._conn = self.repo.connection
         self._cursor: tuple[str, int] | None = None
 
+    @property
+    def webhook_settings(self) -> WhatsAppWebhookSettings:
+        """Immutable parser scope for validating a request-owned ingress factory."""
+        return self._webhook.settings
+
     @contextmanager
     def _transaction(self) -> Iterator[None]:
         if self._conn.in_transaction:
