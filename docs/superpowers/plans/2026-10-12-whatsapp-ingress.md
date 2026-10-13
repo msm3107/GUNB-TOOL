@@ -52,7 +52,11 @@
 **Interfaces:** consumes Task 1 callable contract; produces truthful inactive-stage docs and accepted open PR.
 
 - [x] Document request limits/statuses/durable ACK, factory ownership, external HTTPS/body/header/deadline/global limit/logging requirements, v15 rollback and final all-token server handoff gate.
-- [ ] Inspect complete diff/privacy and `git diff --check`; expected exit 0. Commit docs, push and create/attach PR.
-- [ ] Dispatch independent readonly whole-PR reviewer with exact SHA, spec/plan/ledger/tests/CI. Save ignored report; verify/fix findings, same reviewer follows material fixes.
-- [ ] Confirm exact final HEAD CI all SUCCESS/hasMore false. Record accepted review and completion; bookkeeping-only commit requires new exact-head CI and unchanged implementation verification.
-- [ ] Task-done runs local verifier for clean checkout/diff, unchanged accepted code, saved full-suite and final-head CI. Expected PASS; preserve local evidence and hand off without merge/deploy.
+- [x] Inspect complete diff/privacy and `git diff --check`; expected exit 0. Commit docs, push and create/attach PR.
+- [x] Dispatch independent readonly whole-PR reviewer with exact SHA, spec/plan/ledger/tests/CI. Save ignored report; verify/fix findings, same reviewer follows material fixes.
+- [x] Confirm exact final HEAD CI all SUCCESS/hasMore false. Record accepted review and completion; bookkeeping-only commit requires new exact-head CI and unchanged implementation verification.
+- [x] Task-done runs local verifier for clean checkout/diff, unchanged accepted code, saved full-suite and final-head CI. Expected PASS; preserve local evidence and hand off without merge/deploy.
+
+## Completion evidence
+
+PR #15: independent whole-PR review (4c85a3e) and follow-up (1af9d1f) accepted after SEC-01 documentation correction. Runtime WAL/FULL gate remains required before activation. Full pytest: 1634 passed, 1 Windows POSIX skip; focused: 205 passed; reviewer: 66 passed. Exact reviewed HEAD CI: 12/12 success, hasMore false. Final bookkeeping changes only this plan; final-head CI and local unchanged-code verifier remain the handoff gate. Reports and ledger stored locally, ignored. No merge or deployment.
