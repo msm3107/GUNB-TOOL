@@ -100,7 +100,7 @@ main.py (CLI)
 | `gunb_tool/email_verification.py`, `email_verification_schema.py` | Wewnętrzna jednorazowa weryfikacja adresu oraz schemat v14: skróty tokenów i trwałe limity żądań. |
 | `gunb_tool/whatsapp_routing.py`, `whatsapp_routing_schema.py` | Schemat v15: niezmienny dowód pierwotnego odbiorcy i konta Meta dla części outboxa, zapisany przed HTTP. |
 | `gunb_tool/whatsapp_process.py` | Wewnętrzny nadzór jednej wysyłki Meta w osobnym procesie spawn; ograniczone oczekiwanie i zachowawczy wynik przy utracie ACK. |
-| `gunb_tool/whatsapp_ingress.py` | Wewnętrzna aplikacja WSGI: ograniczone żądania, podpis przed dostępem do bazy i ACK po trwałym zapisie inboxa. Bez listenera. |
+| `gunb_tool/whatsapp_ingress.py` | Wewnętrzna aplikacja WSGI: ograniczone żądania, podpis przed dostępem do bazy i ACK po zatwierdzeniu zapisu inboxa. Bez listenera. |
 | `gunb_tool/email_bot.py`, `email_runtime.py`, `smtp_process.py` | Komendy `/email`, osobny wątek harmonogramu z własną bazą, retencja i nadzorowany proces SMTP. Domyślnie wyłączone. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
@@ -473,10 +473,15 @@ dziecka; niepełna ramka IPC nie blokuje workera. To nadal nie uruchamia WhatsAp
 Szczegóły ograniczeń OS, lease i wycofania:
 [wdrożenie PR 8](docs/WDROZENIE.md#pr-8-nadzor-procesu-nadawcy-whatsapp-v15-bez-zmian).
 PR 9 dodaje wewnętrzną aplikację WSGI `/webhooks/whatsapp`: GET weryfikuje challenge,
-POST sprawdza podpis surowych bajtów i potwierdza dopiero trwały zapis inboxa oraz
+POST sprawdza podpis surowych bajtów i potwierdza dopiero zatwierdzony zapis inboxa oraz
 zamknięcie kontekstu połączenia. Błąd zapisu lub przepełnienie zwraca 503;
 powtórzenia są deduplikowane. Body ma limit 64 KiB, a równoległość POST jest ograniczona.
 To nadal moduł bez listenera i podłączenia do runtime; WhatsApp pozostaje niedostępny.
+Testy potwierdzają COMMIT i widoczność zapisu; nie symulują awarii hosta. Obecne
+WAL/NORMAL chroni zatwierdzone transakcje przy awarii procesu, ale po awarii systemu
+lub zasilania możliwa jest utrata ACK-owanego statusu. Przed aktywacją etap fabryki/runtime
+musi zapewnić plikową SQLite WAL z `synchronous=FULL` na każdym połączeniu webhooka
+przed odbiorem, albo równoważny trwały magazyn. Ustawienia bazy bota pozostają bez zmian.
 Wymagania zaufanego serwera HTTPS, timeoutów i ochrony logów:
 [wdrożenie PR 9](docs/WDROZENIE.md#pr-9-aplikacja-wsgi-webhooka-whatsapp-v15-bez-zmian).
 Kolejne etapy to serwer HTTPS/runtime, opt-in/weryfikacja numeru oraz harmonogram i wątek workera.

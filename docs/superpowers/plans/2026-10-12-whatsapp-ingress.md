@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** ACK HTTP status batches only after authenticated durable inbox commit.
+**Goal:** ACK HTTP status batches only after authenticated inbox commit; host-failure durability requires the factory/runtime storage gate below.
 
 **Architecture:** A bounded WSGI callable wraps existing parser/inbox; a request-owned context factory supplies its connection. No active listener or framework.
 
@@ -18,6 +18,7 @@
 - Body 1..65536 bytes, reads <=8192 and never beyond Content-Length; query <=2048.
 - Per-app POST semaphore default 4, exact integer 1..16; nonblocking overflow 503.
 - Authenticate before factory, own connection per request thread, 200 only after commit/context exit.
+- SEC-01 activation gate: factory/runtime owner must configure/verify each request connection as file-backed local-disk WAL/FULL (PRAGMA synchronous=2) before receive, or equivalent durable storage. Existing WAL/NORMAL survives application crashes but may lose a committed status on host failure; no global bot setting change. Acceptance holds a second bot connection open and checks FULL before receipt; no power-loss test claimed.
 - Generic private errors, no logging/query/body leak; 503 includes Retry-After: 5.
 - Final rollout must include complete token/API/secret and bot-preserving server guide.
 

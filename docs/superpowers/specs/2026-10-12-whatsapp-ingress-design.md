@@ -5,7 +5,7 @@ Date: 2026-10-12. Authorized next PR after merged #14, base
 
 ## Intent and boundary
 
-Translate HTTP into the existing authenticated durable inbox without changing
+Translate HTTP into the existing authenticated committed inbox without changing
 Telegram/email, schema v15 or enabling WhatsApp. Use a small WSGI callable and
 stdlib only; a new framework or custom socket/HTTP server is unnecessary here.
 This PR adds no listener, runtime wiring, config/env keys or real network sends.
@@ -56,6 +56,19 @@ and authenticated irrelevant batches also ACK. Wrong factory type, DB/COMMIT/ful
 inbox/open/close failure return 503 with Retry-After: 5; never turn them into ACK.
 An error after a successful commit may cause replay, which the inbox deduplicates.
 Do not reconcile statuses, send messages or update consent in the HTTP request.
+
+Durability boundary (SEC-01): existing file-backed LeadRepository uses WAL/NORMAL.
+Committed transactions survive application crashes, but may roll back after OS
+crash/power loss. Request connection exit alone does not force a last-connection
+checkpoint while the bot connection remains open. This stage tests COMMIT/visibility,
+not host-failure durability. Before activation the factory/runtime integration owner
+must configure and verify file-backed local-disk WAL plus synchronous=FULL (PRAGMA
+value 2) on EACH request connection outside a transaction before receive, or provide
+equivalent durable storage. Keep global bot settings unchanged. Acceptance must
+hold another bot-like connection open, check FULL before receipt, and confirm ACK
+after COMMIT/context exit; reopening alone is not a power-loss test. Storage/OS must
+honor synchronization. Source checked 2026-10-13:
+[SQLite synchronous](https://www.sqlite.org/pragma.html#pragma_synchronous).
 
 All responses are fixed plain-text bytes (except validated numeric GET challenge),
 with Content-Length, Cache-Control: no-store and X-Content-Type-Options: nosniff.

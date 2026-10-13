@@ -654,13 +654,28 @@ w wywołującym wątku. Wszystkie cztery ustawienia webhooka muszą być identyc
 z ustawieniami aplikacji; niezgodność daje 503. Bazę trzeba zainicjalizować/migrować
 przed rozpoczęciem obsługi. Nie wolno współdzielić połączenia bota między wątkami.
 
-**200 `OK` oznacza trwałe przyjęcie statusów do inboxa**, również duplikatów lub
+**200 `OK` oznacza zatwierdzone przyjęcie statusów do inboxa**, również duplikatów lub
 uwierzytelnionego nieistotnego batcha. Wymaga sukcesu `receive` (COMMIT) i wyjścia
 z kontekstu; tłumienie wyjątku przez kontekst nie uprawnia do ACK. Błąd otwarcia,
 odbioru, COMMIT, przepełnienia lub zamknięcia zwraca 503 z `Retry-After: 5`.
 Błąd zamknięcia po COMMIT może spowodować powtórzenie, które deduplikuje inbox.
 To nie potwierdzenie doręczenia wiadomości użytkownikowi. Żądanie nie wysyła
 wiadomości, nie uzgadnia statusów z outboxem i nie zmienia zgód.
+
+Zakres trwałości: obecne `LeadRepository` używa plikowej SQLite WAL z
+`synchronous=NORMAL`. COMMIT chroni transakcję przy awarii procesu, lecz po awarii
+systemu lub zasilania zatwierdzony status może zniknąć. Zamknięcie połączenia
+żądania nie rozwiązuje tego, gdy inne połączenie (np. bota) pozostaje otwarte.
+**Bramka aktywacji, właściciel: etap integracji fabryki/runtime.** Każde połączenie
+przyjmujące webhooki musi przed `receive`, poza transakcją, ustawić i sprawdzić
+`journal_mode=WAL` oraz `synchronous=FULL` (odczyt PRAGMA: 2) na plikowej bazie
+na lokalnym dysku, albo korzystać z równoważnego trwałego magazynu. Nie zmieniamy
+globalnych ustawień bota. Przy integracji sprawdź FULL na każdym połączeniu żądania
+przy drugim stale otwartym połączeniu imitującym bota i ACK dopiero po COMMIT/wyjściu.
+Ponowne otwarcie bazy nie dowodzi odporności na utratę zasilania; potrzebne jest
+również poprawne respektowanie synchronizacji przez OS/dysk. Obecne testy sprawdzają
+COMMIT i widoczność zapisu, bez symulacji awarii hosta.
+Źródło (sprawdzone 2026-10-13): [SQLite — synchronous](https://www.sqlite.org/pragma.html#pragma_synchronous).
 
 Odpowiedzi są ogólne, tekstowe, z długością, `Cache-Control: no-store` i
 `X-Content-Type-Options: nosniff`. Moduł nie loguje query, body, podpisów ani wyjątków.
