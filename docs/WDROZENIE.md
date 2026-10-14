@@ -812,9 +812,15 @@ publicznych odpowiedzi i pełny HTTPS nie zostały sprawdzone w tym etapie.
 [wydanie 26.2.0](https://pypi.org/project/gunicorn/26.2.0/).
 
 `deploy/gunb-whatsapp-webhook.service.example` to **nieinstalowany szablon**:
-osobne EnvironmentFile, User/Group gunb, check przed startem, umask 0077, sandbox
+osobne EnvironmentFile, User/Group gunb, preflight w procesie głównym przed nasłuchem,
+umask 0077, sandbox
 i ograniczenia zasobów. Nie wykonano testu prawdziwej jednostki systemd ani
 publicznego serwera. Nie kopiuj/nie włączaj szablonu na działającym serwerze teraz.
+Kod 2 pochodzi z głównego `ExecStart` i jest objęty `RestartPreventExitStatus=2`;
+nie stosujemy redundantnego `ExecStartPre`, którego ta reguła nie obejmuje.
+`--check` pozostaje osobną komendą diagnostyczną. Przy walidacji docelowego systemd
+sprawdź brak restartu syntetycznej jednostki kończącej proces główny kodem 2,
+bez webhooka i rzeczywistych danych.
 Obecny aktualizator zatrzymuje wyłącznie bota; przed użyciem webhooka trzeba
 ukończyć wspólną obsługę stop/start, backupu/restore, migracji, przełączenia wersji
 i rollbacku obu procesów. Retencja przed stałym ruchem również pozostaje bramką.

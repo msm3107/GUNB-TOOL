@@ -67,7 +67,11 @@ other SystemExit returns1 generically. No real server started on local Windows.
 
 Example systemd unit uses gunb user/group and separate
 /var/lib/gunb-tool/whatsapp-webhook.env (600), PYTHONPATH to installed release,
-fixed module command, no bot secrets file. UMask0077, standard project sandbox,
+fixed module command, no bot secrets file. Preflight is inside main ExecStart
+before bind, not ExecStartPre: RestartPreventExitStatus=2 covers only the main
+process. Keep --check as a separate operator diagnostic. Validate a synthetic
+main-exit2/no-restart unit on target systemd before activation (not tested here).
+UMask0077, standard project sandbox,
 write state only, timeout stop30, restart on failure except config2. A separate
 .env example defaults false, placeholders empty, no real credentials. Templates
 are not copied/enabled by installer. Do not start it until proxy/lifecycle/retention

@@ -127,6 +127,19 @@ def test_cli_unknown_arguments_and_config_errors_never_echo_values(monkeypatch, 
     assert 'PRIVATE' not in ''.join(capsys.readouterr())
 
 
+def test_systemd_config_failure_exits_main_without_prestart_restart_loop(monkeypatch, connections):
+    module = service()
+    monkeypatch.setattr(module.sys, 'platform', 'linux')
+    monkeypatch.setenv('WHATSAPP_WEBHOOK_ENABLED', 'false')
+    monkeypatch.setattr(module, '_serve', lambda *_: pytest.fail('No server for invalid config'))
+    assert module.main([]) == 2 and connections[0] == []
+    unit = (Path(__file__).resolve().parents[1] / 'deploy/gunb-whatsapp-webhook.service.example').read_text(encoding='utf-8')
+    # RestartPreventExitStatus applies to ExecStart, not a failing ExecStartPre.
+    assert not any(line.startswith('ExecStartPre=') for line in unit.splitlines())
+    assert 'RestartPreventExitStatus=2' in unit
+    assert 'ExecStart=/opt/gunb-tool/current/.venv/bin/python -m gunb_tool.whatsapp_service\n' in unit
+
+
 @pytest.mark.parametrize('fault,code', [(RuntimeError('PRIVATE_RUNTIME'), 1),
                                      (ImportError('PRIVATE_DEPENDENCY'), 2),
                                      (SystemExit('PRIVATE_EXIT'), 1), (SystemExit(0), 0)])

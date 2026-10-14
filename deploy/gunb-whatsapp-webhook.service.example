@@ -15,7 +15,7 @@ Environment=PYTHONPATH=/opt/gunb-tool/current
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONIOENCODING=utf-8
-ExecStartPre=/opt/gunb-tool/current/.venv/bin/python -m gunb_tool.whatsapp_service --check
+# Preflight runs inside the main process before bind; config exit2 prevents restart.
 ExecStart=/opt/gunb-tool/current/.venv/bin/python -m gunb_tool.whatsapp_service
 Restart=on-failure
 RestartSec=15
