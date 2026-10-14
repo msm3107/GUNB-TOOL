@@ -11,11 +11,34 @@ STATE_DIR=/var/lib/gunb-tool
 CONFIG=$STATE_DIR/config.yaml
 MARKER=$STATE_DIR/PRZENIESIENIE-W-TOKU
 SERVICE=gunb-bot
+WEBHOOK_SERVICE=gunb-whatsapp-webhook.service
 HEALTH_TIMER=gunb-zdrowie.timer
 DEFAULT_REPO=https://github.com/msm3107/GUNB-TOOL.git
 WORK_DIR=""
 cleanup() { if [ -n "$WORK_DIR" ]; then rm -rf -- "$WORK_DIR"; fi; }
 trap cleanup EXIT
+
+# Kept identical in install.sh: both entry points must work standalone, also for old targets.
+quiesce_webhook() {
+    local load active
+    load=$(systemctl show --property=LoadState --value "$WEBHOOK_SERVICE" 2>/dev/null) \
+        || die "Nie można sprawdzić usługi webhooka – konserwacja przerwana."
+    active=$(systemctl show --property=ActiveState --value "$WEBHOOK_SERVICE" 2>/dev/null) \
+        || die "Nie można sprawdzić stanu webhooka – konserwacja przerwana."
+    if [ "$load" = not-found ] && [ "$active" = inactive ]; then return; fi
+    case $load in
+        loaded|masked) ;;
+        *) die "Nieznany stan usługi webhooka – konserwacja przerwana." ;;
+    esac
+    systemctl disable --quiet "$WEBHOOK_SERVICE" >/dev/null 2>&1 \
+        || die "Nie można wyłączyć autostartu webhooka – konserwacja przerwana."
+    systemctl stop "$WEBHOOK_SERVICE" >/dev/null 2>&1 \
+        || die "Nie można zatrzymać webhooka – konserwacja przerwana."
+    active=$(systemctl show --property=ActiveState --value "$WEBHOOK_SERVICE" 2>/dev/null) \
+        || die "Nie można potwierdzić zatrzymania webhooka – konserwacja przerwana."
+    [ "$active" = inactive ] || die "Webhook nie jest zatrzymany – konserwacja przerwana."
+    printf '  Webhook WhatsApp zatrzymany; autostart wyłączony. Nie zostanie wznowiony automatycznie.\n'
+}
 
 usage() {
     cat <<'EOF'
@@ -28,7 +51,7 @@ Stan i dziennik
   wersja                    działająca i poprzednia wersja kodu
 
 Praca bota
-  start | stop | restart    uruchom (także po restarcie serwera) / zatrzymaj / uruchom ponownie
+  start | stop | restart    start/restart bota; stop zatrzymuje też webhook i wyłącza jego autostart
 
 Kopie i przenoszenie danych
   kopia [ETYKIETA]          spójna kopia bazy teraz (działa także przy pracującym bocie)
@@ -115,6 +138,7 @@ update() {  # update [wersja]: instalator z TEJ wersji (zna jej wymagania), pobr
     commit=$(git -C "$WORK_DIR/kod" rev-parse --verify --quiet "origin/$ref^{commit}" \
         || git -C "$WORK_DIR/kod" rev-parse --verify --quiet "$ref^{commit}") || die "nie ma wersji '$ref' w $repo"
     git -C "$WORK_DIR/kod" checkout --quiet --detach "$commit"
+    quiesce_webhook  # guard even an older target installer that knows nothing about the webhook
     bash "$WORK_DIR/kod/deploy/install.sh" --wersja "$ref" --repo "$repo"
 }
 
@@ -146,7 +170,7 @@ main() {
             printf 'działająca: %s\n' "$(readlink -e "$CURRENT" 2>/dev/null || echo brak)"
             printf 'poprzednia: %s\n' "$(readlink -e "$APP_ROOT/previous" 2>/dev/null || echo brak)" ;;
         start) need_root; need_install; start ;;
-        stop) need_root; systemctl stop "$SERVICE"; echo "✔ bot zatrzymany (po restarcie serwera wstanie – chyba że: sudo systemctl disable $SERVICE)" ;;
+        stop) need_root; quiesce_webhook; systemctl stop "$SERVICE"; echo "✔ bot zatrzymany (po restarcie serwera wstanie – chyba że: sudo systemctl disable $SERVICE)" ;;
         restart) need_root; systemctl restart "$SERVICE"; sleep 5; running || die "bot nie wystartował: sudo gunb-admin logi" ;;
         kopia) need_root; need_install; app -m gunb_tool.migration kopia --config "$CONFIG" ${1:+--etykieta "$1"} ;;
         kopie) need_root; need_install; ls -lh --time-style=long-iso "$(backup_dir)" ;;
@@ -155,8 +179,17 @@ main() {
             need_root; need_install
             [ $# -ge 1 ] || die "podaj kopię: sudo gunb-admin odtworz <plik .sqlite> (lista: sudo gunb-admin kopie)"
             ! running || die "najpierw zatrzymaj bota: sudo gunb-admin stop"
+            quiesce_webhook
             app -m gunb_tool.migration odtworz "$(incoming "$1")" --config "$CONFIG" ;;
-        eksport) need_root; need_install; app -m gunb_tool.migration eksport --config "$CONFIG" "$@" ;;
+        eksport)
+            need_root; need_install
+            local live=0 argument
+            for argument in "$@"; do [ "$argument" != --na-zywo ] || live=1; done
+            if [ "$live" = 0 ]; then
+                ! running || die "najpierw zatrzymaj bota: sudo gunb-admin stop"
+                quiesce_webhook
+            fi
+            app -m gunb_tool.migration eksport --config "$CONFIG" "$@" ;;
         sprawdz)
             need_root; need_install
             [ $# -ge 1 ] || die "podaj pakiet: sudo gunb-admin sprawdz <plik .zip>"
@@ -164,6 +197,8 @@ main() {
         importuj)
             need_root; need_install
             [ $# -ge 1 ] || die "podaj pakiet: sudo gunb-admin importuj <plik .zip> [--zastap] [--konfiguracja-z-pakietu]"
+            ! running || die "najpierw zatrzymaj bota: sudo gunb-admin stop"
+            quiesce_webhook
             local package original=$1
             shift
             package=$(incoming "$original")
@@ -174,7 +209,7 @@ main() {
         sekrety) need_root; need_install; bash "$CURRENT/deploy/install.sh" --sekrety ;;
         monitor) need_root; need_install; monitor "$@" ;;
         aktualizuj) need_root; update "$@" ;;
-        wycofaj) need_root; need_install; bash "$CURRENT/deploy/install.sh" --wycofaj ;;
+        wycofaj) need_root; need_install; quiesce_webhook; bash "$CURRENT/deploy/install.sh" --wycofaj ;;
         -h|--pomoc|--help|pomoc|"") usage ;;
         *) usage >&2; die "nieznane polecenie: $COMMAND" ;;
     esac
