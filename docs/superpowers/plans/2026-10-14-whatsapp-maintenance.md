@@ -45,5 +45,16 @@
 **Interfaces:** truthful managed-maintenance documentation and reviewed PR; no activation commands offered prematurely.
 
 - [x] Document interruption/disabled recovery, current admin vs old installers/direct CLI, one operator/no independent starts, remaining activation gates and final all-token guide.
-- [ ] Verify complete diff and tests, commit/push/create/attach PR. Independent fresh whole-PR reviewer receives exact SHA/spec/plan/ledger/evidence.
-- [ ] Save local ignored report, verify/fix findings; material follow-up to same reviewer. Check exact final HEAD CI, hand off without merging/deploying.
+- [x] Verify complete diff and tests, commit/push/create/attach PR. Independent fresh whole-PR reviewer receives exact SHA/spec/plan/ledger/evidence.
+- [x] Save local ignored report, verify/fix findings; material follow-up to same reviewer. Check exact final HEAD CI, hand off without merging/deploying.
+
+## Completion evidence
+
+PR18 accepted by independent fresh reviewer at c1663843, no findings. Reviewer
+ran focused tests54pass4Linuxskips and independently confirmed exact-head CI12/12
+SUCCESS/hasMorefalse and Linux3.10 full1774pass/no skips. Coordinator full Windows
+1762pass12skips36.99s; focused54pass4skips; Bash syntax and diffcheckPASS. Full report
+saved locally, ignored. Final plan-status-only commit requires its own exact-head
+CI plus unchanged accepted-code verifier before handoff. No live systemd/server,
+activation, deployment or merge. Preserve isolated Linux/systemd activation gate,
+single-operator/no-reactivation boundaries and final ALL-token/API/server guide.
