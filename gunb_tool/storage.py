@@ -432,6 +432,8 @@ class LeadRepository:
         negative_cache_days: czas życia negatywnych wpisów cache geokodowania.
         backup_dir: katalog kopii zapasowych (domyślnie ``backups`` obok bazy) – tu trafia kopia
             robiona przed każdą zmianą schematu istniejącej bazy.
+        existing_only: otwórz wyłącznie istniejącą plikową bazę w bieżącej wersji i WAL;
+            bez tworzenia katalogów/bazy, migracji ani konwersji dziennika.
     """
 
     def __init__(
@@ -441,27 +443,38 @@ class LeadRepository:
         now: Callable[[], datetime] | None = None,
         negative_cache_days: int = 30,
         backup_dir: str | Path | None = None,
+        existing_only: bool = False,
     ) -> None:
+        if type(existing_only) is not bool or (existing_only and str(db_path) == ':memory:'):
+            raise ValueError('Niepoprawny tryb otwarcia bazy')
         self._file = None if str(db_path) == ":memory:" else Path(db_path)
-        if self._file is not None:
+        if self._file is not None and not existing_only:
             self._file.parent.mkdir(parents=True, exist_ok=True)
         self._backup_dir = Path(backup_dir) if backup_dir else (self._file.parent / "backups" if self._file else None)
-        self._conn = sqlite3.connect(str(db_path), isolation_level=None)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-        if str(db_path) != ":memory:":
-            # WAL: czytelnicy nie blokują zapisu i odwrotnie (np. --sync-sheets w trakcie --fetch z innego
-            # zadania harmonogramu); tryb zapisuje się w pliku bazy. Baza musi leżeć na dysku lokalnym.
-            self._conn.execute("PRAGMA journal_mode = WAL")
-            self._conn.execute("PRAGMA synchronous = NORMAL")
+        if existing_only:
+            # URI mode=rw prevents a missing/raced-away file from being recreated.
+            self._conn = sqlite3.connect(self._file.absolute().as_uri() + '?mode=rw', uri=True, isolation_level=None)
+        else:
+            self._conn = sqlite3.connect(str(db_path), isolation_level=None)
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.negative_cache_days = negative_cache_days
         self._depth = 0
         try:
-            self._migrate()
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+            if existing_only:
+                if (self._conn.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION
+                        or self.journal_mode != 'wal'):
+                    raise RuntimeError('Wymagana aktualna plikowa baza WAL')
+            else:
+                if self._file is not None:
+                    # WAL na lokalnym dysku: czytelnicy nie blokują zapisu i odwrotnie.
+                    self._conn.execute("PRAGMA journal_mode = WAL")
+                    self._conn.execute("PRAGMA synchronous = NORMAL")
+                self._migrate()
         except BaseException:
-            self._conn.close()  # nieudana kopia albo migracja – nie zostawiamy otwartego pliku
+            self._conn.close()  # także błąd konfiguracji połączenia nie zostawia otwartego pliku
             raise
 
     # --- Cykl życia ---------------------------------------------------------------

@@ -700,6 +700,58 @@ Ostatni PR wdrożeniowy musi zawierać instrukcję wszystkich tokenów/ID/sekret
 kopii, uprawnień, jednej instancji pollera, kontroli zdrowia, aktywacji i wycofania
 z opisem restartu oraz utraty danych przy odtworzeniu kopii. Ten PR niczego nie wdraża.
 
+### PR 10: fabryka polaczen webhooka WhatsApp (v15 bez zmian)
+
+`WhatsAppInboxFactory(db_path, settings, max_events=10000)` realizuje bramkę zapisu
+z PR 9/SEC-01 dla wewnętrznej aplikacji WSGI. Konstruktor przechowuje bez otwierania
+bazy przypiętą absolutną ścieżkę zwykłego lokalnego pliku, ustawienia webhooka
+i limit inboxa (1–100000). Odrzuca pustą ścieżkę, `:memory:`, URI `file:` i jawne UNC.
+Sekrety oraz ścieżka nie pojawiają się w repr fabryki. Konfigurację przyszłego
+serwera należy dostarczyć z zaufanego źródła, nie z żądania HTTP.
+
+Przy wejściu w kontekst fabryka otwiera **nowe połączenie w wątku żądania**.
+`LeadRepository(..., existing_only=True)` używa escapowanego URI SQLite `mode=rw`:
+brakująca baza nie jest tworzona, również gdy plik zniknął po utworzeniu fabryki.
+Nie tworzy katalogów, nie migruje i nie robi kopii. Wymaga dokładnie aktualnej
+wersji schematu v15 i już ustawionego WAL; starsza/nowsza/pusta baza oraz inny tryb
+dziennika są odrzucane bez migracji/konwersji. SQLite nadal może zarządzać plikami
+WAL/SHM. Tryb existing-only pozwala na zapis statusów; nie jest trybem read-only.
+
+Połączenie zachowuje kontrolę kluczy obcych, timeout blokady 5000 ms i własność
+wątku. Fabryka poza transakcją ustawia `synchronous=FULL`, następnie sprawdza
+wartość 2 i WAL przed udostępnieniem inboxa. Zamyka połączenie przy wyjściu lub
+błędzie inicjalizacji; nie tłumi błędów odbioru, COMMIT ani zamknięcia. Aplikacja
+WSGI nadal waliduje HMAC przed wywołaniem fabryki i zwraca ogólne 503 przy jej
+awarii; 200 wymaga sukcesu odbioru oraz wyjścia z kontekstu.
+
+Domyślne `LeadRepository(...)` działa dotychczasowo: inicjalizacja/migracja z kopią
+i WAL/NORMAL. Ustawienie FULL dotyczy tylko połączeń fabryki i nie zmienia NORMAL
+otwartego połączenia bota. Wspólna obsługa błędów konfiguracji połączenia domyka
+także uchwyt przy nieudanym ustawianiu PRAGMA.
+
+Testy używają tymczasowej plikowej SQLite z drugim stale otwartym połączeniem bota:
+sprawdzają FULL przed odbiorem każdego żądania, COMMIT widoczny przed odpowiedzią,
+zamknięcie połączenia, deduplikację, pełny inbox, błędy i równoległe wątki. Nie jest
+to test awarii OS/zasilania. Przyszły serwer musi użyć tej fabryki albo równoważnego
+trwałego magazynu. FULL wymaga lokalnego filesystemu/OS/dysku respektującego sync;
+odrzucenie UNC nie wykrywa wszystkich zdalnych mountów. Sprawdź to przy wdrożeniu.
+Źródła (2026-10-13): [SQLite URI](https://www.sqlite.org/uri.html),
+[SQLite synchronous](https://www.sqlite.org/pragma.html#pragma_synchronous).
+
+Brak listenera, zmian config/env, zależności lub schematu; WhatsApp nadal niedostępny
+i `whatsapp.enabled: true` nadal odrzucane przed bazą. Nie podawaj jeszcze sekretów
+Meta ani nie uruchamiaj drugiego pollera. Pozostają wymagania HTTPS/proxy/limitów/
+timeoutów/logów z PR 9, migracja przed startem serwera, opt-in/dowód numeru/rezygnacja,
+raporty/tempo/cisza nocna, worker/retencja/statusy i pilotaż.
+
+Powrót do PR 9 zachowuje v15; dotychczasowa procedura aktualizacji z kopią
+i kontrolowanym restartem pozostaje właściwa. Powrót do v14 wymaga kopii sprzed v15
+i cofa późniejsze dane. Ostatni PR wdrożeniowy nadal musi dostarczyć instrukcję
+WSZYSTKICH tokenów/API/ID/sekretów (SMTP, Meta, Telegram i opcjonalne integracje)
+oraz instalacji/aktualizacji serwera chroniącej bota: kopie/uprawnienia, jeden poller,
+kontrolowany restart, health, pilotaż/aktywacja i rollback z granicą utraty danych.
+Ten PR nie wdraża ani nie wysyła rzeczywistych wiadomości.
+
 ## E. Wycofanie wersji
 
 ```bash
