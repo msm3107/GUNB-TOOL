@@ -790,15 +790,15 @@ sprawdza rzeczywistą konfigurację, parser i logger bez nasłuchu. Domyślne za
 bota nie zmieniają się. Serwer tego profilu jest przeznaczony wyłącznie dla Linuxa.
 
 Stały profil: `127.0.0.1:8765`, dwa procesy sync, jeden wątek każdy, timeout workera
-30 s, graceful timeout 10 s, backlog 32; recycling po 1000 żądaniach + jitter do100.
-Linia żądania do4094 bajtów, 32 nagłówki po maks.4096, parser HTTP/1 Python.
+30 s, graceful timeout 10 s, backlog 32; recycling po 1000 żądaniach + jitter do 100.
+Linia żądania do 4094 bajtów, 32 nagłówki po maks. 4096, parser HTTP/1 Python.
 Brak access logu, reload/daemon/debug/control socketu i PROXY protocol. Komunikaty
 loggera nie zawierają surowych żądań, argumentów ani wyjątków. Profil nie odczytuje
 gunicorn.conf.py/opcji CLI i usuwa odziedziczone opcje/deskryptory aktywacji socketów
 przed importem serwera; nie można nimi zmienić bindu ani polityki zaufania.
 Heartbeat workerów używa `/dev/shm`; docelowy Linux musi go udostępniać usłudze.
 
-Schemat HTTPS może pochodzić tylko z `X-Forwarded-Proto: https` od127.0.0.1.
+Schemat HTTPS może pochodzić tylko z `X-Forwarded-Proto: https` od 127.0.0.1.
 Przyszły lokalny proxy musi go **nadpisywać na podstawie rzeczywistego TLS**,
 odrzucać niejednoznaczny framing, buforować/ograniczać body, wymuszać deadline/
 globalne limity i redagować query/nagłówki/body w logach. Loopback jest granicą
@@ -808,11 +808,11 @@ Timeout Gunicorna nadzoruje proces sync, nie daje absolutnej gwarancji czasu OS.
 Własne odpowiedzi błędów parsowania HTTP Gunicorna mogą odbijać błędne wejście
 klienta — publiczny proxy ma je normalizować, zachowując kod błędu. Polityka
 publicznych odpowiedzi i pełny HTTPS nie zostały sprawdzone w tym etapie.
-Źródła, sprawdzone2026-10-14: [Gunicorn settings](https://gunicorn.org/reference/settings/),
-[wydanie26.2.0](https://pypi.org/project/gunicorn/26.2.0/).
+Źródła, sprawdzone 2026-10-14: [Gunicorn settings](https://gunicorn.org/reference/settings/),
+[wydanie 26.2.0](https://pypi.org/project/gunicorn/26.2.0/).
 
 `deploy/gunb-whatsapp-webhook.service.example` to **nieinstalowany szablon**:
-osobne EnvironmentFile, User/Group gunb, check przed startem, umask0077, sandbox
+osobne EnvironmentFile, User/Group gunb, check przed startem, umask 0077, sandbox
 i ograniczenia zasobów. Nie wykonano testu prawdziwej jednostki systemd ani
 publicznego serwera. Nie kopiuj/nie włączaj szablonu na działającym serwerze teraz.
 Obecny aktualizator zatrzymuje wyłącznie bota; przed użyciem webhooka trzeba
