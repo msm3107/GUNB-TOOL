@@ -47,7 +47,11 @@
 **Interfaces:** faithful operational boundaries/template, reviewed PR; no install/start.
 
 - [x] Document env/check/private runner/limits/trust and optional dependency, disabled templates, update coordination gate, rollback and final all-token server instruction.
-- [ ] Static template/installer assertions, whole diff/privacy/gitdiffcheck, commit/push/create/attach PR.
-- [ ] Independent readonly whole-PR review exact BASE/HEAD/spec/plan/ledger/tests/CI; save report, verify/fix findings and same-reviewer material follow-up.
-- [ ] Accepted review/final exact-head CI allSUCCESS/hasMorefalse; final plan-only status commit with unchanged accepted-code check.
-- [ ] Task-done clean verifier of accepted code/full evidence/final CI; save local artifacts, hand off without merge/deploy.
+- [x] Static template/installer assertions, whole diff/privacy/gitdiffcheck, commit/push/create/attach PR.
+- [x] Independent readonly whole-PR review exact BASE/HEAD/spec/plan/ledger/tests/CI; save report, verify/fix findings and same-reviewer material follow-up.
+- [x] Accepted review/final exact-head CI allSUCCESS/hasMorefalse; final plan-only status commit with unchanged accepted-code check.
+- [x] Task-done clean verifier of accepted code/full evidence/final CI; save local artifacts, hand off without merge/deploy.
+
+## Completion evidence
+
+PR #17: whole-PR review c2cd36ae and follow-up c092a67d accepted after OPS-01 fix. Main preflight retained; redundant ExecStartPre removed, regression RED/GREEN. Full Windows1708passed8skipped28.91s, focused140passed7skipped; Linux CI validates actual Gunicorn and all Python3.10-3.14. Exact reviewed-head CI12/12SUCCESS/hasMorefalse. Final plan-only status commit requires new exact-head CI and unchanged accepted-code verifier before handoff. All reports/ledger local ignored. No server/systemd/live sends/deploy/merge; public proxy, coordinated lifecycle/retention and final ALL-token/server-guide gates remain.
