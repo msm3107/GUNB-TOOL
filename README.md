@@ -102,6 +102,7 @@ main.py (CLI)
 | `gunb_tool/whatsapp_process.py` | Wewnętrzny nadzór jednej wysyłki Meta w osobnym procesie spawn; ograniczone oczekiwanie i zachowawczy wynik przy utracie ACK. |
 | `gunb_tool/whatsapp_ingress.py` | Wewnętrzna aplikacja WSGI: ograniczone żądania, podpis przed dostępem do bazy i ACK po zatwierdzeniu zapisu inboxa. Bez listenera. |
 | `gunb_tool/whatsapp_inbox_factory.py` | Osobne połączenie istniejącej bazy na żądanie webhooka; sprawdzone WAL/FULL przed odbiorem, bez migracji podczas HTTP. |
+| `gunb_tool/whatsapp_service.py`, `whatsapp_server.py` | Osobny, opcjonalny proces webhooka: kontrola konfiguracji i istniejącej bazy, stały profil Gunicorna tylko na loopback Linuxa. |
 | `gunb_tool/email_bot.py`, `email_runtime.py`, `smtp_process.py` | Komendy `/email`, osobny wątek harmonogramu z własną bazą, retencja i nadzorowany proces SMTP. Domyślnie wyłączone. |
 | `gunb_tool/exporter.py` | Wiadomości Telegram (HTML + przyciski inline) i Discord (Markdown), raporty zbiorcze, kolejka z limitem tempa, routing segmentów, upsert do Google Sheets (`gspread`). |
 | `gunb_tool/pipeline.py` | Orkiestracja etapów i raporty. |
@@ -493,7 +494,15 @@ zachowują WAL/NORMAL. Przyszły runtime musi użyć tej fabryki lub równoważn
 potrzebny jest lokalny dysk respektujący synchronizację. Nie symulowano awarii zasilania.
 To nadal etap bez listenera i aktywacji. Szczegóły:
 [wdrożenie PR 10](docs/WDROZENIE.md#pr-10-fabryka-polaczen-webhooka-whatsapp-v15-bez-zmian).
-Kolejne etapy to serwer HTTPS/runtime, opt-in/weryfikacja numeru oraz harmonogram i wątek workera.
+PR 11 dodaje oddzielny proces `python -m gunb_tool.whatsapp_service`, z opcjonalnym
+Gunicornem przypiętym w `requirements-webhook.lock`. Wymaga osobnej jawnej flagi
+i środowiska webhooka. `--check` sprawdza konfigurację i istniejącą bazę bez nasłuchu;
+tryb serwera działa na Linuxie, wyłącznie `127.0.0.1:8765`, z dwoma workerami sync.
+Nie uruchamia Telegrama ani wysyłki WhatsApp. Szablony usługi i sekretów są nieaktywne
+i nie są instalowane przez aktualizator. **Nie uruchamiaj ich przed ukończeniem
+HTTPS/proxy, retencji i koordynacji aktualizacji obu procesów.** Szczegóły:
+[wdrożenie PR 11](docs/WDROZENIE.md#pr-11-prywatna-usluga-webhooka-linux-v15-bez-zmian).
+Kolejne etapy to publiczne HTTPS i lifecycle runtime, opt-in/weryfikacja numeru oraz harmonogram i wątek workera.
 **Powrót z PR 7/v15 do dowolnego kodu v14 wymaga kopii sprzed v15** i cofa późniejsze dane.
 Historyczne PR 4–6 zachowywały v14; ich powrót do PR 3 wymagał wyłączenia e-mail
 i usunięcia nowych kluczy konfiguracji.

@@ -752,6 +752,83 @@ oraz instalacji/aktualizacji serwera chroniącej bota: kopie/uprawnienia, jeden 
 kontrolowany restart, health, pilotaż/aktywacja i rollback z granicą utraty danych.
 Ten PR nie wdraża ani nie wysyła rzeczywistych wiadomości.
 
+### PR 11: prywatna usluga webhooka Linux (v15 bez zmian)
+
+Dodano osobny punkt wejścia `python -m gunb_tool.whatsapp_service [--check]`.
+Nie ładuje `config.yaml`, pliku `.env` bota, tokenów Telegram/SMTP ani nie uruchamia
+pollera. Domyślnie odmawia startu. Wymaga osobnego środowiska procesu:
+
+| Zmienna | Znaczenie |
+|---|---|
+| `WHATSAPP_WEBHOOK_ENABLED` | Wyłącznie literalne `true` pozwala na start/kontrolę; przykład ma `false`. |
+| `WHATSAPP_WEBHOOK_DB_PATH` | Absolutna zwykła ścieżka istniejącej, wcześniej zmigrowanej lokalnej bazy v15/WAL. |
+| `WHATSAPP_WABA_ID` | ID konta WhatsApp Business. |
+| `WHATSAPP_PHONE_NUMBER_ID` | ID numeru nadawcy Meta, nie numer telefonu. |
+| `WHATSAPP_APP_SECRET` | Sekret aplikacji do HMAC surowego webhooka. |
+| `WHATSAPP_VERIFY_TOKEN` | Oddzielny token challenge, 16–256 znaków ASCII; różny od app secret. |
+
+Odbiór statusów nie wymaga tokenu wysyłki Meta. Nie wpisuj sekretów do argumentów
+CLI, kodu ani config.yaml. Szablon `deploy/whatsapp-webhook.env.example` jest
+oddzielny od `.env` bota; rzeczywisty plik wymaga praw 600. Finalny PR wdrożeniowy
+poda kompletną instrukcję uzyskania i podłączenia danych — teraz nie aktywuj usługi.
+`whatsapp.enabled` w konfiguracji bota nadal musi pozostać `false`.
+
+Przed uruchomieniem serwera wykonywana jest kontrola przez rzeczywistą fabrykę
+existing-only/WAL/FULL, w tym dostępność kolumn inboxa. Połączenie jest zamykane
+przed forkowaniem workerów. Brak/stary/nowszy schemat, niewłaściwy dziennik,
+brak tabeli lub błąd bazy kończy start bez migracji i bez portu. `--check` robi tę
+samą kontrolę, zwraca 0 przy sukcesie, nie importuje serwera i nie otwiera socketu;
+działa także na Windowsie. Nie zastępuje testu HTTP, TLS ani kontroli żywego procesu.
+Niepoprawna/wyłączona konfiguracja lub brak opcjonalnej zależności daje kod 2,
+błąd serwera 1. Komunikaty są ogólne, bez wartości, ścieżek i tracebacków.
+
+Gunicorn **26.2.0** jest przypięty z hashem wheela w osobnym
+`requirements-webhook.lock`. Ten plik instaluje się obok dotychczasowych zależności
+przez `pip install --require-hashes -r requirements-webhook.lock` w venv wersji;
+obecny instalator bota tego nie robi. Linuxowe CI instaluje opcjonalny lock i
+sprawdza rzeczywistą konfigurację, parser i logger bez nasłuchu. Domyślne zależności
+bota nie zmieniają się. Serwer tego profilu jest przeznaczony wyłącznie dla Linuxa.
+
+Stały profil: `127.0.0.1:8765`, dwa procesy sync, jeden wątek każdy, timeout workera
+30 s, graceful timeout 10 s, backlog 32; recycling po 1000 żądaniach + jitter do100.
+Linia żądania do4094 bajtów, 32 nagłówki po maks.4096, parser HTTP/1 Python.
+Brak access logu, reload/daemon/debug/control socketu i PROXY protocol. Komunikaty
+loggera nie zawierają surowych żądań, argumentów ani wyjątków. Profil nie odczytuje
+gunicorn.conf.py/opcji CLI i usuwa odziedziczone opcje/deskryptory aktywacji socketów
+przed importem serwera; nie można nimi zmienić bindu ani polityki zaufania.
+Heartbeat workerów używa `/dev/shm`; docelowy Linux musi go udostępniać usłudze.
+
+Schemat HTTPS może pochodzić tylko z `X-Forwarded-Proto: https` od127.0.0.1.
+Przyszły lokalny proxy musi go **nadpisywać na podstawie rzeczywistego TLS**,
+odrzucać niejednoznaczny framing, buforować/ograniczać body, wymuszać deadline/
+globalne limity i redagować query/nagłówki/body w logach. Loopback jest granicą
+zaufania do innych lokalnych procesów; nie wystawiaj portu przez kontener/tunel
+ani nie używaj takiej granicy na niezaufanym współdzielonym hoście. Nadal wymagany HMAC.
+Timeout Gunicorna nadzoruje proces sync, nie daje absolutnej gwarancji czasu OS.
+Własne odpowiedzi błędów parsowania HTTP Gunicorna mogą odbijać błędne wejście
+klienta — publiczny proxy ma je normalizować, zachowując kod błędu. Polityka
+publicznych odpowiedzi i pełny HTTPS nie zostały sprawdzone w tym etapie.
+Źródła, sprawdzone2026-10-14: [Gunicorn settings](https://gunicorn.org/reference/settings/),
+[wydanie26.2.0](https://pypi.org/project/gunicorn/26.2.0/).
+
+`deploy/gunb-whatsapp-webhook.service.example` to **nieinstalowany szablon**:
+osobne EnvironmentFile, User/Group gunb, check przed startem, umask0077, sandbox
+i ograniczenia zasobów. Nie wykonano testu prawdziwej jednostki systemd ani
+publicznego serwera. Nie kopiuj/nie włączaj szablonu na działającym serwerze teraz.
+Obecny aktualizator zatrzymuje wyłącznie bota; przed użyciem webhooka trzeba
+ukończyć wspólną obsługę stop/start, backupu/restore, migracji, przełączenia wersji
+i rollbacku obu procesów. Retencja przed stałym ruchem również pozostaje bramką.
+
+Brak zmian schematu v15, komend Telegrama i wysyłki WhatsApp. Powrót do PR10 wymaga
+wyłączonej/zatrzymanej opcjonalnej usługi i dotychczasowej procedury kodu/kopii/
+kontrolowanego restartu, bez cofania schematu. Powrót do v14 wymaga kopii sprzed v15
+i cofa późniejsze dane. Pozostają publiczny proxy/lifecycle, opt-in i dowód numeru,
+rezygnacja, raporty/tempo/cisza nocna, worker/retencja/rozliczenie statusów i pilotaż.
+Ostatni PR MUSI dostarczyć instrukcję WSZYSTKICH tokenów/API/ID/sekretów (SMTP, Meta,
+Telegram i opcjonalne integracje) oraz serwera z uprawnieniami, kopią, jednym
+pollerem, skoordynowanym restartem, health/aktywacją i rollbackiem z utratą danych
+przy restore. Ten PR nie uruchamia ani nie wdraża usługi na serwerze.
+
 ## E. Wycofanie wersji
 
 ```bash

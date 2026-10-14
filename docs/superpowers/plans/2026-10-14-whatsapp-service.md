@@ -35,10 +35,10 @@
 
 **Interfaces:** build_application(environ=None) -> WSGI app; main(argv=None)->exitcode; PrivateLogMixin; server make_server(app) -> actual BaseApplication subclass with fixed profile, serve(app) calls Arbiter.run without unsafe wrapper.
 
-- [ ] Write tests for complete env/CLI/privacy/order matrix, preflight closure/signature/replay, fixed config/logger and actual POSIX adapter without bind.
-- [ ] Run RED absent modules, save evidence; implement only after valid RED.
-- [ ] Implement minimal service/server and optional pin, CI install. Verify no core runtime imports/changes and no auto configuration/credential logging.
-- [ ] Focused service+factory+ingress PASS and full pytest PASS with documented OS skips. Diff/privacy check, commit, task-done focused PASS.
+- [x] Write tests for complete env/CLI/privacy/order matrix, preflight closure/signature/replay, fixed config/logger and actual POSIX adapter without bind.
+- [x] Run RED absent modules, save evidence; implement only after valid RED.
+- [x] Implement minimal service/server and optional pin, CI install. Verify no core runtime imports/changes and no auto configuration/credential logging.
+- [x] Focused service+factory+ingress PASS and full pytest PASS with documented OS skips. Diff/privacy check, commit, task-done focused PASS.
 
 ### Task 2: Inactive service template, documentation and review
 
@@ -46,7 +46,7 @@
 
 **Interfaces:** faithful operational boundaries/template, reviewed PR; no install/start.
 
-- [ ] Document env/check/private runner/limits/trust and optional dependency, disabled templates, update coordination gate, rollback and final all-token server instruction.
+- [x] Document env/check/private runner/limits/trust and optional dependency, disabled templates, update coordination gate, rollback and final all-token server instruction.
 - [ ] Static template/installer assertions, whole diff/privacy/gitdiffcheck, commit/push/create/attach PR.
 - [ ] Independent readonly whole-PR review exact BASE/HEAD/spec/plan/ledger/tests/CI; save report, verify/fix findings and same-reviewer material follow-up.
 - [ ] Accepted review/final exact-head CI allSUCCESS/hasMorefalse; final plan-only status commit with unchanged accepted-code check.
