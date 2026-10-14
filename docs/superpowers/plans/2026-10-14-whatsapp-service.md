@@ -17,7 +17,7 @@
 - Fixed loopback127.0.0.1:8765, two sync workers, timeout30/graceful10/backlog32, limits as spec.
 - No raw query/body/args/secrets/path/traceback diagnostics or stock print-error wrapper.
 - Existing-only WAL/FULL preflight connection closed before fork; no request-time migration.
-- Check works Windows/no listener; serving Linux/UNIX only, default rejected Windows before DB.
+- Check works Windows/no listener; serving Linux only, other platforms rejected before DB.
 - Templates .example not installed/enabled, final proxy/update lifecycle/retention activation gates remain.
 - Final ALL-token/API/server guide and bot-preserving rollout remain mandatory.
 

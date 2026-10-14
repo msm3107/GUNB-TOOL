@@ -34,12 +34,14 @@ path/values/traceback. Body/HMAC-before-request-connection remains in the app.
 `--check` returns 0 only after preflight, opens no socket/imported server, does not
 prove HTTP/TLS/health/disk durability. Other config errors return 2; runtime faults
 return 1 with fixed messages. Windows supports check, serving fails with 2 before
-DB/server import. Unsupported arguments never echo their values.
+DB/server import (this profile serves on Linux only). Unsupported arguments never echo their values.
 
 ## Gunicorn profile and trust
 
 Own BaseApplication subclass; do not parse Gunicorn CLI, GUNICORN_CMD_ARGS or
-gunicorn.conf.py. Override its print-on-config-error path. Fixed profile:
+gunicorn.conf.py. Clear inherited Gunicorn defaults and FD/socket-activation variables
+before import (private service process only), preventing an inherited listener from
+bypassing the fixed bind. Override its print-on-config-error path. Fixed profile:
 bind127.0.0.1:8765, workers2, worker_class=sync, threads1, timeout30,
 graceful_timeout10, backlog32, max_requests1000+jitter100, keepalive0, HTTP1 only,
 pure Python HTTP parser, no reload/daemon/control socket/debug/spew, no access log.
@@ -50,6 +52,10 @@ must overwrite that header after real TLS. Loopback processes are a trust bounda
 do not expose port/container mapping or use on an untrusted shared host. HMAC still
 required. Gunicorn timeout is worker supervision, not an absolute OS-time guarantee;
 proxy buffering/read/write/global limits remain required before public exposure.
+Gunicorn's own HTTP parse-error responses may reflect caller-supplied malformed
+input; the future public proxy must normalize those error bodies without changing
+the error status. This PR claims private application/server diagnostics, not a
+verified public error-response policy.
 
 Use private logger mixin/subclass: discard all raw messages/args/exception traces
 and access records; fixed lifecycle/warning/error messages only, debug discarded.
