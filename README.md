@@ -502,6 +502,12 @@ Nie uruchamia Telegrama ani wysyłki WhatsApp. Szablony usługi i sekretów są 
 i nie są instalowane przez aktualizator. **Nie uruchamiaj ich przed ukończeniem
 HTTPS/proxy, retencji i koordynacji aktualizacji obu procesów.** Szczegóły:
 [wdrożenie PR 11](docs/WDROZENIE.md#pr-11-prywatna-usluga-webhooka-linux-v15-bez-zmian).
+PR 12 dodaje barierę konserwacji zarządzanej usługi webhooka: aktualizacja,
+rollback, odtwarzanie/import i końcowy eksport zatrzymują ją i wyłączają autostart
+przed zmianą wersji lub danych. Webhook pozostaje wyłączony także po sukcesie;
+`start`/`restart` dotyczą bota. Kopie online i eksport `--na-zywo` zachowują działanie.
+Brak opcjonalnej usługi nie zmienia zwykłej instalacji. To nadal etap przygotowawczy;
+[granice i odzyskiwanie](docs/WDROZENIE.md#pr-12-konserwacja-zarzadzanej-uslugi-webhooka).
 Kolejne etapy to publiczne HTTPS i lifecycle runtime, opt-in/weryfikacja numeru oraz harmonogram i wątek workera.
 **Powrót z PR 7/v15 do dowolnego kodu v14 wymaga kopii sprzed v15** i cofa późniejsze dane.
 Historyczne PR 4–6 zachowywały v14; ich powrót do PR 3 wymagał wyłączenia e-mail

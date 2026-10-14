@@ -25,6 +25,7 @@ STATE_DIR=/var/lib/gunb-tool
 CONFIG=$STATE_DIR/config.yaml
 MARKER=$STATE_DIR/PRZENIESIENIE-W-TOKU
 SERVICE=gunb-bot
+WEBHOOK_SERVICE=gunb-whatsapp-webhook.service
 HEALTH_TIMER=gunb-zdrowie.timer
 KEEP_RELEASES=3
 DEFAULT_REPO=https://github.com/msm3107/GUNB-TOOL.git
@@ -42,6 +43,28 @@ die() { printf '\n\033[1;31mBłąd:\033[0m %s\n' "$*" >&2; exit 1; }
 as_app() { runuser -u "$APP_USER" -- "$@"; }
 cleanup() { if [ -n "$STAGE" ]; then rm -rf -- "$STAGE"; fi; }
 trap cleanup EXIT
+
+# Kept identical in gunb-admin: both entry points must work standalone, also for old targets.
+quiesce_webhook() {
+    local load active
+    load=$(systemctl show --property=LoadState --value "$WEBHOOK_SERVICE" 2>/dev/null) \
+        || die "Nie można sprawdzić usługi webhooka – konserwacja przerwana."
+    active=$(systemctl show --property=ActiveState --value "$WEBHOOK_SERVICE" 2>/dev/null) \
+        || die "Nie można sprawdzić stanu webhooka – konserwacja przerwana."
+    if [ "$load" = not-found ] && [ "$active" = inactive ]; then return; fi
+    case $load in
+        loaded|masked) ;;
+        *) die "Nieznany stan usługi webhooka – konserwacja przerwana." ;;
+    esac
+    systemctl disable --quiet "$WEBHOOK_SERVICE" >/dev/null 2>&1 \
+        || die "Nie można wyłączyć autostartu webhooka – konserwacja przerwana."
+    systemctl stop "$WEBHOOK_SERVICE" >/dev/null 2>&1 \
+        || die "Nie można zatrzymać webhooka – konserwacja przerwana."
+    active=$(systemctl show --property=ActiveState --value "$WEBHOOK_SERVICE" 2>/dev/null) \
+        || die "Nie można potwierdzić zatrzymania webhooka – konserwacja przerwana."
+    [ "$active" = inactive ] || die "Webhook nie jest zatrzymany – konserwacja przerwana."
+    printf '  Webhook WhatsApp zatrzymany; autostart wyłączony. Nie zostanie wznowiony automatycznie.\n'
+}
 
 usage() {
     cat <<'EOF'
@@ -199,6 +222,7 @@ install_system_files() {  # install_system_files <katalog wersji>: jednostki sys
 
 switch_to_release() {  # zatrzymuje bota, robi kopię bazy i przełącza „current”; ustawia WAS_ACTIVE
     local previous db
+    quiesce_webhook
     previous=$(readlink -e "$APP_ROOT/current" 2>/dev/null || true)
     WAS_ACTIVE=0
     if systemctl is-active --quiet "$SERVICE"; then
@@ -422,6 +446,7 @@ rollback() {
     sudo gunb-admin odtworz <ścieżka kopii>     # obecna baza najpierw trafi do kopii 'przed-odtworzeniem'
     sudo gunb-admin wycofaj"
     fi
+    quiesce_webhook
     if systemctl is-active --quiet "$SERVICE"; then
         was_active=1
         systemctl stop "$SERVICE"

@@ -1,5 +1,6 @@
 # TEMPLATE ONLY: not installed/enabled by install.sh.
-# Do not start before HTTPS/proxy, retention and coordinated update/rollback gates.
+# Do not start before HTTPS/proxy, retention and checked resume/health gates.
+# Managed maintenance disables/stops this unit; it does not resume it automatically.
 [Unit]
 Description=GUNB private WhatsApp status webhook (loopback only)
 After=network.target
