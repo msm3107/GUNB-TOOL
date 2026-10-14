@@ -174,7 +174,7 @@ def test_fixed_profile_bounds_workers_and_trust_without_raw_logging():
                 'max_requests_jitter': 100, 'keepalive': 0, 'limit_request_line': 4094,
                 'limit_request_fields': 32, 'limit_request_field_size': 4096,
                 'forwarded_allow_ips': '127.0.0.1', 'secure_scheme_headers': {'X-FORWARDED-PROTO': 'https'},
-                'forwarder_headers': [], 'header_map': 'refuse', 'proxy_protocol': False,
+                'forwarder_headers': '', 'header_map': 'refuse', 'proxy_protocol': False,
                 'http_protocols': 'h1', 'http_parser': 'python', 'control_socket_disable': True,
                 'preload_app': True, 'reload': False, 'spew': False, 'daemon': False,
                 'accesslog': None, 'capture_output': False, 'worker_tmp_dir': '/dev/shm'}
@@ -210,6 +210,7 @@ def test_actual_gunicorn_config_ignores_environment_and_config_file(tmp_path, mo
     assert server.wsgi() is app
     assert server.cfg.bind == ['127.0.0.1:8765'] and server.cfg.workers == 2
     assert server.cfg.forwarded_allow_ips == ['127.0.0.1'] and server.cfg.accesslog is None
+    assert server.cfg.forwarder_headers == []
     assert server.cfg.logger_class is PrivateLogger and server.cfg.control_socket_disable
 
 

@@ -47,7 +47,7 @@ def server_options() -> dict:
             'max_requests_jitter': 100, 'keepalive': 0, 'limit_request_line': 4094,
             'limit_request_fields': 32, 'limit_request_field_size': 4096,
             'forwarded_allow_ips': '127.0.0.1', 'secure_scheme_headers': {'X-FORWARDED-PROTO': 'https'},
-            'forwarder_headers': [], 'header_map': 'refuse', 'proxy_protocol': False,
+            'forwarder_headers': '', 'header_map': 'refuse', 'proxy_protocol': False,
             'http_protocols': 'h1', 'http_parser': 'python', 'control_socket_disable': True,
             'preload_app': True, 'reload': False, 'spew': False, 'daemon': False,
             'accesslog': None, 'capture_output': False, 'worker_tmp_dir': '/dev/shm',
