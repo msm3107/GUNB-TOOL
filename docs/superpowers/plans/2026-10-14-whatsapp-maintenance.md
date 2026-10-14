@@ -34,9 +34,9 @@
 
 **Interfaces:** `quiesce_webhook()`: fail via die, success leaves optional managed unit inactive/disabled; both entry points self-contained. Tests source declarations only, replace systemctl and external boundaries, never run privileged commands.
 
-- [ ] Write subprocess matrix for both barriers and mutation ordering/failures, admin update/rollback/stop/restore/import/final-vs-live export; run RED for absent behavior.
-- [ ] Implement exact contract and matching helpers, preserve no-hook default and existing backup recovery. Tests assert no webhook start/enable.
-- [ ] Run focused tests and full pytest; Bash syntax and diff check; commit and task-done focused pytest PASS.
+- [x] Write subprocess matrix for both barriers and mutation ordering/failures, admin update/rollback/stop/restore/import/final-vs-live export; run RED for absent behavior.
+- [x] Implement exact contract and matching helpers, preserve no-hook default and existing backup recovery. Tests assert no webhook start/enable.
+- [x] Run focused tests and full pytest; Bash syntax and diff check; commit and task-done focused pytest PASS.
 
 ### Task 2: Operator boundaries, review and handoff
 
@@ -44,6 +44,6 @@
 
 **Interfaces:** truthful managed-maintenance documentation and reviewed PR; no activation commands offered prematurely.
 
-- [ ] Document interruption/disabled recovery, current admin vs old installers/direct CLI, one operator/no independent starts, remaining activation gates and final all-token guide.
+- [x] Document interruption/disabled recovery, current admin vs old installers/direct CLI, one operator/no independent starts, remaining activation gates and final all-token guide.
 - [ ] Verify complete diff and tests, commit/push/create/attach PR. Independent fresh whole-PR reviewer receives exact SHA/spec/plan/ledger/evidence.
 - [ ] Save local ignored report, verify/fix findings; material follow-up to same reviewer. Check exact final HEAD CI, hand off without merging/deploying.
