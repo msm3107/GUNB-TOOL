@@ -42,7 +42,7 @@
 
 ### Task 2: Inactive service template, documentation and review
 
-**Files:** create `deploy/gunb-whatsapp-webhook.service.example`, `deploy/whatsapp-webhook.env.example`; modify `README.md`, `docs/WDROZENIE.md`, plan.
+**Files:** create `deploy/gunb-whatsapp-webhook.service.example`, `deploy/whatsapp-webhook.env.example`; modify `.gitignore` (real sidecar secrets/backups), `README.md`, `docs/WDROZENIE.md`, plan.
 
 **Interfaces:** faithful operational boundaries/template, reviewed PR; no install/start.
 

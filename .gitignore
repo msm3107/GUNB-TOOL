@@ -27,6 +27,9 @@ przychodzace/
 .env
 .env.*
 !.env.example
+whatsapp-webhook.env
+whatsapp-webhook.env.*
+!whatsapp-webhook.env.example
 service_account*.json
 credentials*.json
 *-sa.json
