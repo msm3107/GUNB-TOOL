@@ -276,7 +276,7 @@ def test_package_config_import_refuses_when_current_database_engine_is_active(tm
 
     assert target_config.read_text(encoding="utf-8") == current_config_text
     assert dump(current_db) == current_db_before
-    assert not (current_db.parent / "data-from-package" / "package.sqlite").exists()
+    assert not (target_config.parent / "data-from-package" / "package.sqlite").exists()
 
 
 def rebuild(
