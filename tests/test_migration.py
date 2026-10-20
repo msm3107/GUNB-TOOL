@@ -1,17 +1,16 @@
 """Przeniesienie stanu: komputer źródłowy → pakiet → serwer (drugi katalog). Tylko tymczasowe katalogi i bazy."""
 
-import hashlib
 import json
-import os
 import sqlite3
 import stat
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-from core.instance import instance_lock
+import core.migration as migration_module
+from core.instance import instance_lock, lock_is_free
 from core.migration import (
     CONFIG_ENTRY,
     ENV_ENTRY,
@@ -26,7 +25,6 @@ from core.migration import (
 )
 from core.models import Investment
 from core.storage import SCHEMA_VERSION, LeadRepository
-from tests.test_storage import legacy_database
 
 TOKEN = "123456789:AAH-fake-token_" + "x" * 24
 WEBHOOK = "https://discord.com/api/webhooks/42/sekretny-webhook-xyz"
@@ -165,18 +163,19 @@ def test_imported_state_gets_env_without_secrets_and_keeps_an_existing_one(tmp_p
     assert (other / ".env").read_text(encoding="utf-8") == "TELEGRAM_BOT_TOKEN=juz-ustawiony\n"
 
 
-def test_final_export_and_import_refuse_while_the_bot_runs(tmp_path, source, package):
+def test_final_export_and_import_refuse_while_process_locks_are_held(tmp_path, source, package):
     with instance_lock(source.parent / "data" / "gunb-bot.lock"):
-        with pytest.raises(MigrationError, match="Bot działa"):
+        with pytest.raises(MigrationError, match="Silnik działa"):
             export_state(source, tmp_path / "out")
         assert export_state(source, tmp_path / "proba", live=True).is_file()
 
     target = tmp_path / "serwer" / "config.yaml"
     target.parent.mkdir()
     target.write_text(CONFIG, encoding="utf-8")
-    with instance_lock(target.parent / "data" / "gunb-bot.lock"):
-        with pytest.raises(MigrationError, match="Bot działa"):
-            import_state(package, target)
+    with instance_lock(target.parent / "data" / "gunb-bot.lock"), pytest.raises(
+        MigrationError, match="Silnik działa"
+    ):
+        import_state(package, target)
     assert not db_of(target).exists()
 
 
@@ -188,6 +187,44 @@ def test_import_waits_for_a_running_data_import(tmp_path, package, clock):
     repo.close()
     with pytest.raises(MigrationError, match="Trwa import"):
         import_state(package, target, replace=True)
+
+
+def test_import_refuses_an_active_engine_and_preserves_the_database(tmp_path, package, clock):
+    target = make_state(tmp_path / "serwer", clock)
+    db_path = db_of(target)
+    before = dump(db_path)
+
+    with instance_lock(db_path.parent / "gunb-engine.lock"), pytest.raises(
+        MigrationError, match="Silnik działa"
+    ):
+        import_state(package, target, replace=True)
+
+    assert dump(db_path) == before
+
+
+@pytest.mark.parametrize("operation", ["import", "restore"])
+def test_database_replacement_holds_engine_and_maintenance_locks(
+    tmp_path, package, clock, monkeypatch, operation
+):
+    target = tmp_path / operation
+    config_path = make_state(target, clock)
+    db_path = db_of(config_path)
+    backup = backup_now(config_path) if operation == "restore" else None
+    replace_database = migration_module._replace_database
+
+    def check_locks_then_replace(incoming, destination):
+        assert destination == db_path
+        for name in ("gunb-maintenance.lock", "gunb-engine.lock", "gunb-bot.lock"):
+            assert not lock_is_free(destination.parent / name)
+        return replace_database(incoming, destination)
+
+    monkeypatch.setattr(migration_module, "_replace_database", check_locks_then_replace)
+
+    if operation == "import":
+        import_state(package, config_path, replace=True)
+    else:
+        assert backup is not None
+        restore_backup(backup, config_path)
 
 
 def rebuild(

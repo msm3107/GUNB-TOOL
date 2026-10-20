@@ -16,15 +16,22 @@ import logging
 import logging.handlers
 import os
 import sys
+from collections.abc import Callable, Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Sequence
 
 from core import health
 from core.clock import local, utc_now
-from core.config import AppConfig, ConfigError, LoggingConfig, load_config, override_scope
+from core.config import (
+    AppConfig,
+    ConfigError,
+    LoggingConfig,
+    load_config,
+    override_scope,
+)
 from core.gunb_scraper import FetchQuery, GunbFormatError
 from core.http_client import HttpError, redact_url
+from core.instance import AlreadyRunning, engine_process_lock
 from core.maintenance import backup_if_due, vacuum_after_import
 from core.models import Source
 from core.pipeline import (
@@ -104,14 +111,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_USAGE
 
     if args.zdrowie:
-        return _run_health(config, ping_url=args.ping or os.environ.get("HEALTHCHECK_PING_URL"))
+        try:
+            with engine_process_lock(config.storage.db_path):
+                return _run_health(config, ping_url=args.ping or os.environ.get("HEALTHCHECK_PING_URL"))
+        except AlreadyRunning as exc:
+            print(f"Silnik nie wystartował: {exc}", file=sys.stderr)
+            return EXIT_ALREADY_RUNNING
 
     smtp = config.email.smtp
     smtp_secrets = (smtp.username, smtp.password, smtp.from_address) if smtp else ()
     setup_logging(config.logging, verbose=args.verbose, secrets=smtp_secrets)
 
     try:
-        return _run_actions(args, config)
+        with engine_process_lock(config.storage.db_path):
+            return _run_actions(args, config)
+    except AlreadyRunning as exc:
+        log.error("Silnik nie wystartował: %s", exc)
+        return EXIT_ALREADY_RUNNING
     except SchemaTooNew as exc:
         log.critical("%s", exc)
         return EXIT_USAGE

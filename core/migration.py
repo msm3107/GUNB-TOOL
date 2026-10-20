@@ -43,13 +43,20 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Sequence
 
 from .config import AppConfig, ConfigError, load_config
-from .instance import bot_lock_path, lock_is_free
+from .instance import (
+    AlreadyRunning,
+    bot_lock_path,
+    engine_lock_path,
+    instance_lock,
+    maintenance_lock_path,
+)
 from .storage import SCHEMA_VERSION
 
 FORMAT = "gunb-tool-migracja"
@@ -97,52 +104,53 @@ def export_state(config_path: Path, output_dir: Path | None = None, *, live: boo
     """
     config = _config(config_path)
     db_path = config.storage.db_path
-    if not db_path.is_file():
-        raise MigrationError(f"Nie ma bazy {db_path} – sprawdź storage.db_path w {config_path}")
-    if not live:
-        _require_stopped(config, db_path, action="końcowy eksport")
-    moment = (now or (lambda: datetime.now(timezone.utc)))()
-    output_dir = Path(output_dir) if output_dir else db_path.parent / "eksport"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = moment.strftime("%Y%m%dT%H%M%SZ")
-    package = output_dir / f"gunb-migracja-{stamp}.zip"
-    config_text = Path(config_path).read_text(encoding="utf-8")
-    _refuse_secrets(config_text, "config.yaml")
-    env_file = Path(config_path).resolve().parent / ".env"
-    env_text = sanitize_env(env_file.read_text(encoding="utf-8")) if env_file.is_file() else sanitize_env("")
+    with _maintenance_operation_locks(db_path, require_engine_idle=not live):
+        if not db_path.is_file():
+            raise MigrationError(f"Nie ma bazy {db_path} – sprawdź storage.db_path w {config_path}")
+        if not live:
+            _require_stopped(config, db_path, action="końcowy eksport")
+        moment = (now or (lambda: datetime.now(timezone.utc)))()
+        output_dir = Path(output_dir) if output_dir else db_path.parent / "eksport"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stamp = moment.strftime("%Y%m%dT%H%M%SZ")
+        package = output_dir / f"gunb-migracja-{stamp}.zip"
+        config_text = Path(config_path).read_text(encoding="utf-8")
+        _refuse_secrets(config_text, "config.yaml")
+        env_file = Path(config_path).resolve().parent / ".env"
+        env_text = sanitize_env(env_file.read_text(encoding="utf-8")) if env_file.is_file() else sanitize_env("")
 
-    with tempfile.TemporaryDirectory(dir=output_dir, prefix=".eksport-") as work:
-        snapshot = Path(work) / db_path.name
-        _backup_file(db_path, snapshot)
-        schema, counts = _check_database(snapshot)
-        db_entry = f"{DB_DIR}/{db_path.name}"
-        files = {db_entry: snapshot}
-        texts = {CONFIG_ENTRY: config_text, ENV_ENTRY: env_text}
-        manifest = {
-            "format": FORMAT,
-            "format_version": FORMAT_VERSION,
-            "created_at": moment.astimezone(timezone.utc).isoformat(timespec="seconds"),
-            "app": _app_version(),
-            "schema_version": schema,
-            "source": {"hostname": socket.gethostname(), "platform": platform.platform(), "db_file": db_path.name},
-            "secrets_included": False,
-            "counts": counts,
-            "files": [_file_entry(db_entry, snapshot, "baza")] + [
-                {"path": name, "role": "konfiguracja", "size": len(text.encode("utf-8")),
-                 "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()} for name, text in texts.items()
-            ],
-        }
-        partial = package.with_name(package.name + ".part")
-        _private_file(partial)
-        with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            for name, path in files.items():
-                archive.write(path, name)
-            for name, text in texts.items():
-                archive.writestr(name, text)
-            archive.writestr(MANIFEST, json.dumps(manifest, ensure_ascii=False, indent=2))
-        verify_package(partial)  # zanim oddamy pakiet – sprawdzamy go tak, jak zrobi to import
-        os.replace(partial, package)
-    return package
+        with tempfile.TemporaryDirectory(dir=output_dir, prefix=".eksport-") as work:
+            snapshot = Path(work) / db_path.name
+            _backup_file(db_path, snapshot)
+            schema, counts = _check_database(snapshot)
+            db_entry = f"{DB_DIR}/{db_path.name}"
+            files = {db_entry: snapshot}
+            texts = {CONFIG_ENTRY: config_text, ENV_ENTRY: env_text}
+            manifest = {
+                "format": FORMAT,
+                "format_version": FORMAT_VERSION,
+                "created_at": moment.astimezone(timezone.utc).isoformat(timespec="seconds"),
+                "app": _app_version(),
+                "schema_version": schema,
+                "source": {"hostname": socket.gethostname(), "platform": platform.platform(), "db_file": db_path.name},
+                "secrets_included": False,
+                "counts": counts,
+                "files": [_file_entry(db_entry, snapshot, "baza")] + [
+                    {"path": name, "role": "konfiguracja", "size": len(text.encode("utf-8")),
+                     "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()} for name, text in texts.items()
+                ],
+            }
+            partial = package.with_name(package.name + ".part")
+            _private_file(partial)
+            with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+                for name, path in files.items():
+                    archive.write(path, name)
+                for name, text in texts.items():
+                    archive.writestr(name, text)
+                archive.writestr(MANIFEST, json.dumps(manifest, ensure_ascii=False, indent=2))
+            verify_package(partial)  # zanim oddamy pakiet – sprawdzamy go tak, jak zrobi to import
+            os.replace(partial, package)
+        return package
 
 
 def sanitize_env(text: str) -> str:
@@ -246,46 +254,49 @@ def import_state(package: Path, config_path: Path, *, replace: bool = False,
                 _write_private_text(probe, archive.read(CONFIG_ENTRY).decode("utf-8"))
             config = _config(probe)
             db_path = config.storage.db_path
-            _require_stopped(config, db_path, action="import")
-            if db_path.exists() and not replace:
-                raise MigrationError(
-                    f"Baza {db_path} już istnieje – nie nadpisuję jej po cichu. Jeśli chcesz ją zastąpić danymi "
-                    "z pakietu, dodaj --zastap (obecna baza trafi najpierw do kopii).")
-            info = archive.getinfo(_db_entry(manifest))
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            _check_free_space(db_path.parent, info.file_size)
-            # od tej chwili zmieniamy pliki – kontrole za nami
-            replaced_backup = _backup_existing(config, db_path, f"przed-importem-{stamp}") if db_path.exists() else None
-            incoming = db_path.with_name(db_path.name + ".import.part")
-            _extract(archive, info, incoming)
-        if use_package_config:
-            if config_path.exists():
-                shutil.copy2(config_path, config_path.with_name(f"{config_path.name}.przed-importem-{stamp}"))
-            os.replace(probe, config_path)
-        committed = True
-        env_file = state_dir / ".env"
-        if not env_file.exists():
-            _write_private_text(env_file, package_env)
-        _replace_database(incoming, db_path)
+            with _maintenance_operation_locks(db_path, require_engine_idle=True):
+                _require_stopped(config, db_path, action="import")
+                if db_path.exists() and not replace:
+                    raise MigrationError(
+                        f"Baza {db_path} już istnieje – nie nadpisuję jej po cichu. Jeśli chcesz ją zastąpić danymi "
+                        "z pakietu, dodaj --zastap (obecna baza trafi najpierw do kopii).")
+                info = archive.getinfo(_db_entry(manifest))
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                _check_free_space(db_path.parent, info.file_size)
+                # od tej chwili zmieniamy pliki – kontrole za nami
+                replaced_backup = _backup_existing(config, db_path, f"przed-importem-{stamp}") if db_path.exists() else None
+                incoming = db_path.with_name(db_path.name + ".import.part")
+                _extract(archive, info, incoming)
+                if use_package_config:
+                    if config_path.exists():
+                        shutil.copy2(config_path, config_path.with_name(f"{config_path.name}.przed-importem-{stamp}"))
+                    os.replace(probe, config_path)
+                committed = True
+                env_file = state_dir / ".env"
+                if not env_file.exists():
+                    _write_private_text(env_file, package_env)
+                _replace_database(incoming, db_path)
+                schema, counts = _check_database(db_path)
+                if schema != manifest["schema_version"] or counts != manifest["counts"]:
+                    raise MigrationError("Po imporcie baza nie zgadza się z manifestem – przywróć kopię "
+                                         f"{replaced_backup or '(brak – baza była nowa)'}")
+                return ImportResult(db_path, replaced_backup, schema, counts)
     finally:
         if use_package_config and not committed:
             probe.unlink(missing_ok=True)
-    schema, counts = _check_database(db_path)
-    if schema != manifest["schema_version"] or counts != manifest["counts"]:
-        raise MigrationError("Po imporcie baza nie zgadza się z manifestem – przywróć kopię "
-                             f"{replaced_backup or '(brak – baza była nowa)'}")
-    return ImportResult(db_path, replaced_backup, schema, counts)
 
 
 # === Kopia i odtworzenie ==============================================================================
 
 def backup_now(config_path: Path, *, label: str = "reczna", now: Callable[[], datetime] | None = None) -> Path:
-    """Spójna kopia bazy na żądanie (np. przed aktualizacją) – działa także przy pracującym bocie."""
+    """Spójna kopia bazy na żądanie (np. przed aktualizacją) – działa także przy pracującym silniku."""
     config = _config(config_path)
-    if not config.storage.db_path.is_file():
-        raise MigrationError(f"Nie ma bazy {config.storage.db_path}")
+    db_path = config.storage.db_path
     stamp = (now or (lambda: datetime.now(timezone.utc)))().strftime("%Y%m%dT%H%M%SZ")
-    return _backup_existing(config, config.storage.db_path, f"{label}-{stamp}")
+    with _maintenance_operation_locks(db_path, require_engine_idle=False):
+        if not db_path.is_file():
+            raise MigrationError(f"Nie ma bazy {db_path}")
+        return _backup_existing(config, db_path, f"{label}-{stamp}")
 
 
 def restore_backup(backup: Path, config_path: Path, *, now: Callable[[], datetime] | None = None) -> Path | None:
@@ -300,14 +311,15 @@ def restore_backup(backup: Path, config_path: Path, *, now: Callable[[], datetim
                              "wróć do wersji aplikacji, która go obsługuje")
     config = _config(config_path)
     db_path = config.storage.db_path
-    _require_stopped(config, db_path, action="odtworzenie kopii")
-    stamp = (now or (lambda: datetime.now(timezone.utc)))().strftime("%Y%m%dT%H%M%SZ")
-    replaced = _backup_existing(config, db_path, f"przed-odtworzeniem-{stamp}") if db_path.exists() else None
-    incoming = db_path.with_name(db_path.name + ".odtworzenie.part")
-    _backup_file(backup, incoming)
-    _replace_database(incoming, db_path)
-    _check_database(db_path)
-    return replaced
+    with _maintenance_operation_locks(db_path, require_engine_idle=True):
+        _require_stopped(config, db_path, action="odtworzenie kopii")
+        stamp = (now or (lambda: datetime.now(timezone.utc)))().strftime("%Y%m%dT%H%M%SZ")
+        replaced = _backup_existing(config, db_path, f"przed-odtworzeniem-{stamp}") if db_path.exists() else None
+        incoming = db_path.with_name(db_path.name + ".odtworzenie.part")
+        _backup_file(backup, incoming)
+        _replace_database(incoming, db_path)
+        _check_database(db_path)
+        return replaced
 
 
 # === Wewnętrzne =========================================================================================
@@ -319,10 +331,27 @@ def _config(config_path: Path) -> AppConfig:
         raise MigrationError(f"Konfiguracja {config_path}: {exc}") from None
 
 
+@contextmanager
+def _maintenance_operation_locks(db_path: Path, *, require_engine_idle: bool) -> Iterator[None]:
+    """Blokuje wymianę bazy oraz inne operacje serwisowe bez trzymania blokady SQLite.
+
+    Operacje offline rezerwują blokady silnika i zgodności ze starszymi wydaniami przez cały czas od
+    kontroli do walidacji bazy po podmianie. Kopia i eksport na żywo rezerwują tylko blokadę serwisową,
+    a spójność odczytu zapewnia im API kopii SQLite.
+    """
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(instance_lock(maintenance_lock_path(db_path)))
+            if require_engine_idle:
+                locks.enter_context(instance_lock(engine_lock_path(db_path)))
+                locks.enter_context(instance_lock(bot_lock_path(db_path)))
+        except AlreadyRunning as exc:
+            raise MigrationError(f"Silnik działa lub inny proces korzysta z bazy: {exc}") from None
+        yield
+
+
 def _require_stopped(config: AppConfig, db_path: Path, *, action: str) -> None:
-    """Bot i inne procesy zapisujące muszą stać: blokada instancji, usługa systemd, import, zapis do bazy."""
-    if not lock_is_free(bot_lock_path(db_path)):
-        raise MigrationError(f"Bot działa na tych danych – zatrzymaj go przed operacją: {action}")
+    """Silnik i inne procesy muszą stać; blokady procesów są trzymane przez operację wywołującą."""
     if shutil.which("systemctl"):
         active = subprocess.run(["systemctl", "is-active", "--quiet", SERVICE], check=False)
         if active.returncode == 0:
@@ -503,7 +532,7 @@ def _app_version() -> dict:
     version = "?"
     pyproject = root / "pyproject.toml"
     if pyproject.is_file():
-        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
         version = match.group(1) if match else version
     commit = None
     if shutil.which("git") and (root / ".git").exists():

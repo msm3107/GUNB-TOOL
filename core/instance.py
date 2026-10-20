@@ -1,61 +1,76 @@
-"""Jedna instancja bota na jednych danych: blokada pliku obok bazy (``gunb-bot.lock``).
+"""Blokady procesów pracujących na jednej bazie SQLite.
 
-Blokadę trzyma system operacyjny – znika razem z procesem, także po ``kill -9`` czy awarii zasilania,
-więc nie trzeba jej ręcznie „czyścić”. Linux: ``flock``; Windows: ``msvcrt.locking`` na bajcie daleko za
-początkiem pliku (blokady Windows są obowiązkowe – PID zapisany na początku zostaje czytelny).
-
-Blokada chroni przed drugim procesem na tym samym serwerze. Drugi bot z tym samym tokenem na innej
-maszynie wykrywa ``LeadBot`` po konflikcie 409 z Telegrama.
+Blokadę trzyma system operacyjny i zwalnia ją po zakończeniu procesu, także po awarii. Linux używa
+``flock``, a Windows ``msvcrt.locking``. ``gunb-bot.lock`` pozostaje jako blokada zgodności ze starszymi
+wydaniami, które korzystały z tej nazwy.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, Iterator
+from typing import IO
 
 _WINDOWS_LOCK_OFFSET = 1 << 20
-LOCK_NAME = "gunb-bot.lock"
+ENGINE_LOCK_NAME = "gunb-engine.lock"
+MAINTENANCE_LOCK_NAME = "gunb-maintenance.lock"
+LEGACY_BOT_LOCK_NAME = "gunb-bot.lock"
 
 
 class AlreadyRunning(RuntimeError):
-    """Inny proces bota pracuje już na tych danych."""
+    """Inny proces korzysta już z tych danych."""
+
+
+def engine_lock_path(db_path: str | Path) -> Path:
+    """Blokada wszystkich procesów silnika korzystających z tej bazy."""
+    return Path(db_path).parent / ENGINE_LOCK_NAME
+
+
+def maintenance_lock_path(db_path: str | Path) -> Path:
+    """Blokada wzajemna dla eksportu, kopii, importu i odtwarzania bazy."""
+    return Path(db_path).parent / MAINTENANCE_LOCK_NAME
 
 
 def bot_lock_path(db_path: str | Path) -> Path:
-    """Blokada bota – obok bazy, więc dotyczy tych samych danych (bot, eksport, kontrola zdrowia)."""
-    return Path(db_path).parent / LOCK_NAME
+    """Ścieżka blokady używanej przez starsze wydania aplikacji."""
+    return Path(db_path).parent / LEGACY_BOT_LOCK_NAME
+
+
+@contextmanager
+def engine_process_lock(db_path: str | Path) -> Iterator[None]:
+    """Chroni operacje silnika i zachowuje wyłączność ze starszymi wydaniami."""
+    with instance_lock(engine_lock_path(db_path)), instance_lock(bot_lock_path(db_path)):
+        yield
 
 
 @contextmanager
 def instance_lock(path: str | Path) -> Iterator[None]:
-    """Trzyma blokadę przez cały blok; drugi chętny dostaje :class:`AlreadyRunning` od razu (bez czekania)."""
+    """Trzyma blokadę przez cały blok; drugi proces dostaje :class:`AlreadyRunning` bez czekania."""
     lock_path = Path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(lock_path, "a+", encoding="utf-8")
-    try:
-        _lock(handle)
-    except OSError:
-        handle.close()
-        holder = holder_pid(lock_path)
-        raise AlreadyRunning(f"na tych danych działa już inny proces bota (PID {holder or '?'}, blokada {lock_path})")
-    try:
-        handle.seek(0)
-        handle.truncate()
-        handle.write(f"{os.getpid()}\n")
-        handle.flush()
-        yield
-    finally:
+    with open(lock_path, "a+", encoding="utf-8") as handle:
         try:
-            _unlock(handle)
+            _lock(handle)
+        except OSError:
+            holder = holder_pid(lock_path)
+            raise AlreadyRunning(
+                f"na tych danych działa już inny proces (PID {holder or '?'}, blokada {lock_path})"
+            ) from None
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"{os.getpid()}\n")
+            handle.flush()
+            yield
         finally:
-            handle.close()
+            _unlock(handle)
 
 
 def lock_is_free(path: str | Path) -> bool:
-    """Czy nikt nie trzyma blokady (np. przed importem danych migracji albo w kontroli zdrowia)."""
+    """Czy nikt nie trzyma blokady."""
     try:
         with instance_lock(path):
             return True
