@@ -3,9 +3,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from gunb_tool.geocoding_uldk import GeocodeResult, GeoPrecision
-from gunb_tool.models import Investment
-from gunb_tool.storage import ChangeType, LeadRepository
+from core.geocoding_uldk import GeocodeResult, GeoPrecision
+from core.models import Investment
+from core.storage import ChangeType, LeadRepository
 
 
 class Clock:
@@ -254,7 +254,7 @@ def test_memory_database_has_no_wal(repo):
 
 def test_version_1_database_is_migrated_with_segment_column(tmp_path, clock):
     import sqlite3
-    from gunb_tool import storage
+    from core import storage
 
     path = tmp_path / "v1.sqlite"
     legacy = sqlite3.connect(path)
@@ -279,7 +279,7 @@ def test_version_1_database_is_migrated_with_segment_column(tmp_path, clock):
 
 def test_version_2_database_is_migrated_to_bot_schema(tmp_path, clock):
     import sqlite3
-    from gunb_tool import storage
+    from core import storage
 
     path = tmp_path / "v2.sqlite"
     legacy = sqlite3.connect(path)
@@ -306,7 +306,7 @@ def test_version_2_database_is_migrated_to_bot_schema(tmp_path, clock):
 
 def test_version_3_database_gets_contact_columns(tmp_path, clock):
     import sqlite3
-    from gunb_tool import storage
+    from core import storage
 
     path = tmp_path / "v3.sqlite"
     legacy = sqlite3.connect(path)
@@ -331,7 +331,7 @@ def test_version_3_database_gets_contact_columns(tmp_path, clock):
 def legacy_database(path, version: int):
     """Baza w schemacie ``version`` – taka, jaką zostawił kod sprzed aktualizacji (połączenie otwarte)."""
     import sqlite3
-    from gunb_tool import storage
+    from core import storage
 
     conn = sqlite3.connect(path)
     for number, step in enumerate(storage._MIGRATIONS[:version], start=1):
@@ -345,8 +345,6 @@ def legacy_database(path, version: int):
 
 
 def test_version_7_job_times_move_to_utc_and_telegram_offset_stays(tmp_path, clock):
-    from gunb_tool.bot_store import BotStore
-
     path = tmp_path / "v7.sqlite"
     legacy = legacy_database(path, 7)
     legacy.executemany("INSERT INTO bot_jobs (nazwa, ostatnio) VALUES (?, ?)", [
@@ -355,18 +353,16 @@ def test_version_7_job_times_move_to_utc_and_telegram_offset_stays(tmp_path, clo
     legacy.close()
 
     with LeadRepository(path, now=clock) as repo:
-        store = BotStore(repo)
-        # stary zapis to czas lokalny serwera, na którym działał bot – ten sam, na którym idzie migracja
-        assert store.job_time("raport_rano") == datetime(2026, 9, 29, 7, 0, 5).astimezone(timezone.utc)
-        assert store.job_time("zepsuty") is None
-        assert store.job_last_run("telegram_offset") == "123456"
-    with LeadRepository(path, now=clock) as again:  # ponowny start po migracji
-        assert BotStore(again).job_time("raport_rano") is not None
+        rows = dict(repo.connection.execute("SELECT nazwa, ostatnio FROM zadania").fetchall())
+        assert rows["raport_rano"] == datetime(2026, 9, 29, 7, 0, 5).astimezone(timezone.utc).isoformat()
+        assert "telegram_offset" not in rows
+        assert repo.connection.execute("SELECT ostatnio FROM bot_jobs WHERE nazwa = 'telegram_offset'").fetchone()[0] == "123456"
+        assert rows.get("zepsuty") is None
 
 
 def test_failed_migration_step_is_rolled_back_whole(tmp_path, monkeypatch):
     import sqlite3
-    from gunb_tool import storage
+    from core import storage
 
     def broken(conn, start):
         conn.execute("ALTER TABLE bot_users ADD COLUMN proba TEXT")
@@ -403,7 +399,7 @@ def test_import_lease_is_exclusive_until_released_or_expired(repo, clock):
 
 def test_version_6_lead_states_become_independent_flags(tmp_path, clock):
     import sqlite3
-    from gunb_tool import storage
+    from core import storage
 
     path = tmp_path / "v6.sqlite"
     legacy = sqlite3.connect(path)
@@ -420,14 +416,12 @@ def test_version_6_lead_states_become_independent_flags(tmp_path, clock):
     legacy.close()
 
     with LeadRepository(path, now=clock) as repo:
-        from gunb_tool.bot_store import BotStore, LeadFlags
-        store = BotStore(repo)
-        assert store.lead_flags(1, "L/1") == LeadFlags(saved=True)
-        assert store.lead_flags(1, "L/2") == LeadFlags(reviewed=True)
-        assert store.lead_flags(1, "L/3") == LeadFlags(hidden=True)
-        store.set_lead_flags(1, "L/1", reviewed=True)
-        # stary kod czyta nadal kolumnę „stan” – dostaje wartość pochodną
-        assert repo.connection.execute("SELECT stan FROM user_leads WHERE id_sprawy = 'L/1'").fetchone()[0] == "zapisany"
+        row1 = repo.connection.execute("SELECT zapisany, przejrzany, ukryty FROM user_leads WHERE id_sprawy = 'L/1'").fetchone()
+        assert tuple(row1) == (1, 0, 0)
+        row2 = repo.connection.execute("SELECT zapisany, przejrzany, ukryty FROM user_leads WHERE id_sprawy = 'L/2'").fetchone()
+        assert tuple(row2) == (0, 1, 0)
+        row3 = repo.connection.execute("SELECT zapisany, przejrzany, ukryty FROM user_leads WHERE id_sprawy = 'L/3'").fetchone()
+        assert tuple(row3) == (0, 0, 1)
     with LeadRepository(path, now=clock) as again:  # ponowny start po migracji
         assert again.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
 
@@ -525,7 +519,7 @@ def test_code_older_than_the_database_refuses_to_run(tmp_path, clock):
     """Po wycofaniu samego kodu (bez bazy) stary program nie może pracować na nieznanym mu schemacie."""
     import sqlite3
 
-    from gunb_tool.storage import SCHEMA_VERSION, SchemaTooNew
+    from core.storage import SCHEMA_VERSION, SchemaTooNew
 
     path = tmp_path / "baza.sqlite"
     LeadRepository(path, now=clock).close()

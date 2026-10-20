@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from gunb_tool.config import ConfigError, load_config
-from gunb_tool.models import Source
+from core.config import ConfigError, load_config
+from core.models import Source
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

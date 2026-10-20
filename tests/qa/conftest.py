@@ -22,18 +22,15 @@ import pytest
 import requests
 import responses
 
-from gunb_tool.config import HttpConfig
-from gunb_tool.http_client import ResilientHttpClient
-from gunb_tool.models import Investment
-from gunb_tool.storage import LeadRepository
-from gunb_tool.telegram_api import TelegramApi
+from core.config import HttpConfig
+from core.http_client import ResilientHttpClient
+from core.models import Investment
+from core.storage import LeadRepository
 from tests.gunb_fixtures import POZWOLENIA_HEADER, pozwolenie
 
 GUNB_BASE = "https://gunb.test/pliki_pobranie/"
 GUNB_OPOLSKIE_ZIP = GUNB_BASE + "wynik_opolskie.zip"
 ULDK_URL = "https://uldk.test/"
-BOT_TOKEN = "123456:QA-TOKEN"
-TELEGRAM_SEND = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
 
 class FakeClock:
@@ -150,25 +147,3 @@ def make_lead() -> Callable[..., Investment]:
         base.update(overrides)
         return Investment(**base)
     return build
-
-
-@pytest.fixture
-def telegram_api(make_http, sleep, clock) -> TelegramApi:
-    """Prawdziwy klient Bot API na zamockowanym transporcie (bez bezpiecznika – jak w pętli bota)."""
-    return TelegramApi(make_http(circuit_breaker_failures=0), BOT_TOKEN, sleep=sleep, clock=clock)
-
-
-def telegram_ok(message_id: int = 1) -> dict[str, Any]:
-    return {"ok": True, "result": {"message_id": message_id, "chat": {"id": 0}, "date": 0}}
-
-
-def telegram_error(code: int, description: str, **parameters: Any) -> dict[str, Any]:
-    body: dict[str, Any] = {"ok": False, "error_code": code, "description": description}
-    if parameters:
-        body["parameters"] = parameters
-    return body
-
-
-def sent_payloads(mock: responses.RequestsMock, url: str = TELEGRAM_SEND) -> list[dict[str, Any]]:
-    """Treści (JSON) wszystkich zapytań wysłanych pod ``url`` – w kolejności wysyłki."""
-    return [json.loads(call.request.body) for call in mock.calls if call.request.url == url]

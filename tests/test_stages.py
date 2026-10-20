@@ -4,8 +4,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from gunb_tool.models import Investment
-from gunb_tool.stages import TRADES, get_trade, is_due, stage_window
+from core.models import Investment
+from core.stages import TRADES, get_trade, is_due, stage_window
 
 TODAY = date(2026, 9, 29)
 

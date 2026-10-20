@@ -2,14 +2,13 @@ from datetime import date, timedelta
 
 import pytest
 
-from gunb_tool.config import FilterConfig, GunbConfig
-from gunb_tool.data_filter import LeadFilter
-from gunb_tool.exporter import NotificationError, SheetsSyncResult
-from gunb_tool.geocoding_uldk import GeocodeResult, GeoPrecision
-from gunb_tool.gunb_scraper import FetchQuery, Page
-from gunb_tool.models import GunbCase, Investment, Parcel, Source, Status
-from gunb_tool.pipeline import IMPORT_LEASE, ImportSkipped, LeadPipeline, build_query, import_lease
-from gunb_tool.storage import LeadRepository
+from core.config import FilterConfig, GunbConfig
+from core.data_filter import LeadFilter
+from core.geocoding_uldk import GeocodeResult, GeoPrecision
+from core.gunb_scraper import FetchQuery, Page
+from core.models import GunbCase, Investment, Parcel, Source, Status
+from core.pipeline import IMPORT_LEASE, ImportSkipped, LeadPipeline, build_query, import_lease
+from core.storage import LeadRepository
 
 
 def gunb_case(id_sprawy: str, description: str = "Budowa budynku mieszkalnego jednorodzinnego",
@@ -64,26 +63,6 @@ class FakeGeocoder:
             region_id=parcels[0].obreb_id, voivodeship="opolskie", county="powiat nyski", commune="Nysa",
             google_maps_url="https://maps.test/50.47,17.33", geoportal_url="https://geoportal.test/p",
         )
-
-
-class FakeNotifier:
-    """Notyfikator zapamiętujący wiadomości; ``fail_on`` = numery prób, które mają się nie udać ("*" = wszystkie)."""
-
-    def __init__(self, channel="telegram", fail_on=(), routes=None):
-        self.channel = channel
-        self.sent = []
-        self.attempts = 0
-        self.fail_on = set(fail_on)
-        self.routes = routes or {}
-
-    def destination(self, segment):
-        return self.routes.get(segment, "czat-domyslny")
-
-    def send(self, message, destination=None):
-        attempt, self.attempts = self.attempts, self.attempts + 1
-        if "*" in self.fail_on or attempt in self.fail_on:
-            raise NotificationError("odrzucone")
-        self.sent.append((destination, message))
 
 
 @pytest.fixture
@@ -204,96 +183,6 @@ def seed(repo, count=3, segment=None):
                                lat=50.0, lon=17.0, google_maps_url="https://www.google.com/maps?q=50.000000,17.000000"))
 
 
-def test_notify_sends_individual_messages_with_buttons_and_marks_leads(repo):
-    seed(repo)
-    notifier = FakeNotifier()
-    report = make_pipeline(repo, []).notify(notifier, limit=50, max_age_days=14, digest_threshold=10)
-
-    assert (report.messages, report.leads, report.digests, report.failed) == (3, 3, 0, 0)
-    assert all(msg.text.startswith("🏗️ <b>NOWA INWESTYCJA</b>") for _, msg in notifier.sent)
-    assert all(msg.buttons[0][0] == "📍 Otwórz w Google Maps" for _, msg in notifier.sent)
-    assert repo.pending_notifications("telegram", limit=10) == []
-    assert repo.get("L/x/0").czy_wyslano is True
-
-
-def test_notify_sends_digest_instead_of_spam_above_threshold(repo):
-    seed(repo, count=12)
-    notifier = FakeNotifier()
-    report = make_pipeline(repo, []).notify(notifier, limit=50, max_age_days=14, digest_threshold=10)
-
-    assert report.digests == 1
-    assert report.leads == 12
-    assert report.messages == len(notifier.sent) < 12
-    assert notifier.sent[0][1].text.startswith("📊 <b>Raport GUNB</b> · 12 inwestycji")
-    assert repo.pending_notifications("telegram", limit=50) == []
-
-
-def test_notify_routes_segments_to_their_destinations(repo):
-    seed(repo, count=2, segment="domki")
-    seed(repo, count=1, segment="duze")
-    notifier = FakeNotifier(routes={"domki": "czat-domki"})
-
-    report = make_pipeline(repo, []).notify(notifier, limit=50, max_age_days=14, digest_threshold=1)
-
-    destinations = [destination for destination, _ in notifier.sent]
-    assert destinations == ["czat-domki", "czat-domyslny"]      # domki: raport (2 > 1), duze: pojedyncza
-    assert notifier.sent[0][1].text.startswith("📊 <b>Raport GUNB</b> · 2 inwestycje")
-    assert report.digests == 1 and report.leads == 3
-
-
-def test_notify_dry_run_prints_without_marking(repo):
-    seed(repo, count=1)
-    printed = []
-    report = make_pipeline(repo, []).notify(
-        FakeNotifier("discord"), limit=10, max_age_days=14, dry_run=True, output=printed.append
-    )
-    assert report.messages == 1 and report.dry_run
-    assert any(line.startswith("🏗️ **NOWA INWESTYCJA**") for line in printed)
-    assert len(repo.pending_notifications("discord", limit=10)) == 1
-
-
-def test_notify_respects_limit(repo):
-    seed(repo, count=3)
-    notifier = FakeNotifier()
-    make_pipeline(repo, []).notify(notifier, limit=2, max_age_days=14)
-    assert len(notifier.sent) == 2
-    assert len(repo.pending_notifications("telegram", limit=10)) == 1
-
-
-def test_notify_skips_single_failure_and_aborts_after_consecutive_failures(repo):
-    seed(repo, count=3)
-    flaky = FakeNotifier(fail_on={0})
-    report = make_pipeline(repo, []).notify(flaky, limit=10, max_age_days=14)
-    assert (report.messages, report.failed) == (2, 1)
-    assert len(repo.pending_notifications("telegram", limit=10)) == 1  # odrzucony lead czeka w kolejce
-
-    broken = FakeNotifier("discord", fail_on={"*"})
-    report = make_pipeline(repo, []).notify(broken, limit=10, max_age_days=14, max_failures=2)
-    assert (report.messages, report.failed) == (0, 2)
-    assert report.aborted
-
-
-# --- sheets i zapytanie ----------------------------------------------------------------------
-
-class FakeExporter:
-    def __init__(self):
-        self.batches = []
-
-    def export(self, investments):
-        self.batches.append([i.id_sprawy for i in investments])
-        return SheetsSyncResult(0, len(investments))
-
-
-def test_sync_sheets_exports_pending_and_marks_synced(repo):
-    seed(repo, count=2)
-    exporter = FakeExporter()
-    pipeline = make_pipeline(repo, [])
-
-    assert pipeline.sync_sheets(exporter) == SheetsSyncResult(0, 2)
-    assert pipeline.sync_sheets(exporter) == SheetsSyncResult(0, 0)
-    assert len(exporter.batches) == 1
-
-
 def test_build_query_uses_lookback_window_or_explicit_dates():
     cfg = GunbConfig(voivodeships=("16",), powiats=("1607",), lookback_days=60, date_field="wplyw",
                      sources=(Source.POZWOLENIA, Source.ZGLOSZENIA))
@@ -312,8 +201,8 @@ def test_build_query_uses_lookback_window_or_explicit_dates():
 
 
 def test_apply_geocode_stores_parcel_id_resolved_by_uldk():
-    from gunb_tool.models import Investment
-    from gunb_tool.pipeline import apply_geocode
+    from core.models import Investment
+    from core.pipeline import apply_geocode
     investment = Investment(id_sprawy="X/1", zrodlo="pozwolenia", status="decyzja", teryt_dzialki="302105_5.0024.57/52")
     apply_geocode(investment, GeocodeResult(
         lat=52.41, lon=17.23, precision=GeoPrecision.PARCEL, parcel_id="302108_5.0024.57/52",

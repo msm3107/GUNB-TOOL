@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from gunb_tool.geocoding_uldk import (
+from core.geocoding_uldk import (
     GeoPrecision,
     MemoryGeocodeCache,
     UldkClient,
@@ -18,8 +18,8 @@ from gunb_tool.geocoding_uldk import (
     wkt_centroid,
     wkt_srid,
 )
-from gunb_tool.geocoding_uldk import GeocodeResult
-from gunb_tool.models import Parcel
+from core.geocoding_uldk import GeocodeResult
+from core.models import Parcel
 from tests.fakes import FakeResponse, FakeTime, make_client
 
 SQUARE_WKT = "SRID=4326;POLYGON((17.000 51.000,17.002 51.000,17.002 51.002,17.000 51.002,17.000 51.000))"

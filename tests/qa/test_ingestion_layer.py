@@ -9,13 +9,13 @@ import pytest
 import responses
 
 import main
-from gunb_tool import gunb_scraper
-from gunb_tool.config import FilterConfig
-from gunb_tool.contacts import split_contact
-from gunb_tool.data_filter import LeadFilter
-from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError, parse_archive
-from gunb_tool.models import Source
-from gunb_tool.storage import LeadRepository
+from core import gunb_scraper
+from core.config import FilterConfig
+from core.contacts import split_contact
+from core.data_filter import LeadFilter
+from core.gunb_scraper import FetchQuery, GunbFormatError, parse_archive
+from core.models import Source
+from core.storage import LeadRepository
 from tests.gunb_fixtures import POZWOLENIA_HEADER, pozwolenie
 from tests.qa.conftest import GUNB_OPOLSKIE_ZIP
 

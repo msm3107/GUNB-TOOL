@@ -1,7 +1,7 @@
 import pytest
 
-from gunb_tool.models import Investment
-from gunb_tool.scoring import score_investment
+from core.models import Investment
+from core.scoring import score_investment
 
 
 def lead(**overrides) -> Investment:

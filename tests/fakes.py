@@ -8,8 +8,8 @@ from typing import Any, Iterable
 
 from requests.structures import CaseInsensitiveDict
 
-from gunb_tool.config import HttpConfig
-from gunb_tool.http_client import ResilientHttpClient
+from core.config import HttpConfig
+from core.http_client import ResilientHttpClient
 
 
 class FakeResponse:

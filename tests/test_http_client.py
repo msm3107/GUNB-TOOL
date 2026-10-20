@@ -3,7 +3,7 @@ import json
 import pytest
 import requests
 
-from gunb_tool.http_client import CircuitOpenError, HttpError
+from core.http_client import CircuitOpenError, HttpError
 from tests.fakes import FakeResponse, FakeTime, make_client
 
 AGENTS = ("UA-one", "UA-two", "UA-three")

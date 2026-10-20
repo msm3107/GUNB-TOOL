@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from gunb_tool.gunb_scraper import FetchQuery, GunbFormatError, GunbScraper, parse_archive
-from gunb_tool.http_client import DownloadResult
-from gunb_tool.models import Source, Status
+from core.gunb_scraper import FetchQuery, GunbFormatError, GunbScraper, parse_archive
+from core.http_client import DownloadResult
+from core.models import Source, Status
 from tests.gunb_fixtures import (
     POZWOLENIA_HEADER,
     ZGLOSZENIA_HEADER,

@@ -2,9 +2,9 @@ from dataclasses import replace
 
 import pytest
 
-from gunb_tool.config import FilterConfig
-from gunb_tool.data_filter import LeadFilter
-from gunb_tool.models import GunbCase, Source, Status
+from core.config import FilterConfig
+from core.data_filter import LeadFilter
+from core.models import GunbCase, Source, Status
 
 
 def case(description: str, category: str | None = None, **overrides) -> GunbCase:
@@ -269,7 +269,7 @@ def test_evaluate_bundles_entities(lead_filter):
 
 # --- Segmenty klientów ----------------------------------------------------------------------
 
-from gunb_tool.config import SegmentConfig
+from core.config import SegmentConfig
 
 SEGMENTS = (
     SegmentConfig("domki", "Domki jednorodzinne", ("mieszkaniowa-jednorodzinna",), max_kubatura=2500),

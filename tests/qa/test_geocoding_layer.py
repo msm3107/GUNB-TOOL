@@ -7,7 +7,7 @@ import logging
 import pytest
 import responses
 
-from gunb_tool.geocoding_uldk import (
+from core.geocoding_uldk import (
     GeoPrecision,
     MemoryGeocodeCache,
     UldkClient,
@@ -15,8 +15,8 @@ from gunb_tool.geocoding_uldk import (
     UldkGeocoder,
     parcel_point,
 )
-from gunb_tool.http_client import HttpError
-from gunb_tool.models import Parcel
+from core.http_client import HttpError
+from core.models import Parcel
 from tests.qa.conftest import ULDK_URL, slept
 
 PARCEL = Parcel("160705_4", "0005", "13")

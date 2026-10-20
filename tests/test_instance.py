@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from gunb_tool.instance import AlreadyRunning, instance_lock, lock_is_free
+from core.instance import AlreadyRunning, instance_lock, lock_is_free
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,7 +29,7 @@ def test_lock_held_by_another_process_blocks_and_dies_with_it(tmp_path):
     lock = tmp_path / "gunb-bot.lock"
     holder = subprocess.Popen(
         [sys.executable, "-c",
-         "import sys\nfrom gunb_tool.instance import instance_lock\n"
+         "import sys\nfrom core.instance import instance_lock\n"
          f"with instance_lock(r'{lock}'):\n    print('trzymam', flush=True)\n    sys.stdin.readline()\n"
          "    import os; os._exit(9)  # awaria procesu z blokadą w ręku\n"],
         cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
