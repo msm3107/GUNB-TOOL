@@ -4,6 +4,7 @@ import json
 import shutil
 import sqlite3
 import stat
+import sys
 import zipfile
 from datetime import timedelta
 from pathlib import Path
@@ -11,7 +12,12 @@ from pathlib import Path
 import pytest
 
 import core.migration as migration_module
-from core.instance import instance_lock, lock_is_free
+from core.instance import (
+    database_replacement_lock_path,
+    engine_lock_path,
+    instance_lock,
+    lock_is_free,
+)
 from core.migration import (
     CONFIG_ENTRY,
     ENV_ENTRY,
@@ -202,6 +208,30 @@ def test_import_refuses_an_active_engine_and_preserves_the_database(tmp_path, pa
         import_state(package, target, replace=True)
 
     assert dump(db_path) == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink lock regression is exercised on Linux CI")
+@pytest.mark.parametrize(
+    "lock_path",
+    [engine_lock_path, database_replacement_lock_path],
+    ids=["engine", "health-probe"],
+)
+def test_import_refuses_active_lock_for_symlinked_database(tmp_path, package, clock, lock_path):
+    target = make_state(tmp_path / "serwer", clock)
+    actual_db = db_of(target)
+    alias_dir = target.parent / "alias"
+    alias_dir.mkdir()
+    alias_db = alias_dir / actual_db.name
+    alias_db.symlink_to(actual_db)
+    target.write_text(CONFIG.replace("data/gunb_leads.sqlite", "alias/gunb_leads.sqlite"), encoding="utf-8")
+    before = dump(actual_db)
+
+    with instance_lock(lock_path(alias_db)), pytest.raises(MigrationError, match="Silnik działa"):
+        import_state(package, target, replace=True)
+
+    assert alias_db.is_symlink()
+    assert alias_db.resolve() == actual_db.resolve()
+    assert dump(actual_db) == before
 
 
 @pytest.mark.parametrize("operation", ["import", "restore"])

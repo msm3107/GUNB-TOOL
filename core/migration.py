@@ -313,7 +313,9 @@ def _maintenance_operation_locks(
     kontroli do walidacji bazy po podmianie. Kopia i eksport na żywo rezerwują tylko blokadę serwisową,
     a spójność odczytu zapewnia im API kopii SQLite.
     """
-    database_paths = _ordered_unique_paths((db_path, *additional_db_paths))
+    # Engine and health locks use the configured database path directly. Preserve its symlink alias
+    # until their lock paths are derived so maintenance joins the same lock namespace.
+    database_paths = _ordered_unique_paths((db_path, *additional_db_paths), resolve_symlinks=False)
 
     with ExitStack() as locks:
         try:
@@ -333,12 +335,14 @@ def _maintenance_operation_locks(
         yield
 
 
-def _ordered_unique_paths(paths: Sequence[Path]) -> tuple[Path, ...]:
-    """Normalize, deduplicate, and sort filesystem paths before locking them."""
+def _ordered_unique_paths(
+    paths: Sequence[Path], *, resolve_symlinks: bool = True
+) -> tuple[Path, ...]:
+    """Normalize, deduplicate, and sort paths, optionally preserving symlink aliases."""
     normalized_paths = {}
     for path in paths:
-        resolved = Path(path).resolve()
-        normalized_paths[os.path.normcase(str(resolved))] = resolved
+        normalized = Path(path).resolve() if resolve_symlinks else Path(os.path.abspath(path))
+        normalized_paths[os.path.normcase(str(normalized))] = normalized
     return tuple(normalized_paths[key] for key in sorted(normalized_paths))
 
 
