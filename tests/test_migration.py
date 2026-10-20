@@ -260,6 +260,41 @@ def test_import_refuses_legacy_lock_next_to_symlinked_database(tmp_path, package
     assert dump(actual_db) == before
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink lock regression is exercised on Linux CI")
+def test_package_config_import_checks_legacy_lock_for_current_database_alias(tmp_path, clock):
+    package_source = make_state(tmp_path / "pakiet", clock)
+    package_db = db_of(package_source)
+    package_alias_dir = package_source.parent / "package-alias"
+    package_alias_dir.mkdir()
+    (package_alias_dir / package_db.name).symlink_to(package_db)
+    package_source.write_text(
+        CONFIG.replace("data/gunb_leads.sqlite", "package-alias/gunb_leads.sqlite"), encoding="utf-8"
+    )
+    package = export_state(package_source, tmp_path / "pakiety")
+
+    target = make_state(tmp_path / "serwer", clock)
+    actual_db = db_of(target)
+    current_alias_dir = target.parent / "current-alias"
+    package_alias_dir = target.parent / "package-alias"
+    current_alias_dir.mkdir()
+    package_alias_dir.mkdir()
+    current_alias_db = current_alias_dir / actual_db.name
+    package_alias_db = package_alias_dir / actual_db.name
+    current_alias_db.symlink_to(actual_db)
+    package_alias_db.symlink_to(actual_db)
+    target.write_text(CONFIG.replace("data/gunb_leads.sqlite", "current-alias/gunb_leads.sqlite"), encoding="utf-8")
+    before = dump(actual_db)
+
+    # The package and current config use different symlinks to the same database.
+    with instance_lock(current_alias_dir / LEGACY_BOT_LOCK_NAME), pytest.raises(MigrationError, match="Silnik działa"):
+        import_state(package, target, replace=True, config_from_package=True)
+
+    assert current_alias_db.is_symlink()
+    assert package_alias_db.is_symlink()
+    assert dump(actual_db) == before
+    assert "current-alias/gunb_leads.sqlite" in target.read_text(encoding="utf-8")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink replacement regression is exercised on Linux CI")
 @pytest.mark.parametrize("operation", ["import", "restore"])
 def test_database_replacement_via_symlink_preserves_alias_and_updates_target(

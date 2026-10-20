@@ -219,17 +219,18 @@ configurations are backed up before replacement."""
             # the symlink itself, so the configured alias must never be the replacement target.
             configured_db_path = config.storage.db_path
             db_path = configured_db_path.resolve()
+            # Keep distinct configured spellings so legacy locks beside multiple aliases are checked.
             database_paths = [configured_db_path]
             if use_package_config and config_path.is_file():
                 current_db_path = _config(config_path).storage.db_path
-                if current_db_path.resolve() != db_path:
+                if current_db_path != configured_db_path:
                     database_paths.append(current_db_path)
             with _maintenance_operation_locks(
                 configured_db_path,
                 require_engine_idle=True,
                 additional_db_paths=database_paths[1:],
             ):
-                for database_path in database_paths:
+                for database_path in _ordered_unique_paths(database_paths):
                     _require_stopped(config, database_path, action="import")
                 if db_path.exists() and not replace:
                     raise MigrationError(
