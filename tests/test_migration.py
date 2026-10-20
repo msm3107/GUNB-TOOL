@@ -13,6 +13,7 @@ import pytest
 
 import core.migration as migration_module
 from core.instance import (
+    LEGACY_BOT_LOCK_NAME,
     bot_lock_path,
     database_replacement_lock_path,
     engine_lock_path,
@@ -237,6 +238,25 @@ def test_import_refuses_active_lock_for_symlinked_database(
 
     assert alias_db.is_symlink()
     assert alias_db.resolve() == actual_db.resolve()
+    assert dump(actual_db) == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="legacy symlink lock regression is exercised on Linux CI")
+def test_import_refuses_legacy_lock_next_to_symlinked_database(tmp_path, package, clock):
+    target = make_state(tmp_path / "serwer", clock)
+    actual_db = db_of(target)
+    alias_dir = target.parent / "alias"
+    alias_dir.mkdir()
+    alias_db = alias_dir / actual_db.name
+    alias_db.symlink_to(actual_db)
+    target.write_text(CONFIG.replace("data/gunb_leads.sqlite", "alias/gunb_leads.sqlite"), encoding="utf-8")
+    before = dump(actual_db)
+
+    # Older releases placed this compatibility lock beside the configured alias without resolving it.
+    with instance_lock(alias_dir / LEGACY_BOT_LOCK_NAME), pytest.raises(MigrationError, match="Silnik działa"):
+        import_state(package, target, replace=True)
+
+    assert alias_db.is_symlink()
     assert dump(actual_db) == before
 
 

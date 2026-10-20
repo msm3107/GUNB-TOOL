@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import IO
 
@@ -48,14 +48,26 @@ def database_replacement_lock(db_path: str | Path) -> Iterator[None]:
 
 
 def bot_lock_path(db_path: str | Path) -> Path:
-    """Ścieżka blokady używanej przez starsze wydania aplikacji."""
+    """Kanoniczna ścieżka blokady używanej przez starsze wydania aplikacji."""
     return Path(db_path).resolve().parent / LEGACY_BOT_LOCK_NAME
+
+
+def legacy_bot_alias_lock_path(db_path: str | Path) -> Path:
+    """Ścieżka starej blokady obok skonfigurowanego aliasu, bez rozwiązywania symlinków."""
+    return Path(os.path.abspath(db_path)).parent / LEGACY_BOT_LOCK_NAME
 
 
 @contextmanager
 def engine_process_lock(db_path: str | Path) -> Iterator[None]:
     """Chroni operacje silnika i zachowuje wyłączność ze starszymi wydaniami."""
-    with instance_lock(engine_lock_path(db_path)), instance_lock(bot_lock_path(db_path)):
+    lock_paths = dict.fromkeys((
+        engine_lock_path(db_path),
+        bot_lock_path(db_path),
+        legacy_bot_alias_lock_path(db_path),
+    ))
+    with ExitStack() as locks:
+        for path in lock_paths:
+            locks.enter_context(instance_lock(path))
         yield
 
 

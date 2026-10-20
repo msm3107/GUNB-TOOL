@@ -33,6 +33,7 @@ from .instance import (
     database_replacement_lock_path,
     engine_lock_path,
     instance_lock,
+    legacy_bot_alias_lock_path,
     maintenance_lock_path,
 )
 from .storage import SCHEMA_VERSION
@@ -216,14 +217,15 @@ configurations are backed up before replacement."""
             config = _config(probe)
             # Resolve a database symlink before staging or replacing files. os.replace() replaces
             # the symlink itself, so the configured alias must never be the replacement target.
-            db_path = config.storage.db_path.resolve()
-            database_paths = [db_path]
+            configured_db_path = config.storage.db_path
+            db_path = configured_db_path.resolve()
+            database_paths = [configured_db_path]
             if use_package_config and config_path.is_file():
                 current_db_path = _config(config_path).storage.db_path
                 if current_db_path.resolve() != db_path:
                     database_paths.append(current_db_path)
             with _maintenance_operation_locks(
-                db_path,
+                configured_db_path,
                 require_engine_idle=True,
                 additional_db_paths=database_paths[1:],
             ):
@@ -282,8 +284,9 @@ The current database is saved first and its backup path is returned."""
                              "wróć do wersji aplikacji, która go obsługuje")
     config = _config(config_path)
     # Keep the replacement target and its staging file beside the real database, not beside a symlink alias.
-    db_path = config.storage.db_path.resolve()
-    with _maintenance_operation_locks(db_path, require_engine_idle=True):
+    configured_db_path = config.storage.db_path
+    db_path = configured_db_path.resolve()
+    with _maintenance_operation_locks(configured_db_path, require_engine_idle=True):
         _require_stopped(config, db_path, action="odtworzenie kopii")
         stamp = (now or (lambda: datetime.now(timezone.utc)))().strftime("%Y%m%dT%H%M%SZ")
         replaced = _backup_existing(config, db_path, f"przed-odtworzeniem-{stamp}") if db_path.exists() else None
@@ -331,7 +334,11 @@ def _maintenance_operation_locks(
                     locks.enter_context(instance_lock(path))
                 for path in _ordered_unique_paths(tuple(engine_lock_path(path) for path in database_paths)):
                     locks.enter_context(instance_lock(path))
-                for path in _ordered_unique_paths(tuple(bot_lock_path(path) for path in database_paths)):
+                legacy_lock_paths = (
+                    *(bot_lock_path(path) for path in database_paths),
+                    *(legacy_bot_alias_lock_path(path) for path in (db_path, *additional_db_paths)),
+                )
+                for path in _ordered_unique_paths(legacy_lock_paths):
                     locks.enter_context(instance_lock(path))
         except AlreadyRunning as exc:
             raise MigrationError(f"Silnik działa lub inny proces korzysta z bazy: {exc}") from None
