@@ -821,9 +821,9 @@ nie stosujemy redundantnego `ExecStartPre`, którego ta reguła nie obejmuje.
 `--check` pozostaje osobną komendą diagnostyczną. Przy walidacji docelowego systemd
 sprawdź brak restartu syntetycznej jednostki kończącej proces główny kodem 2,
 bez webhooka i rzeczywistych danych.
-Obecny aktualizator zatrzymuje wyłącznie bota; przed użyciem webhooka trzeba
-ukończyć wspólną obsługę stop/start, backupu/restore, migracji, przełączenia wersji
-i rollbacku obu procesów. Retencja przed stałym ruchem również pozostaje bramką.
+Na etapie PR11 aktualizator zatrzymywał wyłącznie bota. PR12 poniżej dodaje
+zatrzymanie i wyłączenie webhooka przed konserwacją; pełne sprawdzone wznowienie
+obu procesów i retencja przed stałym ruchem nadal pozostają bramkami.
 
 Brak zmian schematu v15, komend Telegrama i wysyłki WhatsApp. Powrót do PR10 wymaga
 wyłączonej/zatrzymanej opcjonalnej usługi i dotychczasowej procedury kodu/kopii/
@@ -834,6 +834,59 @@ Ostatni PR MUSI dostarczyć instrukcję WSZYSTKICH tokenów/API/ID/sekretów (SM
 Telegram i opcjonalne integracje) oraz serwera z uprawnieniami, kopią, jednym
 pollerem, skoordynowanym restartem, health/aktywacją i rollbackiem z utratą danych
 przy restore. Ten PR nie uruchamia ani nie wdraża usługi na serwerze.
+
+### PR 12: konserwacja zarzadzanej uslugi webhooka
+
+Ten etap zabezpiecza obsługę **zarządzanej jednostki systemd**
+`gunb-whatsapp-webhook.service`. Aktualny `deploy/install.sh` przed zatrzymaniem
+bota, kopią, przełączeniem wersji i usuwaniem starych wydań wyłącza autostart
+webhooka, zatrzymuje usługę i wymaga potwierdzonego stanu `inactive`. Tak samo
+działa rollback po kontroli zgodności schematu. Brak jednostki (`not-found` i
+`inactive`) jest pomijany; błąd menedżera, nieznany stan albo błąd disable/stop
+przerywa operację przed przełączeniem wersji/danych. Przy błędzie kopii pozostaje
+dotychczasowe wznowienie bota na starym kodzie; webhook pozostaje wyłączony.
+
+Aktualny `gunb-admin aktualizuj` wykonuje tę kontrolę także **przed uruchomieniem
+instalatora wybranej starszej wersji**. `wycofaj` i `stop` też zatrzymują webhook;
+`stop` następnie zatrzymuje bota. `odtworz`, `importuj` i końcowy `eksport` wymagają
+zatrzymanego bota i wyłączają webhook przed kopiowaniem wejścia lub operacją danych.
+`kopia`, `kopia-do-pobrania`, `sprawdz` i `eksport --na-zywo` zachowują semantykę
+online. `start`/`restart` nadal uruchamiają wyłącznie bota.
+
+**Webhook nie zostaje automatycznie wznowiony ani włączony do autostartu**, również
+po udanej aktualizacji. Dzięki temu rollback nie uruchomi go na kodzie bez modułu
+lub opcjonalnej zależności. Komunikat konserwacji informuje o wyłączeniu. Błąd
+w połowie disable/stop może pozostawić częściowo zmieniony stan usługi: utrzymaj
+publiczne wejście niedostępne, sprawdź stan i usuń przyczynę przed ponowieniem.
+Nie włączaj usługi według szablonu teraz. Późniejsze wznowienie będzie wymagać
+sprawdzenia zależności danego wydania, konfiguracji, migracji przez bota, bazy i
+health obu procesów; procedurę dostarczy etap aktywacji.
+
+Bariera wymaga **jednego operatora i jednej komendy konserwacji naraz**. Nie może
+działać dodatkowy timer/socket, zależność systemd, supervisor, ręcznie uruchomiony
+webhook ani inny zapisujący proces. Disable usuwa autostart, lecz nie blokuje
+niezależnego uprzywilejowanego startu. Bezpośrednie komendy Python migracji,
+stare samodzielne instalatory i stare kopie `gunb-admin` nie mają tej bariery.
+Używaj aktualnego entry pointu; przed operacjami bezpośrednimi zatrzymaj wszystkich
+piszących. Po rollbacku do starego kodu również narzędzia admin mogą być stare:
+webhook pozostaje wyłączony i nie wolno go ponownie aktywować na takiej wersji.
+
+Testy uruchamiają prawdziwe funkcje Bash z atrapą systemctl, syntetycznymi plikami
+i bez wysyłek. Testy dowiązań i przełączenia wersji wymagają Linuxa; Git Bash na
+Windowsie kopiuje katalogi zamiast utworzyć wymagane dowiązania. **Nie wykonano
+próby na działającym systemd/serwerze.** Przed aktywacją sprawdź w izolowanej
+instalacji Linux: brak jednostki, usługę aktywną i zatrzymaną, błąd stop/kopii,
+rollback, restart serwera bez autostartu webhooka i brak drugiego pollera Telegrama.
+Źródła systemd sprawdzone 2026-10-14: [disable/stop i show](https://raw.githubusercontent.com/systemd/systemd/main/man/systemctl.xml),
+[show nieistniejącej jednostki](https://raw.githubusercontent.com/systemd/systemd/main/src/systemctl/systemctl-show.c).
+
+Brak zmian schematu v15 i funkcji bota. Pozostają publiczny HTTPS/proxy, retencja/
+health, instalacja opcjonalnych zależności i sprawdzone wznowienie, opt-in/dowód
+numeru/rezygnacja, raporty/worker/tempo/cisza nocna/statusy oraz pilotaż. Końcowy PR
+MUSI zawierać instrukcję WSZYSTKICH tokenów/API/ID/sekretów (SMTP, Meta, Telegram
+i opcjonalne Discord/Sheets) oraz uprawnień, kopii, HTTPS/proxy/DNS, wyłączonej
+instalacji, jednego pollera, kontrolowanego wspólnego restartu, health/aktywacji
+i rollbacku z ograniczeniami utraty danych. Ten PR niczego nie wdraża.
 
 ## E. Wycofanie wersji
 
