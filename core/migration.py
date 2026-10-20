@@ -1,31 +1,8 @@
-"""Przeniesienie stanu aplikacji na inny komputer lub serwer: eksport → sprawdzenie → import; kopia i odtworzenie.
+"""Migration support for moving and restoring the current engine's SQLite state.
 
-Cały trwały stan bota jest w bazie SQLite (``storage.db_path``): inwestycje i historia statusów, użytkownicy
-z filtrami i pinezką bazy, test/abonament/dostęp, zapisane, notatki, obserwowane, przypomnienia, doręczenia,
-kolejka wysyłek, harmonogram i offset Telegrama. Obok są ``config.yaml`` i ``.env``.
-
-Pakiet (ZIP):
-
-* ``baza/<plik>.sqlite`` – spójna kopia bazy (API kopii SQLite – także dane jeszcze w pliku ``-wal``),
-* ``konfiguracja/config.yaml`` – konfiguracja (sekrety są w niej tylko jako odwołania ``${...}``),
-* ``konfiguracja/env.bez-sekretow`` – zmienne z ``.env``: identyfikatory czatów i kontakt zostają,
-  token bota, webhooki i klucze są puste – ustawia się je osobno na serwerze,
-* ``manifest.json`` – wersja formatu, aplikacji i schematu, czas utworzenia, sumy SHA-256, liczności tabel.
-
-Nie ma w nim cache paczek GUNB (bot pobierze je ponownie), logów, starych kopii ani klucza Google.
-Pakiet zawiera dane użytkowników – przechowuj go jak kopię bazy i nie dodawaj do repozytorium.
-
-Użycie (``python -m core.migration …``)::
-
-    eksport  --config config.yaml [--do KATALOG] [--na-zywo]
-    sprawdz  PAKIET
-    importuj PAKIET --config /var/lib/gunb-tool/config.yaml [--zastap] [--konfiguracja-z-pakietu]
-    kopia    --config config.yaml
-    odtworz  KOPIA.sqlite --config config.yaml
-
-Import i odtworzenie wymagają zatrzymanego bota i braku innych procesów zapisujących; nic nie jest
-nadpisywane po cichu – istniejąca baza najpierw trafia do kopii.
-"""
+Packages contain a consistent database snapshot, application configuration, and
+blank environment-variable values. File replacement is coordinated with engine
+and health-check locks; online snapshots use SQLite's backup API."""
 
 from __future__ import annotations
 
@@ -53,6 +30,7 @@ from .config import AppConfig, ConfigError, load_config
 from .instance import (
     AlreadyRunning,
     bot_lock_path,
+    database_replacement_lock_path,
     engine_lock_path,
     instance_lock,
     maintenance_lock_path,
@@ -66,22 +44,16 @@ DB_DIR = "baza"
 CONFIG_ENTRY = "konfiguracja/config.yaml"
 ENV_ENTRY = "konfiguracja/env.bez-sekretow"
 MAX_PACKAGE_BYTES = 50 * 1024 ** 3
-SERVICE = os.environ.get("GUNB_SERVICE", "gunb-bot")
-
-ENV_KEEP = frozenset({
-    "TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID_DOMKI", "TELEGRAM_CHAT_ID_DUZE", "TELEGRAM_ADMIN_CHAT_ID",
-    "ADMIN_CHAT_ID", "ADMIN_CONTACT", "GOOGLE_SHEET_ID", "GOOGLE_SERVICE_ACCOUNT_FILE",
-})
-"""Zmienne ``.env`` przenoszone z wartością; każda inna trafia do pakietu pusta (jak sekret)."""
+SERVICE = os.environ.get("GUNB_SERVICE", "gunb-engine")
 _SECRET_VALUES = (
-    re.compile(r"\b\d{5,12}:[A-Za-z0-9_-]{30,}\b"),  # token bota Telegram
+    re.compile(r"\b\d{5,12}:[A-Za-z0-9_-]{30,}\b"),
     re.compile(r"(?:discord(?:app)?\.com)/api/webhooks/\S+"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
 
 
 class MigrationError(RuntimeError):
-    """Pakiet, baza albo stan systemu nie pozwalają bezpiecznie wykonać operacji (opis dla człowieka)."""
+    """The package, database, or runtime state prevents a safe operation."""
 
 
 @dataclass(frozen=True)
@@ -96,12 +68,11 @@ class ImportResult:
 
 def export_state(config_path: Path, output_dir: Path | None = None, *, live: bool = False,
                  now: Callable[[], datetime] | None = None) -> Path:
-    """Tworzy pakiet migracyjny; zwraca jego ścieżkę (plik ``.zip`` z prawami 600 na Linuksie).
+    """Create a migration package and return its ZIP path.
 
     Args:
-        live: pozwala na eksport przy działającym bocie (kopia jest spójna, ale zmiany po eksporcie nie
-            trafią do pakietu – do przeniesienia bota zawsze eksportuj po jego zatrzymaniu).
-    """
+        live: allow an online SQLite snapshot while the engine is running. Writes
+            committed after the snapshot are not included."""
     config = _config(config_path)
     db_path = config.storage.db_path
     with _maintenance_operation_locks(db_path, require_engine_idle=not live):
@@ -154,26 +125,23 @@ def export_state(config_path: Path, output_dir: Path | None = None, *, live: boo
 
 
 def sanitize_env(text: str) -> str:
-    """Zmienne z ``.env`` bez sekretów: wartości tylko z ``ENV_KEEP`` i tylko gdy nie wyglądają na sekret."""
-    lines = ["# Zmienne z pliku .env komputera źródłowego – BEZ sekretów.",
-             "# Sekrety (token bota, webhooki, klucze) ustaw na serwerze: sudo gunb-admin sekrety", ""]
+    """Preserve environment variable names while leaving target values blank."""
+    lines = [
+        "# Environment variable names from the source machine; values are omitted.",
+        "# Set target-specific values in the destination .env file.",
+        "",
+    ]
     seen: set[str] = set()
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        key, _, value = line.partition("=")
+        key, _, _value = line.partition("=")
         key = key.strip().removeprefix("export ").strip()
         if not re.fullmatch(r"[A-Z0-9_]+", key) or key in seen:
             continue
         seen.add(key)
-        value = value.strip().strip('"').strip("'")
-        if key in ENV_KEEP and not _looks_secret(value):
-            lines.append(f"{key}={value}")
-        else:
-            lines += [f"# {key}: sekret – nie ma go w pakiecie, ustaw na serwerze", f"{key}="]
-    if "TELEGRAM_BOT_TOKEN" not in seen:
-        lines += ["# TELEGRAM_BOT_TOKEN: sekret – ustaw na serwerze", "TELEGRAM_BOT_TOKEN="]
+        lines.extend([f"# {key}: set again on the destination machine", f"{key}="])
     return "\n".join(lines) + "\n"
 
 
@@ -227,18 +195,11 @@ def verify_package(package: Path) -> dict:
 
 def import_state(package: Path, config_path: Path, *, replace: bool = False,
                  config_from_package: bool = False, now: Callable[[], datetime] | None = None) -> ImportResult:
-    """Wczytuje pakiet na tym komputerze/serwerze (bot musi być zatrzymany).
+    """Import a migration package. The engine must be stopped for every database
+path selected by either the current or package configuration.
 
-    Najpierw wszystkie kontrole (pakiet, zatrzymany bot, istniejąca baza, miejsce na dysku), dopiero potem
-    zapisy:
-
-    * ``config.yaml`` z pakietu trafia na miejsce, gdy tu go jeszcze nie ma (albo z ``config_from_package`` –
-      obecny zostaje wtedy zachowany jako kopia),
-    * ``.env`` powstaje z ``env.bez-sekretow`` tylko, gdy go nie ma (token trzeba potem ustawić),
-    * istniejąca baza jest zastępowana wyłącznie z ``replace`` – najpierw trafia do kopii zapasowej.
-
-    Baza nie jest migrowana w trakcie importu; schemat podniesie pierwszy start bota (z własną kopią).
-    """
+Validation and disk checks run before changing files. Existing databases and
+configurations are backed up before replacement."""
     manifest = verify_package(package)
     stamp = (now or (lambda: datetime.now(timezone.utc)))().strftime("%Y%m%dT%H%M%SZ")
     config_path = Path(config_path)
@@ -254,8 +215,18 @@ def import_state(package: Path, config_path: Path, *, replace: bool = False,
                 _write_private_text(probe, archive.read(CONFIG_ENTRY).decode("utf-8"))
             config = _config(probe)
             db_path = config.storage.db_path
-            with _maintenance_operation_locks(db_path, require_engine_idle=True):
-                _require_stopped(config, db_path, action="import")
+            database_paths = [db_path]
+            if use_package_config and config_path.is_file():
+                current_db_path = _config(config_path).storage.db_path
+                if current_db_path != db_path:
+                    database_paths.append(current_db_path)
+            with _maintenance_operation_locks(
+                db_path,
+                require_engine_idle=True,
+                additional_db_paths=database_paths[1:],
+            ):
+                for database_path in database_paths:
+                    _require_stopped(config, database_path, action="import")
                 if db_path.exists() and not replace:
                     raise MigrationError(
                         f"Baza {db_path} już istnieje – nie nadpisuję jej po cichu. Jeśli chcesz ją zastąpić danymi "
@@ -300,10 +271,8 @@ def backup_now(config_path: Path, *, label: str = "reczna", now: Callable[[], da
 
 
 def restore_backup(backup: Path, config_path: Path, *, now: Callable[[], datetime] | None = None) -> Path | None:
-    """Zastępuje bazę kopią (bot zatrzymany); obecna baza najpierw trafia do kopii – zwraca jej ścieżkę.
-
-    Zmiany zapisane w bazie po wykonaniu odtwarzanej kopii przepadają (zostają tylko w tej nowej kopii).
-    """
+    """Replace the configured database with a backup while the engine is stopped.
+The current database is saved first and its backup path is returned."""
     backup = Path(backup)
     schema, _ = _check_database(backup)
     if schema > SCHEMA_VERSION:
@@ -332,19 +301,35 @@ def _config(config_path: Path) -> AppConfig:
 
 
 @contextmanager
-def _maintenance_operation_locks(db_path: Path, *, require_engine_idle: bool) -> Iterator[None]:
+def _maintenance_operation_locks(
+    db_path: Path,
+    *,
+    require_engine_idle: bool,
+    additional_db_paths: Sequence[Path] = (),
+) -> Iterator[None]:
     """Blokuje wymianę bazy oraz inne operacje serwisowe bez trzymania blokady SQLite.
 
     Operacje offline rezerwują blokady silnika i zgodności ze starszymi wydaniami przez cały czas od
     kontroli do walidacji bazy po podmianie. Kopia i eksport na żywo rezerwują tylko blokadę serwisową,
     a spójność odczytu zapewnia im API kopii SQLite.
     """
+    normalized_paths = {
+        os.path.normcase(str(Path(path).resolve())): Path(path).resolve()
+        for path in (db_path, *additional_db_paths)
+    }
+    database_paths = tuple(normalized_paths[key] for key in sorted(normalized_paths))
+
     with ExitStack() as locks:
         try:
-            locks.enter_context(instance_lock(maintenance_lock_path(db_path)))
+            for path in database_paths:
+                locks.enter_context(instance_lock(maintenance_lock_path(path)))
             if require_engine_idle:
-                locks.enter_context(instance_lock(engine_lock_path(db_path)))
-                locks.enter_context(instance_lock(bot_lock_path(db_path)))
+                for path in database_paths:
+                    locks.enter_context(instance_lock(database_replacement_lock_path(path)))
+                for path in database_paths:
+                    locks.enter_context(instance_lock(engine_lock_path(path)))
+                for path in database_paths:
+                    locks.enter_context(instance_lock(bot_lock_path(path)))
         except AlreadyRunning as exc:
             raise MigrationError(f"Silnik działa lub inny proces korzysta z bazy: {exc}") from None
         yield
@@ -522,7 +507,7 @@ def _looks_secret(value: str) -> bool:
 
 def _refuse_secrets(text: str, name: str) -> None:
     if _looks_secret(text):
-        raise MigrationError(f"{name} zawiera sekret (token bota, webhook albo klucz) – przenieś go do .env; "
+        raise MigrationError(f"{name} zawiera sekret lub klucz dostępu; przenieś go do .env; "
                              "pakiet migracyjny nie może zawierać sekretów")
 
 
@@ -568,16 +553,16 @@ def _chmod_private(path: Path) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m core.migration",
-                                     description="Eksport, sprawdzenie i import stanu bota; kopia i odtworzenie bazy.")
+                                     description="Export, validate, import, and restore engine state.")
     commands = parser.add_subparsers(dest="command", required=True)
-    export = commands.add_parser("eksport", help="pakiet migracyjny (bot zatrzymany)")
+    export = commands.add_parser("eksport", help="pakiet migracyjny (silnik zatrzymany)")
     export.add_argument("--config", type=Path, default=Path("config.yaml"))
     export.add_argument("--do", dest="output", type=Path, help="katalog na pakiet (domyślnie data/eksport)")
     export.add_argument("--na-zywo", dest="live", action="store_true",
-                        help="eksport przy działającym bocie (tylko do prób – zmiany po eksporcie nie przejdą)")
+                        help="eksport online przy działającym silniku; późniejsze zapisy nie trafią do pakietu")
     check = commands.add_parser("sprawdz", help="sprawdza pakiet (sumy, schemat, integralność)")
     check.add_argument("package", type=Path)
-    load = commands.add_parser("importuj", help="wczytuje pakiet (bot zatrzymany)")
+    load = commands.add_parser("importuj", help="wczytuje pakiet (silnik zatrzymany)")
     load.add_argument("package", type=Path)
     load.add_argument("--config", type=Path, required=True)
     load.add_argument("--zastap", dest="replace", action="store_true",
@@ -587,7 +572,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     backup = commands.add_parser("kopia", help="spójna kopia bazy teraz")
     backup.add_argument("--config", type=Path, default=Path("config.yaml"))
     backup.add_argument("--etykieta", default="reczna")
-    restore = commands.add_parser("odtworz", help="zastępuje bazę kopią (bot zatrzymany)")
+    restore = commands.add_parser("odtworz", help="zastępuje bazę kopią (silnik zatrzymany)")
     restore.add_argument("backup", type=Path)
     restore.add_argument("--config", type=Path, default=Path("config.yaml"))
     args = parser.parse_args(argv)
@@ -614,7 +599,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"  Poprzednia baza: {result.replaced_backup}")
             if result.schema_version < SCHEMA_VERSION:
                 print(f"  Pierwszy start podniesie schemat do v{SCHEMA_VERSION} (z kopią sprzed zmiany).")
-            print("  Dalej: ustaw token bota (sudo gunb-admin sekrety) i uruchom jedną instancję.")
+            print("  Dalej: ustaw zmienne środowiskowe dla środowiska docelowego i uruchom silnik.")
         elif args.command == "kopia":
             print(f"✔ Kopia: {backup_now(args.config, label=args.etykieta)}")
         elif args.command == "odtworz":

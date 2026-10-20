@@ -24,13 +24,14 @@ def investment(
     )
 
 
-def add_order(repo, order_id: int = 1) -> None:
+def add_order(repo, order_id: int = 1, *, customer_id: int = 1) -> None:
     repo.connection.execute(
-        "INSERT OR IGNORE INTO b2b_customers (customer_id, email) VALUES (1, 'firma@example.pl')"
+        "INSERT OR IGNORE INTO b2b_customers (customer_id, email) VALUES (?, ?)",
+        (customer_id, f"firma{customer_id}@example.pl"),
     )
     repo.connection.execute(
-        "INSERT INTO b2b_orders (order_id, customer_id, typ_pakietu) VALUES (?, 1, 'abonament')",
-        (order_id,),
+        "INSERT INTO b2b_orders (order_id, customer_id, typ_pakietu) VALUES (?, ?, 'abonament')",
+        (order_id, customer_id),
     )
 
 
@@ -68,6 +69,34 @@ def test_delivered_investment_is_not_returned_again_for_same_order(repo):
 
     assert [(item.investment.id_sprawy, item.category) for item in result] == [
         ("CASE/2", DeliveryCategory.NEW),
+    ]
+
+
+def test_delivery_history_is_shared_across_orders_for_the_same_customer(repo):
+    add_order(repo, 1, customer_id=1)
+    add_order(repo, 2, customer_id=1)
+    add_order(repo, 3, customer_id=2)
+    unchanged = investment("CASE/UNCHANGED")
+    changed_before = investment("CASE/CHANGED")
+    record_delivery(repo, 1, unchanged)
+    record_delivery(repo, 1, changed_before)
+
+    second_order = DeliveryClassifier(repo).classify(
+        2,
+        [
+            unchanged,
+            investment("CASE/CHANGED", status="decyzja"),
+            investment("CASE/NEW"),
+        ],
+    )
+
+    assert [(item.investment.id_sprawy, item.category) for item in second_order] == [
+        ("CASE/CHANGED", DeliveryCategory.CHANGE),
+        ("CASE/NEW", DeliveryCategory.NEW),
+    ]
+    other_customer = DeliveryClassifier(repo).classify(3, [unchanged])
+    assert [(item.investment.id_sprawy, item.category) for item in other_customer] == [
+        ("CASE/UNCHANGED", DeliveryCategory.NEW),
     ]
 
 
@@ -133,6 +162,19 @@ def test_full_delivery_includes_previously_delivered_investments(repo):
     ]
 
 
+@pytest.mark.parametrize("full, investments", [(False, []), (True, [investment()])])
+def test_empty_delta_and_full_delivery_skip_history_lookup(repo, full, investments):
+    statements: list[str] = []
+    repo.connection.set_trace_callback(statements.append)
+
+    DeliveryClassifier(repo).classify(1, investments, full=full)
+
+    assert not any(
+        "B2B_DELIVERY_ITEMS" in statement.upper() and "SELECT" in statement.upper()
+        for statement in statements
+    )
+
+
 def test_undelivered_items_do_not_count_as_delivery_history(repo):
     add_order(repo)
     candidate = investment()
@@ -158,3 +200,4 @@ def test_history_lookup_uses_one_query_for_many_investments(repo):
         if "B2B_DELIVERY_ITEMS" in statement.upper() and "SELECT" in statement.upper()
     ]
     assert len(history_queries) == 1
+    assert "ID_SPRAWY IN" in history_queries[0].upper()

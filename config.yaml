@@ -136,14 +136,9 @@ storage:
   # Od tylu nowych/zmienionych leadów w jednym pobieraniu po imporcie wykonywany jest VACUUM.
   vacuum_threshold: 500
 
-# Optional SMTP settings. This file does not enable message delivery.
+# Email delivery is not available in the current engine release.
 email:
   enabled: false
-  host: ${SMTP_HOST:-}
-  port: 587
-  tls: starttls
-  from_address: ${SMTP_FROM_ADDRESS:-}
-  timeout_seconds: 5
 
 logging:
   level: INFO

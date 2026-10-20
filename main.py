@@ -31,7 +31,7 @@ from core.config import (
 )
 from core.gunb_scraper import FetchQuery, GunbFormatError
 from core.http_client import HttpError, redact_url
-from core.instance import AlreadyRunning, engine_process_lock
+from core.instance import AlreadyRunning, database_replacement_lock, engine_process_lock
 from core.maintenance import backup_if_due, vacuum_after_import
 from core.models import Source
 from core.pipeline import (
@@ -112,15 +112,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.zdrowie:
         try:
-            with engine_process_lock(config.storage.db_path):
+            with database_replacement_lock(config.storage.db_path):
                 return _run_health(config, ping_url=args.ping or os.environ.get("HEALTHCHECK_PING_URL"))
         except AlreadyRunning as exc:
-            print(f"Silnik nie wystartował: {exc}", file=sys.stderr)
+            print(f"Kontrola zdrowia nie może działać podczas podmiany bazy: {exc}", file=sys.stderr)
             return EXIT_ALREADY_RUNNING
 
-    smtp = config.email.smtp
-    smtp_secrets = (smtp.username, smtp.password, smtp.from_address) if smtp else ()
-    setup_logging(config.logging, verbose=args.verbose, secrets=smtp_secrets)
+    setup_logging(config.logging, verbose=args.verbose)
 
     try:
         with engine_process_lock(config.storage.db_path):

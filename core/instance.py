@@ -17,6 +17,7 @@ from typing import IO
 _WINDOWS_LOCK_OFFSET = 1 << 20
 ENGINE_LOCK_NAME = "gunb-engine.lock"
 MAINTENANCE_LOCK_NAME = "gunb-maintenance.lock"
+DATABASE_REPLACEMENT_LOCK_NAME = "gunb-database-replacement.lock"
 LEGACY_BOT_LOCK_NAME = "gunb-bot.lock"
 
 
@@ -32,6 +33,18 @@ def engine_lock_path(db_path: str | Path) -> Path:
 def maintenance_lock_path(db_path: str | Path) -> Path:
     """Blokada wzajemna dla eksportu, kopii, importu i odtwarzania bazy."""
     return Path(db_path).parent / MAINTENANCE_LOCK_NAME
+
+
+def database_replacement_lock_path(db_path: str | Path) -> Path:
+    """Blokada krótkich odczytów przed importem lub odtworzeniem pliku bazy."""
+    return Path(db_path).parent / DATABASE_REPLACEMENT_LOCK_NAME
+
+
+@contextmanager
+def database_replacement_lock(db_path: str | Path) -> Iterator[None]:
+    """Chroni czytelników bazy przed jej atomową podmianą na tym samym katalogu."""
+    with instance_lock(database_replacement_lock_path(db_path)):
+        yield
 
 
 def bot_lock_path(db_path: str | Path) -> Path:

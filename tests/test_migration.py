@@ -1,6 +1,7 @@
 """Przeniesienie stanu: komputer źródłowy → pakiet → serwer (drugi katalog). Tylko tymczasowe katalogi i bazy."""
 
 import json
+import shutil
 import sqlite3
 import stat
 import zipfile
@@ -34,15 +35,13 @@ gunb:
   powiats: ['2862', '2814']
 storage:
   db_path: data/gunb_leads.sqlite
-telegram:
-  bot_token: ${TELEGRAM_BOT_TOKEN}
 """
-ENV = f"TELEGRAM_BOT_TOKEN={TOKEN}\n"
+ENV = f"ENGINE_API_TOKEN={TOKEN}\n"
 
 
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TOKEN)
+    monkeypatch.setenv("ENGINE_API_TOKEN", TOKEN)
 
 
 def make_state(root: Path, clock) -> Path:
@@ -134,6 +133,7 @@ def test_command_line_round_trip(tmp_path, source, capsys):
     assert main(["importuj", str(package), "--config", str(tmp_path / "serwer" / "config.yaml")]) == 0
     out = capsys.readouterr().out
     assert "SHA-256" in out and "Zaimportowano" in out and "investments" in out
+    assert "token bota" not in out and "gunb-admin" not in out
 
 
 def test_package_carries_no_secrets(package):
@@ -141,11 +141,12 @@ def test_package_carries_no_secrets(package):
         everything = b"".join(archive.read(name) for name in archive.namelist())
         env = archive.read(ENV_ENTRY).decode("utf-8")
     assert TOKEN.encode() not in everything
-    assert "\nTELEGRAM_BOT_TOKEN=\n" in env
+    assert "ENGINE_API_TOKEN=" in env and TOKEN not in env
+    assert "TELEGRAM" not in env
 
 
-def test_config_with_an_inline_token_is_not_exported(tmp_path, source):
-    source.write_text(CONFIG.replace("${TELEGRAM_BOT_TOKEN}", TOKEN), encoding="utf-8")
+def test_config_with_an_inline_secret_is_not_exported(tmp_path, source):
+    source.write_text(CONFIG + f"email:\n  enabled: false\n  host: {TOKEN}\n", encoding="utf-8")
     with pytest.raises(MigrationError, match="sekret"):
         export_state(source, tmp_path / "out")
 
@@ -154,13 +155,14 @@ def test_imported_state_gets_env_without_secrets_and_keeps_an_existing_one(tmp_p
     target = tmp_path / "serwer" / "config.yaml"
     import_state(package, target)
     env = (target.parent / ".env").read_text(encoding="utf-8")
-    assert "TELEGRAM_BOT_TOKEN=\n" in env and TOKEN not in env
+    assert "ENGINE_API_TOKEN=" in env and TOKEN not in env
+    assert "TELEGRAM" not in env
 
     other = tmp_path / "serwer2"
     other.mkdir()
-    (other / ".env").write_text("TELEGRAM_BOT_TOKEN=juz-ustawiony\n", encoding="utf-8")
+    (other / ".env").write_text("ENGINE_API_TOKEN=juz-ustawiony\n", encoding="utf-8")
     import_state(package, other / "config.yaml")
-    assert (other / ".env").read_text(encoding="utf-8") == "TELEGRAM_BOT_TOKEN=juz-ustawiony\n"
+    assert (other / ".env").read_text(encoding="utf-8") == "ENGINE_API_TOKEN=juz-ustawiony\n"
 
 
 def test_final_export_and_import_refuse_while_process_locks_are_held(tmp_path, source, package):
@@ -214,7 +216,12 @@ def test_database_replacement_holds_engine_and_maintenance_locks(
 
     def check_locks_then_replace(incoming, destination):
         assert destination == db_path
-        for name in ("gunb-maintenance.lock", "gunb-engine.lock", "gunb-bot.lock"):
+        for name in (
+            "gunb-maintenance.lock",
+            "gunb-database-replacement.lock",
+            "gunb-engine.lock",
+            "gunb-bot.lock",
+        ):
             assert not lock_is_free(destination.parent / name)
         return replace_database(incoming, destination)
 
@@ -225,6 +232,28 @@ def test_database_replacement_holds_engine_and_maintenance_locks(
     else:
         assert backup is not None
         restore_backup(backup, config_path)
+
+
+def test_package_config_import_locks_database_from_current_config(tmp_path, clock):
+    source_config = make_state(tmp_path / "pakiet-z-inna-baza", clock)
+    package_db = source_config.parent / "data" / "package.sqlite"
+    shutil.copyfile(db_of(source_config), package_db)
+    source_config.write_text(CONFIG.replace("gunb_leads.sqlite", "package.sqlite"), encoding="utf-8")
+    package = export_state(source_config, tmp_path / "pakiety")
+
+    target_config = make_state(tmp_path / "serwer", clock)
+    current_config_text = target_config.read_text(encoding="utf-8")
+    current_db = db_of(target_config)
+    current_db_before = dump(current_db)
+
+    with instance_lock(current_db.parent / "gunb-engine.lock"), pytest.raises(
+        MigrationError, match="Silnik działa"
+    ):
+        import_state(package, target_config, replace=True, config_from_package=True)
+
+    assert target_config.read_text(encoding="utf-8") == current_config_text
+    assert dump(current_db) == current_db_before
+    assert not (current_db.parent / "package.sqlite").exists()
 
 
 def rebuild(

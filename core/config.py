@@ -10,10 +10,11 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -447,33 +448,12 @@ def load_config(path: str | Path, env: Mapping[str, str] | None = None) -> AppCo
     return config
 
 
-def _email(data: dict[str, Any], env: Mapping[str, str]) -> EmailConfig:
-    from .email_sender import SMTPSettings
-
+def _email(data: dict[str, Any], _env: Mapping[str, str]) -> EmailConfig:
     allowed = {'enabled', 'host', 'port', 'tls', 'from_address', 'timeout_seconds'}
     if set(data) - allowed:
-        raise ConfigError('email.enabled: nieobsługiwane ustawienia; dane logowania podaj tylko w środowisku')
-    try:
-        if not _bool(data, 'email', 'enabled', False):
-            return EmailConfig()
-        username, password = env.get('SMTP_USERNAME', ''), env.get('SMTP_PASSWORD', '')
-        if not username or not password:
-            raise ValueError('Incomplete authentication')
-        port = data.get('port', 587)
-        if isinstance(port, str):
-            if not re.fullmatch(r'[0-9]{1,5}', port.strip()):
-                raise ValueError('Invalid port')
-            port = int(port)
-        timeout = data.get('timeout_seconds', 5)
-        if isinstance(timeout, str):
-            timeout = float(timeout)
-        smtp = SMTPSettings(host=data.get('host', ''), port=port,
-                            from_address=data.get('from_address', ''), tls=data.get('tls', 'starttls'),
-                            username=username, password=password, timeout_seconds=timeout)
-    except (ValueError, TypeError, AttributeError):
-        raise ConfigError('email.enabled: wymagane poprawne SMTP z TLS, SMTP_USERNAME i SMTP_PASSWORD') from None
-    return EmailConfig(enabled=True, smtp=smtp)
-
+        raise ConfigError('email: unsupported settings; credentials belong in the environment')
+    _prepared_channel(data, 'email')
+    return EmailConfig()
 
 def _prepared_channel(data: dict[str, Any], section: str) -> bool:
     """Nie sugeruj działającej wysyłki, dopóki nadawca nie zostanie wdrożony."""

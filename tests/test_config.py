@@ -148,6 +148,21 @@ def test_repository_config_defines_domki_and_duze_segments():
     assert [s.name for s in cfg.segments] == ["domki", "duze"]
 
 
+# --- Email ------------------------------------------------------------------------------------
+
+def test_email_delivery_is_rejected_until_the_sender_is_wired(tmp_path):
+    body = (
+        "gunb:\n  voivodeships: ['16']\n"
+        "email:\n  enabled: true\n  host: smtp.example.org\n"
+        "  from_address: reports@example.org\n"
+    )
+    with pytest.raises(ConfigError, match="email.enabled: wysyłka jest niedostępna"):
+        load_config(
+            write_config(tmp_path, body),
+            env={"SMTP_USERNAME": "user", "SMTP_PASSWORD": "secret"},
+        )
+
+
 # --- Powiadomienia ---------------------------------------------------------------------------
 
 def test_notification_defaults(tmp_path):

@@ -6,7 +6,12 @@ import pytest
 import main
 from core.config import FilterConfig, LoggingConfig
 from core.data_filter import LeadFilter
-from core.instance import instance_lock, lock_is_free
+from core.instance import (
+    database_replacement_lock,
+    engine_process_lock,
+    instance_lock,
+    lock_is_free,
+)
 from core.models import Investment
 from core.pipeline import LeadPipeline
 from core.storage import LeadRepository
@@ -97,16 +102,52 @@ def test_engine_actions_hold_process_locks_for_the_database(workdir, monkeypatch
     assert run(workdir, "--stats") == main.EXIT_OK
 
 
-def test_health_check_holds_process_locks_for_the_database(workdir, monkeypatch):
+def test_health_check_holds_database_replacement_lock(workdir, monkeypatch):
     def check_locks(config, *, ping_url):
         lock_dir = config.storage.db_path.parent
-        assert not lock_is_free(lock_dir / "gunb-engine.lock")
-        assert not lock_is_free(lock_dir / "gunb-bot.lock")
+        assert not lock_is_free(lock_dir / "gunb-database-replacement.lock")
+        assert lock_is_free(lock_dir / "gunb-engine.lock")
         return main.EXIT_OK
 
     monkeypatch.setattr(main, "_run_health", check_locks)
 
     assert run(workdir, "--zdrowie") == main.EXIT_OK
+
+
+def test_health_check_runs_and_pings_during_an_active_wal_write(workdir, monkeypatch):
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(main.health, "ping", lambda url, level: calls.append((url, level)))
+    db_path = workdir / "data" / "test.sqlite"
+
+    with LeadRepository(db_path) as repo:
+        assert repo.journal_mode == "wal"
+        repo.connection.execute("BEGIN IMMEDIATE")
+        try:
+            with engine_process_lock(db_path):
+                result = run(workdir, "--zdrowie", "--ping", "https://monitor.example/check")
+            assert result in (main.health.OK, main.health.WARNING)
+        finally:
+            repo.connection.rollback()
+
+    assert calls == [("https://monitor.example/check", result)]
+
+
+def test_health_check_waits_out_database_file_replacement(workdir, monkeypatch, capsys):
+    ran_health = False
+
+    def mark_health_ran(config, *, ping_url):
+        nonlocal ran_health
+        ran_health = True
+        return main.EXIT_OK
+
+    monkeypatch.setattr(main, "_run_health", mark_health_ran)
+    db_path = workdir / "data" / "test.sqlite"
+
+    with database_replacement_lock(db_path):
+        assert run(workdir, "--zdrowie") == main.EXIT_ALREADY_RUNNING
+
+    assert not ran_health
+    assert "Kontrola zdrowia" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("lock_name", ["gunb-engine.lock", "gunb-bot.lock"])

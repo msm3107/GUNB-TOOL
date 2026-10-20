@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from .models import DeliveryCategory, Investment
 from .storage import LeadRepository
@@ -29,13 +29,25 @@ class DeliveryClassifier:
     """
 
     _HISTORY_SQL = """
-        SELECT item.id_sprawy, item.rewizja
-        FROM b2b_deliveries AS delivery
-        JOIN b2b_delivery_items AS item USING (delivery_id)
-        WHERE delivery.order_id = ?
-          AND delivery.doreczono_utc IS NOT NULL
-        ORDER BY delivery.doreczono_utc DESC, delivery.delivery_id DESC
+        SELECT id_sprawy, rewizja
+        FROM (
+            SELECT item.id_sprawy, item.rewizja,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY item.id_sprawy
+                       ORDER BY delivery.doreczono_utc DESC, delivery.delivery_id DESC
+                   ) AS revision_rank
+            FROM b2b_orders AS current_order
+            JOIN b2b_orders AS customer_order
+              ON customer_order.customer_id = current_order.customer_id
+            JOIN b2b_deliveries AS delivery ON delivery.order_id = customer_order.order_id
+            JOIN b2b_delivery_items AS item USING (delivery_id)
+            WHERE current_order.order_id = ?
+              AND delivery.doreczono_utc IS NOT NULL
+              AND item.id_sprawy IN ({case_placeholders})
+        )
+        WHERE revision_rank = 1
     """
+    _HISTORY_CASE_CHUNK_SIZE = 500
 
     def __init__(self, repository: LeadRepository) -> None:
         self._repository = repository
@@ -66,13 +78,9 @@ class DeliveryClassifier:
         Historia jest czytana jednym zapytaniem dla całego zamówienia.
         """
         candidates = tuple(investments)
-        rows = self._repository.connection.execute(self._HISTORY_SQL, (order_id,)).fetchall()
-
-        latest_revisions: dict[str, str] = {}
-        for row in rows:
-            id_sprawy, revision = row[0], row[1]
-            if id_sprawy not in latest_revisions:
-                latest_revisions[id_sprawy] = revision
+        latest_revisions = (
+            self._latest_revisions(order_id, candidates) if candidates and not full else {}
+        )
 
         result: list[ClassifiedDeliveryItem] = []
         for investment in candidates:
@@ -91,3 +99,21 @@ class DeliveryClassifier:
             result.append(ClassifiedDeliveryItem(investment, revision, category))
 
         return tuple(result)
+
+    def _latest_revisions(
+        self,
+        order_id: int,
+        candidates: tuple[Investment, ...],
+    ) -> dict[str, str]:
+        case_ids = tuple(dict.fromkeys(item.id_sprawy for item in candidates))
+        latest_revisions: dict[str, str] = {}
+        connection = self._repository.connection
+
+        for start in range(0, len(case_ids), self._HISTORY_CASE_CHUNK_SIZE):
+            chunk = case_ids[start : start + self._HISTORY_CASE_CHUNK_SIZE]
+            placeholders = ", ".join("?" for _ in chunk)
+            sql = self._HISTORY_SQL.format(case_placeholders=placeholders)
+            rows = connection.execute(sql, (order_id, *chunk)).fetchall()
+            latest_revisions.update({row[0]: row[1] for row in rows})
+
+        return latest_revisions
