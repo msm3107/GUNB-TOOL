@@ -102,6 +102,33 @@ def test_export_import_keeps_every_row(tmp_path, source, package):
     assert result.counts["status_history"] == 3
 
 
+def test_export_import_keeps_b2b_delivery_memory(tmp_path, clock):
+    source = make_state(tmp_path / "komputer", clock)
+    with sqlite3.connect(db_of(source)) as conn:
+        conn.execute(
+            "INSERT INTO b2b_customers (customer_id, email, status_subskrypcji) "
+            "VALUES (42, 'biuro@example.pl', 'active')"
+        )
+        conn.execute(
+            "INSERT INTO b2b_orders (order_id, customer_id, filtry_json, typ_pakietu, status_platnosci) "
+            "VALUES (84, 42, '{\"powiaty\":[\"1234\"]}', 'jednorazowy', 'paid')"
+        )
+        conn.execute(
+            "INSERT INTO b2b_deliveries (delivery_id, order_id, typ_dostawy, doreczono_utc, plik_xlsx) "
+            "VALUES (126, 84, 'pelna', '2026-10-01T00:00:00Z', 'delivery.xlsx')"
+        )
+        conn.execute(
+            "INSERT INTO b2b_delivery_items (delivery_id, id_sprawy, rewizja, kategoria_dostawy) "
+            "VALUES (126, 'A/1', 'rev-1', 'full')"
+        )
+
+    package = export_state(source, tmp_path / "pakiety")
+    result = import_state(package, tmp_path / "serwer" / "config.yaml")
+
+    assert result.schema_version == SCHEMA_VERSION == 16
+    assert dump(result.database) == dump(db_of(source))
+
+
 def test_command_line_round_trip(tmp_path, source, capsys):
     assert main(["eksport", "--config", str(source), "--do", str(tmp_path / "out")]) == 0
     (package,) = (tmp_path / "out").glob("gunb-migracja-*.zip")

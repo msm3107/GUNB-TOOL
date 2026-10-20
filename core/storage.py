@@ -340,6 +340,49 @@ mają ``ON DELETE CASCADE`` – usunięcie osoby z ``bot_users`` usuwa też jej 
 ``PRAGMA foreign_keys = ON`` (bot ma; konsola ``sqlite3`` domyślnie nie – polecenie w ``docs/PILOTAZ.md``)."""
 
 
+_B2B_SCHEMA = """
+CREATE TABLE IF NOT EXISTS b2b_customers (
+    customer_id        INTEGER PRIMARY KEY,
+    email              TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    nazwa_firmy        TEXT,
+    nip                TEXT,
+    stripe_customer_id TEXT UNIQUE,
+    status_subskrypcji TEXT NOT NULL DEFAULT 'nieaktywna'
+);
+
+CREATE TABLE IF NOT EXISTS b2b_orders (
+    order_id         INTEGER PRIMARY KEY,
+    customer_id      INTEGER NOT NULL REFERENCES b2b_customers (customer_id),
+    filtry_json      TEXT NOT NULL DEFAULT '{}',
+    typ_pakietu      TEXT NOT NULL,
+    status_platnosci TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE INDEX IF NOT EXISTS ix_b2b_orders_customer_payment
+    ON b2b_orders (customer_id, status_platnosci);
+
+CREATE TABLE IF NOT EXISTS b2b_deliveries (
+    delivery_id   INTEGER PRIMARY KEY,
+    order_id      INTEGER NOT NULL REFERENCES b2b_orders (order_id),
+    typ_dostawy   TEXT NOT NULL,
+    doreczono_utc TEXT,
+    plik_xlsx     TEXT,
+    plik_csv      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_b2b_deliveries_order_delivered
+    ON b2b_deliveries (order_id, doreczono_utc);
+
+CREATE TABLE IF NOT EXISTS b2b_delivery_items (
+    delivery_id       INTEGER NOT NULL REFERENCES b2b_deliveries (delivery_id) ON DELETE CASCADE,
+    id_sprawy         TEXT NOT NULL REFERENCES investments (id_sprawy),
+    rewizja           TEXT NOT NULL,
+    kategoria_dostawy TEXT NOT NULL CHECK (kategoria_dostawy IN ('new', 'change', 'full')),
+    PRIMARY KEY (delivery_id, id_sprawy)
+);
+CREATE INDEX IF NOT EXISTS ix_b2b_delivery_items_case_revision
+    ON b2b_delivery_items (id_sprawy, rewizja);
+"""
+
+
 Migration = str | Callable[[sqlite3.Connection, int], None]
 
 _MIGRATIONS: tuple[Migration, ...] = (
@@ -358,6 +401,7 @@ _MIGRATIONS: tuple[Migration, ...] = (
     "SELECT 1;",                                          # v13: legacy placeholder
     "SELECT 1;",                                          # v14: legacy placeholder
     "SELECT 1;",                                          # v15: legacy placeholder
+    _B2B_SCHEMA,                                           # v16: klienci B2B, zamówienia i pamięć dostaw
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 
@@ -744,7 +788,7 @@ class LeadRepository:
                 return
 
     def _backup_before_migration(self) -> Path | None:
-        """Spójna kopia (API kopii SQLite, także z danymi w pliku ``-wal``) przed zmianą schematu.
+        """Spójna kopia przez ``VACUUM INTO`` (także z danymi w pliku ``-wal``) przed zmianą schematu.
 
         Nazwa mówi, przed którą wersją powstała (``baza-przed-v11-20260930T060000Z.sqlite``); takich kopii
         nic nie usuwa automatycznie. Błąd (np. brak miejsca) przerywa start – migracja bez kopii nie rusza.
@@ -755,12 +799,13 @@ class LeadRepository:
         stamp = self._now().astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         target = self._backup_dir / f"{self._file.stem}-przed-v{len(_MIGRATIONS)}-{stamp}.sqlite"
         partial = target.with_name(target.name + ".part")
-        destination = sqlite3.connect(partial)
+        partial.unlink(missing_ok=True)
         try:
-            self._conn.backup(destination)
-        finally:
-            destination.close()
-        os.replace(partial, target)
+            self._conn.execute("VACUUM INTO ?", (str(partial),))
+            os.replace(partial, target)
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
         log.warning("Zmiana schematu bazy – kopia sprzed migracji: %s", target)
         return target
 

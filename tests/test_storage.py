@@ -344,6 +344,77 @@ def legacy_database(path, version: int):
     return conn
 
 
+def test_version_15_migrates_to_b2b_schema_and_preserves_leads(tmp_path, clock):
+    import sqlite3
+    from core import storage
+
+    path = tmp_path / "v15.sqlite"
+    legacy = legacy_database(path, 15)
+    legacy.execute(
+        "INSERT INTO investments (id_sprawy, zrodlo, status, utworzono, zmieniono, status_zmieniony, "
+        "ostatnio_widziany) VALUES ('KEPT/1', 'pozwolenia', 'decyzja', 'x', 'x', 'x', 'x')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repo:
+        assert storage.SCHEMA_VERSION == 16
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert repo.get("KEPT/1").status == "decyzja"
+        assert repo.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+        repo.connection.execute(
+            "INSERT INTO b2b_customers (email, nazwa_firmy, nip, stripe_customer_id) "
+            "VALUES ('biuro@example.pl', 'Firma Test', '1234567890', 'cus_test')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            repo.connection.execute(
+                "INSERT INTO b2b_customers (email) VALUES ('BIURO@EXAMPLE.PL')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            repo.connection.execute(
+                "INSERT INTO b2b_orders (customer_id, typ_pakietu) VALUES (999, 'jednorazowy')"
+            )
+        repo.connection.execute(
+            "INSERT INTO b2b_orders (customer_id, filtry_json, typ_pakietu) "
+            "VALUES (1, '{}', 'jednorazowy')"
+        )
+        repo.connection.execute(
+            "INSERT INTO b2b_deliveries (order_id, typ_dostawy, doreczono_utc) "
+            "VALUES (1, 'pelna', '2026-10-01T00:00:00Z')"
+        )
+        repo.connection.execute(
+            "INSERT INTO b2b_delivery_items (delivery_id, id_sprawy, rewizja, kategoria_dostawy) "
+            "VALUES (1, 'KEPT/1', 'rev-1', 'new')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            repo.connection.execute(
+                "INSERT INTO b2b_delivery_items (delivery_id, id_sprawy, rewizja, kategoria_dostawy) "
+                "VALUES (1, 'KEPT/1', 'rev-2', 'unknown')"
+            )
+        indexes = {
+            row[0] for row in repo.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'ix_b2b_%'"
+            )
+        }
+        assert indexes == {
+            "ix_b2b_orders_customer_payment",
+            "ix_b2b_deliveries_order_delivered",
+            "ix_b2b_delivery_items_case_revision",
+        }
+
+    (backup,) = (path.parent / "backups").glob("v15-przed-v16-*.sqlite")
+    check = sqlite3.connect(backup)
+    try:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 15
+        assert check.execute("SELECT id_sprawy FROM investments").fetchall() == [("KEPT/1",)]
+        assert check.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'b2b_customers'"
+        ).fetchone() is None
+    finally:
+        check.close()
+
+
 def test_version_7_job_times_move_to_utc_and_telegram_offset_stays(tmp_path, clock):
     path = tmp_path / "v7.sqlite"
     legacy = legacy_database(path, 7)
