@@ -234,11 +234,34 @@ def test_database_replacement_holds_engine_and_maintenance_locks(
         restore_backup(backup, config_path)
 
 
-def test_package_config_import_locks_database_from_current_config(tmp_path, clock):
+def test_package_config_import_succeeds_when_databases_share_a_directory(tmp_path, clock):
     source_config = make_state(tmp_path / "pakiet-z-inna-baza", clock)
     package_db = source_config.parent / "data" / "package.sqlite"
     shutil.copyfile(db_of(source_config), package_db)
     source_config.write_text(CONFIG.replace("gunb_leads.sqlite", "package.sqlite"), encoding="utf-8")
+    package = export_state(source_config, tmp_path / "pakiety")
+
+    target_config = make_state(tmp_path / "serwer", clock)
+    current_db = db_of(target_config)
+    current_db_before = dump(current_db)
+    package_target_db = current_db.with_name("package.sqlite")
+
+    result = import_state(package, target_config, replace=True, config_from_package=True)
+
+    assert result.database == package_target_db
+    assert dump(package_target_db) == dump(db_of(source_config))
+    assert dump(current_db) == current_db_before
+    assert "db_path: data/package.sqlite" in target_config.read_text(encoding="utf-8")
+
+
+def test_package_config_import_refuses_when_current_database_engine_is_active(tmp_path, clock):
+    source_config = make_state(tmp_path / "pakiet-z-inna-baza", clock)
+    package_db = source_config.parent / "data-from-package" / "package.sqlite"
+    package_db.parent.mkdir()
+    shutil.copyfile(db_of(source_config), package_db)
+    source_config.write_text(
+        CONFIG.replace("data/gunb_leads.sqlite", "data-from-package/package.sqlite"), encoding="utf-8"
+    )
     package = export_state(source_config, tmp_path / "pakiety")
 
     target_config = make_state(tmp_path / "serwer", clock)
@@ -253,7 +276,7 @@ def test_package_config_import_locks_database_from_current_config(tmp_path, cloc
 
     assert target_config.read_text(encoding="utf-8") == current_config_text
     assert dump(current_db) == current_db_before
-    assert not (current_db.parent / "package.sqlite").exists()
+    assert not (current_db.parent / "data-from-package" / "package.sqlite").exists()
 
 
 def rebuild(

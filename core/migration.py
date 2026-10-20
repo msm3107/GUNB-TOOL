@@ -313,26 +313,33 @@ def _maintenance_operation_locks(
     kontroli do walidacji bazy po podmianie. Kopia i eksport na żywo rezerwują tylko blokadę serwisową,
     a spójność odczytu zapewnia im API kopii SQLite.
     """
-    normalized_paths = {
-        os.path.normcase(str(Path(path).resolve())): Path(path).resolve()
-        for path in (db_path, *additional_db_paths)
-    }
-    database_paths = tuple(normalized_paths[key] for key in sorted(normalized_paths))
+    database_paths = _ordered_unique_paths((db_path, *additional_db_paths))
 
     with ExitStack() as locks:
         try:
-            for path in database_paths:
-                locks.enter_context(instance_lock(maintenance_lock_path(path)))
+            for path in _ordered_unique_paths(tuple(maintenance_lock_path(path) for path in database_paths)):
+                locks.enter_context(instance_lock(path))
             if require_engine_idle:
-                for path in database_paths:
-                    locks.enter_context(instance_lock(database_replacement_lock_path(path)))
-                for path in database_paths:
-                    locks.enter_context(instance_lock(engine_lock_path(path)))
-                for path in database_paths:
-                    locks.enter_context(instance_lock(bot_lock_path(path)))
+                for path in _ordered_unique_paths(
+                    tuple(database_replacement_lock_path(path) for path in database_paths)
+                ):
+                    locks.enter_context(instance_lock(path))
+                for path in _ordered_unique_paths(tuple(engine_lock_path(path) for path in database_paths)):
+                    locks.enter_context(instance_lock(path))
+                for path in _ordered_unique_paths(tuple(bot_lock_path(path) for path in database_paths)):
+                    locks.enter_context(instance_lock(path))
         except AlreadyRunning as exc:
             raise MigrationError(f"Silnik działa lub inny proces korzysta z bazy: {exc}") from None
         yield
+
+
+def _ordered_unique_paths(paths: Sequence[Path]) -> tuple[Path, ...]:
+    """Normalize, deduplicate, and sort filesystem paths before locking them."""
+    normalized_paths = {}
+    for path in paths:
+        resolved = Path(path).resolve()
+        normalized_paths[os.path.normcase(str(resolved))] = resolved
+    return tuple(normalized_paths[key] for key in sorted(normalized_paths))
 
 
 def _require_stopped(config: AppConfig, db_path: Path, *, action: str) -> None:
