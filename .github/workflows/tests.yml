@@ -20,12 +20,4 @@ jobs:
           cache: pip
       # te same wersje zależności, które instaluje serwer (requirements.lock)
       - run: pip install -c requirements.lock -r requirements-dev.txt
-      # Optional Linux webhook dependency; not installed by the bot updater.
-      - run: pip install --require-hashes -r requirements-webhook.lock
       - run: pytest
-
-  deploy-scripts:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - run: shellcheck deploy/*.sh deploy/gunb-admin

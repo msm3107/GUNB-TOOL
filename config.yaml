@@ -89,69 +89,16 @@ filter:
   #   publiczna, rolnicza, inna
   include_categories: []
 
-# Segmenty klientów – lead trafia do PIERWSZEGO pasującego segmentu (kolejność ma znaczenie).
-# Warunki: kategoria leada z listy `categories` i kubatura w zakresie min/max (nieznana kubatura,
-# typowa dla zgłoszeń, nie wyklucza). `telegram_chat_id` kieruje segment na osobny czat/kanał –
-# puste = domyślny czat (TELEGRAM_CHAT_ID). Leady bez segmentu (rolnicze, inne) też idą na domyślny.
+# Segments classify investments by category and volume.
+# Order matters: each case enters the first matching segment.
 segments:
   domki:
     label: Domki jednorodzinne
     categories: [mieszkaniowa-jednorodzinna]
     max_kubatura: 2500     # powiat poznański: mediana domu 878 m³, 90% poniżej 1540 m³
-    telegram_chat_id: ${TELEGRAM_CHAT_ID_DOMKI}
   duze:
     label: Duże inwestycje / wielorodzinne
     categories: [mieszkaniowa-jednorodzinna, mieszkaniowa-wielorodzinna, mieszana, komercyjna, publiczna]
-    telegram_chat_id: ${TELEGRAM_CHAT_ID_DUZE}
-
-# Interaktywny bot Telegram (python main.py --bot) – każdy użytkownik ustawia własne filtry,
-# tryb raportów i „tylko HOT”, zapisuje leady i obserwuje inwestorów/gminy.
-bot:
-  # Administrator (ADMIN_CHAT_ID w .env; puste = TELEGRAM_CHAT_ID) – nadaje dostęp komendami
-  #   /aktywuj <chat_id> <dni|data>   np. /aktywuj 9876543 30 albo /aktywuj 9876543 2026-12-31
-  #   /przedluz <chat_id> <dni|data>  to samo (dni liczone od końca obecnego dostępu)
-  #   /odbierz <chat_id>              wyłącza dostęp od razu (zapisane i ustawienia klienta zostają)
-  #   /trial <chat_id>                pozwala na 7-dniowy test – rusza, gdy klient kliknie ▶️ (raz na osobę)
-  #   /nowymodel <chat_id|wszyscy> <dni|data>   termin dla dotychczasowych użytkowników (bez terminu)
-  #   /status                         import GUNB, wątek zadań i wysyłki z ostatniej doby
-  # albo przyciskami na karcie nowej osoby. Sam ma dostęp bez abonamentu.
-  admins: ["${ADMIN_CHAT_ID}"]
-  # Nick admina pokazywany osobom bez dostępu („Skontaktuj się z administratorem @nick…”).
-  # Puste = klikalny link do admina po ID.
-  admin_contact: ${ADMIN_CONTACT}
-  # approval – dostęp tylko z testem albo abonamentem nadanym przez admina; open – dostęp dla każdego.
-  access: approval
-  # O której bot sam pobiera dane GUNB (paczki są aktualizowane ok. 23:30). [] = tylko przez --fetch.
-  # 06:30 – przed raportem porannym; 13:30 – na wypadek, gdy GUNB opublikuje paczkę z opóźnieniem
-  # (bez zmian w paczce to tylko krótkie sprawdzenie: plik się nie pobiera, nic nie jest wysyłane drugi raz).
-  fetch_times: ["06:30", "13:30"]
-  morning_time: "07:00"
-  evening_time: "19:00"
-  # Co ile minut sprawdzać alerty 👀 watchlisty i tryb „⚡ od razu”.
-  instant_every_minutes: 10
-  # Z ilu dni wstecz nowa osoba dostaje leady w pierwszym raporcie.
-  welcome_backlog_days: 7
-  max_leads_in_report: 20
-  # Oferta dalszego dostępu – bot pokazuje ją przed testem, na ekranie konta, przed końcem i po końcu
-  # dostępu. Wartości wpisuj w .env (repozytorium jest publiczne). Dopóki brakuje ceny, sposobu podatku,
-  # sposobu płatności albo danych sprzedawcy, bot nie pokazuje ceny ani przycisku zamówienia – tylko
-  # „💬 Zapytaj o ofertę”. Brakujące pola pokazuje adminowi /dane. Wzór: .env.example.
-  offer:
-    name: ${OFERTA_NAZWA:-Żółta Tablica}
-    area: ${OFERTA_OBSZAR:-województwo warmińsko-mazurskie}
-    accounts: ${OFERTA_KONTA:-1}              # ile kont Telegram obejmuje jeden dostęp
-    price: ${OFERTA_CENA:-}                   # np. 99 – decyzja operatora (hipoteza pilotażu)
-    currency: ${OFERTA_WALUTA:-PLN}
-    period_days: ${OFERTA_DNI:-30}
-    tax: ${OFERTA_PODATEK:-}                  # netto_vat | brutto | bez_vat
-    vat_rate: ${OFERTA_VAT:-23}               # tylko przy netto_vat
-    payment: ${OFERTA_PLATNOSC:-}             # np. przelew – dane w potwierdzeniu zamówienia
-    seller_name: ${OFERTA_SPRZEDAWCA:-}
-    seller_contact: ${OFERTA_KONTAKT:-}
-    renewal: ${OFERTA_ODNOWIENIE:-Dostęp nie odnawia się sam – przed końcem przypomnę o przedłużeniu.}
-    terms_url: ${OFERTA_ZASADY_URL:-}
-    privacy_url: ${OFERTA_PRYWATNOSC_URL:-}
-    response_time: ${OFERTA_ODPOWIEDZ:-}      # np. w dni robocze 16:00–20:00 (puste = nie pokazuj)
 
 geocoding:
   enabled: true
@@ -181,37 +128,15 @@ http:
 
 storage:
   db_path: data/gunb_leads.sqlite
-  # Kopia bazy raz dziennie: w nocnych porządkach bota (03:30) albo przed pobieraniem danych, jeśli
-  # tego dnia jeszcze jej nie było (data w nazwie pliku; zostaje 14 najnowszych). Kopie leżą na tym
-  # samym dysku – przechowuj je też gdzie indziej (docs/WDROZENIE.md, sekcja F).
+  # Backups run before data fetches and according to the configured interval.
+  # Keep a copy outside the database disk as well.
   backup_dir: data/backups
   backup_every_days: 1
   backup_keep: 14
   # Od tylu nowych/zmienionych leadów w jednym pobieraniu po imporcie wykonywany jest VACUUM.
   vacuum_threshold: 500
 
-notifications:
-  # Najwięcej leadów obsłużonych na kanał w jednym uruchomieniu (reszta pójdzie przy następnym).
-  max_leads_per_run: 200
-  # Powyżej tylu leadów dla jednego czatu zamiast serii wiadomości idzie raport zbiorczy.
-  digest_threshold: 10
-  # Nie powiadamiaj o leadach, których status zmienił się dawniej niż N dni temu.
-  max_age_days: 14
-
-telegram:
-  bot_token: ${TELEGRAM_BOT_TOKEN}
-  chat_id: ${TELEGRAM_CHAT_ID}
-  # Cichy kanał admina: awarie (GUNB/ULDK nie odpowiada, blokada bazy…) idą tylko tutaj, nie do klientów.
-  # Puste = alerty wyłączone. Sprawdzenie: python main.py --test-alert
-  admin_chat_id: ${TELEGRAM_ADMIN_CHAT_ID}
-  delay_seconds: 1.0     # odstęp między wiadomościami; minimum 1 s (limit Telegrama: ~1 wiadomość/s na czat)
-
-discord:
-  webhook_url: ${DISCORD_WEBHOOK_URL}
-  delay_seconds: 1.0
-
-# E-mail wymaga świadomego włączenia, TLS i danych SMTP w .env.
-# Brak sekcji oznacza wyłączenie; WhatsApp pozostaje niedostępny.
+# Optional SMTP settings. This file does not enable message delivery.
 email:
   enabled: false
   host: ${SMTP_HOST:-}
@@ -220,14 +145,6 @@ email:
   from_address: ${SMTP_FROM_ADDRESS:-}
   timeout_seconds: 5
 
-whatsapp:
-  enabled: false
-
-sheets:
-  service_account_file: ${GOOGLE_SERVICE_ACCOUNT_FILE:-service_account.json}
-  spreadsheet_id: ${GOOGLE_SHEET_ID}
-  worksheet: Leady
-
 logging:
   level: INFO
-  file: data/gunb_tool.log
+  file: data/gunb_engine.log
