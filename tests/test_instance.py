@@ -46,6 +46,18 @@ def test_current_engine_detects_legacy_lock_next_to_symlinked_database(tmp_path)
         pass
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink lock regression is exercised on Linux CI")
+def test_engine_process_lock_deduplicates_a_symlinked_database_directory(tmp_path):
+    actual_dir = tmp_path / "actual"
+    actual_dir.mkdir()
+    alias_dir = tmp_path / "alias"
+    alias_dir.symlink_to(actual_dir, target_is_directory=True)
+    db_path = alias_dir / "gunb_leads.sqlite"
+
+    with engine_process_lock(db_path):
+        pass
+
+
 def test_lock_held_by_another_process_blocks_and_dies_with_it(tmp_path):
     lock = tmp_path / "gunb-bot.lock"
     holder = subprocess.Popen(

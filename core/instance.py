@@ -60,11 +60,14 @@ def legacy_bot_alias_lock_path(db_path: str | Path) -> Path:
 @contextmanager
 def engine_process_lock(db_path: str | Path) -> Iterator[None]:
     """Chroni operacje silnika i zachowuje wyłączność ze starszymi wydaniami."""
-    lock_paths = dict.fromkeys((
-        engine_lock_path(db_path),
-        bot_lock_path(db_path),
-        legacy_bot_alias_lock_path(db_path),
-    ))
+    lock_paths = dict.fromkeys(
+        Path(path).resolve()
+        for path in (
+            engine_lock_path(db_path),
+            bot_lock_path(db_path),
+            legacy_bot_alias_lock_path(db_path),
+        )
+    )
     with ExitStack() as locks:
         for path in lock_paths:
             locks.enter_context(instance_lock(path))
