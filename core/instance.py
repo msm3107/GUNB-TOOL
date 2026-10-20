@@ -26,18 +26,18 @@ class AlreadyRunning(RuntimeError):
 
 
 def engine_lock_path(db_path: str | Path) -> Path:
-    """Blokada wszystkich procesów silnika korzystających z tej bazy."""
-    return Path(db_path).parent / ENGINE_LOCK_NAME
+    """Blokada silnika w katalogu kanonicznego pliku bazy."""
+    return Path(db_path).resolve().parent / ENGINE_LOCK_NAME
 
 
 def maintenance_lock_path(db_path: str | Path) -> Path:
-    """Blokada wzajemna dla eksportu, kopii, importu i odtwarzania bazy."""
-    return Path(db_path).parent / MAINTENANCE_LOCK_NAME
+    """Blokada operacji serwisowych w katalogu kanonicznego pliku bazy."""
+    return Path(db_path).resolve().parent / MAINTENANCE_LOCK_NAME
 
 
 def database_replacement_lock_path(db_path: str | Path) -> Path:
-    """Blokada krótkich odczytów przed importem lub odtworzeniem pliku bazy."""
-    return Path(db_path).parent / DATABASE_REPLACEMENT_LOCK_NAME
+    """Blokada odczytów w katalogu kanonicznego pliku bazy."""
+    return Path(db_path).resolve().parent / DATABASE_REPLACEMENT_LOCK_NAME
 
 
 @contextmanager
@@ -49,7 +49,7 @@ def database_replacement_lock(db_path: str | Path) -> Iterator[None]:
 
 def bot_lock_path(db_path: str | Path) -> Path:
     """Ścieżka blokady używanej przez starsze wydania aplikacji."""
-    return Path(db_path).parent / LEGACY_BOT_LOCK_NAME
+    return Path(db_path).resolve().parent / LEGACY_BOT_LOCK_NAME
 
 
 @contextmanager

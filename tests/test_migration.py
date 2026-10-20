@@ -13,10 +13,12 @@ import pytest
 
 import core.migration as migration_module
 from core.instance import (
+    bot_lock_path,
     database_replacement_lock_path,
     engine_lock_path,
     instance_lock,
     lock_is_free,
+    maintenance_lock_path,
 )
 from core.migration import (
     CONFIG_ENTRY,
@@ -213,10 +215,13 @@ def test_import_refuses_an_active_engine_and_preserves_the_database(tmp_path, pa
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink lock regression is exercised on Linux CI")
 @pytest.mark.parametrize(
     "lock_path",
-    [engine_lock_path, database_replacement_lock_path],
-    ids=["engine", "health-probe"],
+    [engine_lock_path, database_replacement_lock_path, maintenance_lock_path, bot_lock_path],
+    ids=["engine", "health-probe", "maintenance", "legacy-bot"],
 )
-def test_import_refuses_active_lock_for_symlinked_database(tmp_path, package, clock, lock_path):
+@pytest.mark.parametrize("lock_holder_path", ["alias", "target"], ids=["alias-lock", "target-lock"])
+def test_import_refuses_active_lock_for_symlinked_database(
+    tmp_path, package, clock, lock_path, lock_holder_path
+):
     target = make_state(tmp_path / "serwer", clock)
     actual_db = db_of(target)
     alias_dir = target.parent / "alias"
@@ -226,12 +231,46 @@ def test_import_refuses_active_lock_for_symlinked_database(tmp_path, package, cl
     target.write_text(CONFIG.replace("data/gunb_leads.sqlite", "alias/gunb_leads.sqlite"), encoding="utf-8")
     before = dump(actual_db)
 
-    with instance_lock(lock_path(alias_db)), pytest.raises(MigrationError, match="Silnik działa"):
+    held_db_path = alias_db if lock_holder_path == "alias" else actual_db
+    with instance_lock(lock_path(held_db_path)), pytest.raises(MigrationError, match="Silnik działa"):
         import_state(package, target, replace=True)
 
     assert alias_db.is_symlink()
     assert alias_db.resolve() == actual_db.resolve()
     assert dump(actual_db) == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink replacement regression is exercised on Linux CI")
+@pytest.mark.parametrize("operation", ["import", "restore"])
+def test_database_replacement_via_symlink_preserves_alias_and_updates_target(
+    tmp_path, source, package, clock, operation
+):
+    target = make_state(tmp_path / operation, clock)
+    actual_db = db_of(target)
+    alias_dir = target.parent / "alias"
+    alias_dir.mkdir()
+    alias_db = alias_dir / actual_db.name
+    alias_db.symlink_to(actual_db)
+
+    if operation == "import":
+        expected = dump(db_of(source))
+        target.write_text(CONFIG.replace("data/gunb_leads.sqlite", "alias/gunb_leads.sqlite"), encoding="utf-8")
+        result = import_state(package, target, replace=True)
+        assert result.database == actual_db
+    else:
+        backup = backup_now(target)
+        expected = dump(backup)
+        with LeadRepository(actual_db) as repo:
+            repo.upsert(Investment(
+                id_sprawy="RESTORE/1", zrodlo="pozwolenia", status="decyzja", nazwa_zamierzenia="Nowszy wpis"
+            ))
+        assert dump(actual_db) != expected
+        target.write_text(CONFIG.replace("data/gunb_leads.sqlite", "alias/gunb_leads.sqlite"), encoding="utf-8")
+        restore_backup(backup, target)
+
+    assert alias_db.is_symlink()
+    assert alias_db.resolve() == actual_db.resolve()
+    assert dump(actual_db) == expected
 
 
 @pytest.mark.parametrize("operation", ["import", "restore"])

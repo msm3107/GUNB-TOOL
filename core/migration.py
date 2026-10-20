@@ -214,11 +214,13 @@ configurations are backed up before replacement."""
             if use_package_config:
                 _write_private_text(probe, archive.read(CONFIG_ENTRY).decode("utf-8"))
             config = _config(probe)
-            db_path = config.storage.db_path
+            # Resolve a database symlink before staging or replacing files. os.replace() replaces
+            # the symlink itself, so the configured alias must never be the replacement target.
+            db_path = config.storage.db_path.resolve()
             database_paths = [db_path]
             if use_package_config and config_path.is_file():
                 current_db_path = _config(config_path).storage.db_path
-                if current_db_path != db_path:
+                if current_db_path.resolve() != db_path:
                     database_paths.append(current_db_path)
             with _maintenance_operation_locks(
                 db_path,
@@ -279,7 +281,8 @@ The current database is saved first and its backup path is returned."""
         raise MigrationError(f"Kopia ma schemat v{schema}, a ten kod zna tylko v{SCHEMA_VERSION} – najpierw "
                              "wróć do wersji aplikacji, która go obsługuje")
     config = _config(config_path)
-    db_path = config.storage.db_path
+    # Keep the replacement target and its staging file beside the real database, not beside a symlink alias.
+    db_path = config.storage.db_path.resolve()
     with _maintenance_operation_locks(db_path, require_engine_idle=True):
         _require_stopped(config, db_path, action="odtworzenie kopii")
         stamp = (now or (lambda: datetime.now(timezone.utc)))().strftime("%Y%m%dT%H%M%SZ")
@@ -313,9 +316,9 @@ def _maintenance_operation_locks(
     kontroli do walidacji bazy po podmianie. Kopia i eksport na żywo rezerwują tylko blokadę serwisową,
     a spójność odczytu zapewnia im API kopii SQLite.
     """
-    # Engine and health locks use the configured database path directly. Preserve its symlink alias
-    # until their lock paths are derived so maintenance joins the same lock namespace.
-    database_paths = _ordered_unique_paths((db_path, *additional_db_paths), resolve_symlinks=False)
+    # Canonicalize aliases before deriving every lock so engine, health probes and maintenance share
+    # one OS-lock namespace for the same SQLite file.
+    database_paths = _ordered_unique_paths((db_path, *additional_db_paths))
 
     with ExitStack() as locks:
         try:
@@ -335,13 +338,11 @@ def _maintenance_operation_locks(
         yield
 
 
-def _ordered_unique_paths(
-    paths: Sequence[Path], *, resolve_symlinks: bool = True
-) -> tuple[Path, ...]:
-    """Normalize, deduplicate, and sort paths, optionally preserving symlink aliases."""
+def _ordered_unique_paths(paths: Sequence[Path]) -> tuple[Path, ...]:
+    """Resolve symlink aliases, then deduplicate and sort database paths."""
     normalized_paths = {}
     for path in paths:
-        normalized = Path(path).resolve() if resolve_symlinks else Path(os.path.abspath(path))
+        normalized = Path(path).resolve()
         normalized_paths[os.path.normcase(str(normalized))] = normalized
     return tuple(normalized_paths[key] for key in sorted(normalized_paths))
 
