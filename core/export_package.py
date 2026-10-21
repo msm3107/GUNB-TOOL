@@ -81,6 +81,22 @@ def _row_values(
     status_history = item.status_history
     if item.category == DeliveryCategory.FULL and status_history is None:
         raise ValueError("Pełny snapshot wymaga pobranej historii statusów")
+    history_json = (
+        json.dumps(
+            [
+                {
+                    "stary_status": change.stary_status,
+                    "nowy_status": change.nowy_status,
+                    "zmieniono": change.zmieniono,
+                }
+                for change in status_history
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if status_history is not None
+        else None
+    )
     score = score_investment(investment)
     timing = stage_note(trade, investment, as_of) if trade is not None and as_of is not None else None
 
@@ -90,18 +106,7 @@ def _row_values(
         investment.status,
         investment.status_opis,
         investment.data_aktualizacji,
-        json.dumps(
-            [
-                {
-                    "stary_status": change.stary_status,
-                    "nowy_status": change.nowy_status,
-                    "zmieniono": change.zmieniono,
-                }
-                for change in status_history or ()
-            ],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
+        history_json,
         investment.data_wplywu,
         investment.data_decyzji,
         investment.organ,

@@ -80,6 +80,7 @@ def test_xlsx_has_three_delivery_sheets_with_scoring_timing_location_and_history
     assert "Etap dachu" in new_sheet.cell(2, header_columns["Kiedy dzwonić"]).value
     assert new_sheet.cell(2, header_columns["Geoportal"]).value == "https://example.test/geoportal"
     assert new_sheet.cell(2, header_columns["Google Maps"]).value == "https://example.test/maps"
+    assert new_sheet.cell(2, header_columns["Historia statusów"]).value is None
     assert workbook["2. Zmiany"].max_row == 2
     full_sheet = workbook["3. Pełna baza"]
     assert full_sheet.max_row == 2
@@ -170,3 +171,37 @@ def test_xlsx_requires_reference_date_when_a_trade_window_is_requested() -> None
 def test_xlsx_requires_status_history_for_full_snapshot() -> None:
     with pytest.raises(ValueError, match="historii statusów"):
         write_xlsx((make_item("CASE-FULL", DeliveryCategory.FULL),), BytesIO())
+
+
+def test_history_column_distinguishes_unloaded_delta_from_empty_snapshot_history() -> None:
+    delta_item = make_item("CASE-DELTA", DeliveryCategory.NEW)
+    change_item = make_item("CASE-CHANGE", DeliveryCategory.CHANGE)
+    full_item = make_item("CASE-FULL-EMPTY", DeliveryCategory.FULL)
+    full_item = ClassifiedDeliveryItem(
+        full_item.investment, full_item.revision, full_item.category, ()
+    )
+    items = (delta_item, change_item, full_item)
+    xlsx_output = BytesIO()
+
+    write_xlsx(items, xlsx_output)
+
+    workbook = load_workbook(BytesIO(xlsx_output.getvalue()), data_only=False)
+    new_sheet = workbook["1. Nowe"]
+    new_columns = {cell.value: cell.column for cell in new_sheet[1]}
+    assert new_sheet.cell(2, new_columns["Historia statusów"]).value is None
+    change_sheet = workbook["2. Zmiany"]
+    change_columns = {cell.value: cell.column for cell in change_sheet[1]}
+    assert change_sheet.cell(2, change_columns["Historia statusów"]).value is None
+    full_sheet = workbook["3. Pełna baza"]
+    full_columns = {cell.value: cell.column for cell in full_sheet[1]}
+    assert json.loads(full_sheet.cell(2, full_columns["Historia statusów"]).value) == []
+    workbook.close()
+
+    csv_output = BytesIO()
+    write_csv(items, csv_output)
+    rows = list(csv.reader(StringIO(csv_output.getvalue().decode("utf-8-sig"), newline="")))
+    columns = {name: index for index, name in enumerate(rows[0])}
+    history_column = columns["Historia statusów"]
+    assert rows[1][history_column] == ""
+    assert rows[2][history_column] == ""
+    assert rows[3][history_column] == "[]"
