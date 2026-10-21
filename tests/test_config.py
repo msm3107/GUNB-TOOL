@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from gunb_tool.config import ConfigError, load_config
-from gunb_tool.models import Source
+from core.config import ConfigError, load_config
+from core.models import Source
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -96,7 +96,6 @@ def test_repository_config_monitors_the_whole_warminsko_mazurskie_voivodeship():
     """Iława, Szczytno, Bisztynek… – całe województwo, nie tylko Olsztyn i powiat olsztyński."""
     cfg = load_config(REPO_ROOT / "config.yaml", env={})
     assert cfg.gunb.voivodeships == ("28",) and cfg.gunb.powiats == ()
-    assert cfg.bot.offer.area == "województwo warmińsko-mazurskie"
 
 
 # --- Segmenty klientów ----------------------------------------------------------------------
@@ -147,6 +146,21 @@ def test_invalid_segments_raise(tmp_path, segment, fragment):
 def test_repository_config_defines_domki_and_duze_segments():
     cfg = load_config(REPO_ROOT / "config.yaml", env={})
     assert [s.name for s in cfg.segments] == ["domki", "duze"]
+
+
+# --- Email ------------------------------------------------------------------------------------
+
+def test_email_delivery_is_rejected_until_the_sender_is_wired(tmp_path):
+    body = (
+        "gunb:\n  voivodeships: ['16']\n"
+        "email:\n  enabled: true\n  host: smtp.example.org\n"
+        "  from_address: reports@example.org\n"
+    )
+    with pytest.raises(ConfigError, match="email.enabled: wysyłka jest niedostępna"):
+        load_config(
+            write_config(tmp_path, body),
+            env={"SMTP_USERNAME": "user", "SMTP_PASSWORD": "secret"},
+        )
 
 
 # --- Powiadomienia ---------------------------------------------------------------------------

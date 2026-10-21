@@ -16,11 +16,11 @@ import tempfile
 import time
 from pathlib import Path
 
-from gunb_tool.config import HttpConfig
-from gunb_tool.geocoding_uldk import POLAND_BOUNDS, WGS84_SRID, UldkClient, UldkError, UldkGeocoder, wkt_srid
-from gunb_tool.http_client import HttpError, ResilientHttpClient
-from gunb_tool.models import Investment, Parcel
-from gunb_tool.storage import ChangeType, LeadRepository
+from core.config import HttpConfig
+from core.geocoding_uldk import POLAND_BOUNDS, WGS84_SRID, UldkClient, UldkError, UldkGeocoder, wkt_srid
+from core.http_client import HttpError, ResilientHttpClient
+from core.models import Investment, Parcel
+from core.storage import ChangeType, LeadRepository
 
 TEST_PARCEL_ID = "146510_8.0309.24/35"  # Pałac Kultury i Nauki, Warszawa-Śródmieście
 GOOGLE_MAPS_LINK = re.compile(r"^https://www\.google\.com/maps\?q=(-?\d+\.\d{6}),(-?\d+\.\d{6})$")

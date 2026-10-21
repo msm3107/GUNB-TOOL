@@ -2,9 +2,9 @@ from datetime import date
 
 import pytest
 
-from gunb_tool.models import GunbCase, Parcel, Source, Status
-from gunb_tool.teryt import get_voivodeship
-from gunb_tool.text import clean, normalize_text
+from core.models import GunbCase, Parcel, Source, Status
+from core.teryt import get_voivodeship
+from core.text import clean, normalize_text
 
 
 def make_case(**overrides) -> GunbCase:

@@ -5,9 +5,9 @@ from datetime import date, timedelta
 
 import pytest
 
-from gunb_tool.maintenance import vacuum_after_import, backup_if_due
-from gunb_tool.models import Investment
-from gunb_tool.storage import LeadRepository
+from core.maintenance import vacuum_after_import, backup_if_due
+from core.models import Investment
+from core.storage import LeadRepository
 
 DAY = date(2026, 9, 29)
 

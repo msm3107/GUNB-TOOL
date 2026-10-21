@@ -2,10 +2,22 @@
 
 from datetime import date, timedelta
 
-from gunb_tool.bot_store import BotUser, UserFilters
-from gunb_tool.ranking import match_reasons, ranked, stage_note
-from gunb_tool.stages import get_trade
-from tests.bot_helpers import lead
+from core.models import Investment
+from core.ranking import BotUser, UserFilters, match_reasons, ranked, stage_note
+from core.stages import get_trade
+
+
+def lead(id_sprawy: str, **kwargs) -> Investment:
+    data = dict(
+        id_sprawy=id_sprawy,
+        zrodlo="pozwolenia",
+        status="decyzja",
+        nazwa_zamierzenia="Budowa",
+        kategoria="mieszkaniowa-jednorodzinna",
+    )
+    data.update(kwargs)
+    return Investment(**data)
+
 
 TODAY = date(2026, 9, 29)
 BASE = (53.7784, 20.4801)

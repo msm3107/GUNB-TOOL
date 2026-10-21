@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from gunb_tool.email_sender import SMTPSettings
+from core.email_sender import SMTPSettings
 
 
 SETTINGS = SMTPSettings('smtp.example.org', 587, 'reports@example.org')
@@ -73,7 +73,7 @@ class Context:
 
 
 def supervisor(context, monkeypatch, **options):
-    from gunb_tool import smtp_process
+    from core import smtp_process
     ticks = iter(i * .1 for i in range(10000))
     monkeypatch.setattr(smtp_process.time, 'monotonic', lambda: next(ticks))
     return smtp_process.SupervisedSMTP(SETTINGS, _context=context, timeout_seconds=.5, **options)
@@ -121,5 +121,5 @@ def test_start_failure_is_generic(monkeypatch, caplog):
 
 
 def test_real_spawn_rejects_invalid_recipient_without_network():
-    from gunb_tool.smtp_process import SupervisedSMTP
+    from core.smtp_process import SupervisedSMTP
     assert SupervisedSMTP(SETTINGS, timeout_seconds=10).send(None, None, idempotency_key='test').outcome == 'failed'

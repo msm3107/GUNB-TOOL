@@ -7,7 +7,7 @@ import sys
 import pytest
 from dotenv import dotenv_values
 
-from gunb_tool.envfile import is_set, main, set_values
+from core.envfile import is_set, main, set_values
 
 TOKEN = "123456789:AAH-synthetic_test_token_000000000000"
 

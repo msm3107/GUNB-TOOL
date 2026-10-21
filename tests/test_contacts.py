@@ -2,7 +2,7 @@
 
 import pytest
 
-from gunb_tool.contacts import extract_contact, find_email, find_phone
+from core.contacts import extract_contact, find_email, find_phone
 
 
 @pytest.mark.parametrize(

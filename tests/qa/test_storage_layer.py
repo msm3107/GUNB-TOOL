@@ -7,8 +7,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from gunb_tool.bot_store import BotStore
-from gunb_tool.storage import ChangeType, LeadRepository
+from core.storage import ChangeType, LeadRepository
 
 
 class Ticking:
@@ -46,23 +45,6 @@ def test_status_change_updates_the_same_row_and_flags_it_for_sending(make_lead):
         assert [lead.status for lead in repo.pending_notifications("telegram", limit=10)] == ["decyzja"]
         history = [(h.stary_status, h.nowy_status) for h in repo.status_history(wniosek.id_sprawy)]
         assert history == [(None, "wniosek"), ("wniosek", "decyzja")]
-
-
-def test_status_change_is_offered_again_to_bot_users(make_lead):
-    clock = Ticking()
-    with LeadRepository(":memory:", now=clock) as repo:
-        store = BotStore(repo)
-        store.register(101, "Ekipa", None, status="aktywny", backlog_days=7)
-        repo.upsert(make_lead(status="wniosek", data_decyzji=None))
-        [first] = store.candidates(101, "2000-01-01")
-        store.record_delivery(101, [first], "raport")
-        assert store.candidates(101, "2000-01-01") == []
-        clock.tick()
-
-        repo.upsert(make_lead(status="decyzja", data_decyzji="2026-09-25"))
-
-        [again] = store.candidates(101, "2000-01-01")  # nowa rewizja – klient dostaje „🔄 ZMIANA STATUSU”
-        assert again.status == "decyzja"
 
 
 def test_identical_reimport_changes_nothing(memory_repo, make_lead):
@@ -169,19 +151,18 @@ def test_concurrent_scraper_and_bot_threads_see_only_whole_pages(db_path, make_l
         finally:
             done.set()
 
-    def bot() -> None:
+    def reader() -> None:
         try:
             with LeadRepository(db_path) as repo:
-                store = BotStore(repo)
                 while True:
                     counts.append(repo.connection.execute("SELECT COUNT(*) FROM investments").fetchone()[0])
-                    store.candidates(1, "2000-01-01")  # to samo zapytanie co przy raporcie
+                    repo.connection.execute("SELECT * FROM investments WHERE data_aktualizacji >= '2000-01-01'").fetchall()
                     if done.is_set():
                         break
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target=bot), threading.Thread(target=scraper)]
+    threads = [threading.Thread(target=reader), threading.Thread(target=scraper)]
     for thread in threads:
         thread.start()
     for thread in threads:
