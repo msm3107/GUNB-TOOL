@@ -593,6 +593,27 @@ class LeadRepository:
         ).fetchall()
         return [StatusChange(**dict(row)) for row in rows]
 
+    def status_histories(self, id_sprawy: Iterable[str]) -> dict[str, tuple[StatusChange, ...]]:
+        """Zwraca historie wskazanych spraw wsadowo, zachowując kolejność zdarzeń.
+
+        Zapytania są dzielone na porcje mniejsze od limitu parametrów SQLite. Sprawy
+        bez wpisów historii również pojawiają się w wyniku z pustą krotką.
+        """
+        case_ids = tuple(dict.fromkeys(id_sprawy))
+        histories: dict[str, list[StatusChange]] = {case_id: [] for case_id in case_ids}
+        chunk_size = 500
+        for start in range(0, len(case_ids), chunk_size):
+            chunk = case_ids[start : start + chunk_size]
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                "SELECT id_sprawy, stary_status, nowy_status, zmieniono FROM status_history "
+                f"WHERE id_sprawy IN ({placeholders}) ORDER BY id_sprawy, id",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                histories[row["id_sprawy"]].append(StatusChange(**dict(row)))
+        return {case_id: tuple(rows) for case_id, rows in histories.items()}
+
     def last_status_change(self, id_sprawy: str) -> StatusChange | None:
         """Ostatni wpis historii statusów (``stary_status=None`` = nowa sprawa)."""
         row = self._conn.execute(

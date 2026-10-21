@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import csv
+import json
 from collections.abc import Iterable, Sequence
 from datetime import date
-from typing import BinaryIO, TextIO
+from typing import BinaryIO
 
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
@@ -28,6 +29,7 @@ EXPORT_COLUMNS: tuple[str, ...] = (
     "Status",
     "Opis statusu",
     "Data aktualizacji",
+    "Historia statusów",
     "Data wpływu",
     "Data decyzji",
     "Organ",
@@ -76,6 +78,9 @@ def _row_values(
     as_of: date | None,
 ) -> tuple[object, ...]:
     investment = item.investment
+    status_history = item.status_history
+    if item.category == DeliveryCategory.FULL and status_history is None:
+        raise ValueError("Pełny snapshot wymaga pobranej historii statusów")
     score = score_investment(investment)
     timing = stage_note(trade, investment, as_of) if trade is not None and as_of is not None else None
 
@@ -85,6 +90,18 @@ def _row_values(
         investment.status,
         investment.status_opis,
         investment.data_aktualizacji,
+        json.dumps(
+            [
+                {
+                    "stary_status": change.stary_status,
+                    "nowy_status": change.nowy_status,
+                    "zmieniono": change.zmieniono,
+                }
+                for change in status_history or ()
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
         investment.data_wplywu,
         investment.data_decyzji,
         investment.organ,
@@ -134,6 +151,17 @@ def _protect_csv_value(value: object) -> object:
     return "'" + value if first in _FORMULA_PREFIXES else value
 
 
+class _Utf8CsvSink:
+    """Adapter csv.writer, który koduje każdy wiersz bez buforowania całego pliku."""
+
+    def __init__(self, destination: BinaryIO) -> None:
+        self._destination = destination
+
+    def write(self, value: str) -> int:
+        self._destination.write(value.encode("utf-8"))
+        return len(value)
+
+
 def write_xlsx(
     items: Sequence[ClassifiedDeliveryItem],
     destination: BinaryIO,
@@ -147,6 +175,11 @@ def write_xlsx(
     nie otwiera ścieżek ani nie zapisuje historii doręczeń.
     """
     trade = _resolve_trade(trade_key, as_of)
+    if any(
+        item.category == DeliveryCategory.FULL and item.status_history is None
+        for item in items
+    ):
+        raise ValueError("Pełny snapshot wymaga pobranej historii statusów")
     workbook = Workbook(write_only=True)
     for category, name in SHEET_NAMES:
         sheet = workbook.create_sheet(title=name)
@@ -160,19 +193,19 @@ def write_xlsx(
 
 def write_csv(
     items: Iterable[ClassifiedDeliveryItem],
-    destination: TextIO,
+    destination: BinaryIO,
     *,
     trade_key: str | None = None,
     as_of: date | None = None,
 ) -> None:
     """Zapisuje płaski CSV UTF-8 z BOM i ochroną komórek przed formułami.
 
-    ``destination`` to otwarty strumień tekstowy w pustej pozycji. Eksport nie
-    zamyka strumienia i nie wykonuje operacji na bazie ani sieci.
+    ``destination`` to otwarty strumień binarny w pustej pozycji. Eksport sam
+    kontroluje UTF-8, pojedynczy BOM i końce wierszy CRLF; nie zamyka strumienia.
     """
     trade = _resolve_trade(trade_key, as_of)
-    writer = csv.writer(destination, lineterminator="\r\n")
-    destination.write("\ufeff")
+    destination.write(b"\xef\xbb\xbf")
+    writer = csv.writer(_Utf8CsvSink(destination), lineterminator="\r\n")
     writer.writerow(EXPORT_COLUMNS)
     for item in items:
         writer.writerow(

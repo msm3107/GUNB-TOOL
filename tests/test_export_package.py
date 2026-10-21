@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from datetime import date
 from io import BytesIO, StringIO
 from zipfile import is_zipfile
@@ -13,6 +14,7 @@ from openpyxl import load_workbook
 from core.delivery_memory import ClassifiedDeliveryItem
 from core.export_package import write_csv, write_xlsx
 from core.models import DeliveryCategory, Investment
+from core.storage import StatusChange
 
 
 def make_item(
@@ -29,7 +31,17 @@ def make_item(
     return ClassifiedDeliveryItem(investment, f"revision-{case_id}", category)
 
 
-def test_xlsx_has_three_delivery_sheets_with_scoring_timing_and_location() -> None:
+def test_xlsx_has_three_delivery_sheets_with_scoring_timing_location_and_history() -> None:
+    full_item = make_item("CASE-FULL", DeliveryCategory.FULL)
+    full_item = ClassifiedDeliveryItem(
+        full_item.investment,
+        full_item.revision,
+        full_item.category,
+        (
+            StatusChange("CASE-FULL", None, "wniosek", "2026-08-01T10:00:00+00:00"),
+            StatusChange("CASE-FULL", "wniosek", "decyzja", "2026-09-01T10:00:00+00:00"),
+        ),
+    )
     items = (
         make_item(
             "CASE-NEW",
@@ -46,7 +58,7 @@ def test_xlsx_has_three_delivery_sheets_with_scoring_timing_and_location() -> No
             google_maps_url="https://example.test/maps",
         ),
         make_item("CASE-CHANGE", DeliveryCategory.CHANGE),
-        make_item("CASE-FULL", DeliveryCategory.FULL),
+        full_item,
     )
     output = BytesIO()
 
@@ -69,7 +81,14 @@ def test_xlsx_has_three_delivery_sheets_with_scoring_timing_and_location() -> No
     assert new_sheet.cell(2, header_columns["Geoportal"]).value == "https://example.test/geoportal"
     assert new_sheet.cell(2, header_columns["Google Maps"]).value == "https://example.test/maps"
     assert workbook["2. Zmiany"].max_row == 2
-    assert workbook["3. Pełna baza"].max_row == 2
+    full_sheet = workbook["3. Pełna baza"]
+    assert full_sheet.max_row == 2
+    history_column = header_columns.get("Historia statusów")
+    assert history_column is not None
+    assert json.loads(full_sheet.cell(2, history_column).value) == [
+        {"stary_status": None, "nowy_status": "wniosek", "zmieniono": "2026-08-01T10:00:00+00:00"},
+        {"stary_status": "wniosek", "nowy_status": "decyzja", "zmieniono": "2026-09-01T10:00:00+00:00"},
+    ]
     workbook.close()
 
 
@@ -80,13 +99,15 @@ def test_csv_is_flat_utf8_bom_export_with_polish_text_and_csv_quoting() -> None:
         nazwa_zamierzenia='Budowa "Domu", w Łodzi',
         miejscowosc="Łódź",
     )
-    output = StringIO()
+    output = BytesIO()
 
     write_csv((item,), output)
 
-    value = output.getvalue()
-    assert value.startswith("\ufeff")
-    rows = list(csv.reader(StringIO(value.removeprefix("\ufeff"))))
+    payload = output.getvalue()
+    assert payload.startswith(b"\xef\xbb\xbf")
+    assert payload.count(b"\xef\xbb\xbf") == 1
+    assert b"\r\r\n" not in payload
+    rows = list(csv.reader(StringIO(payload.decode("utf-8-sig"), newline="")))
     header_columns = {name: index for index, name in enumerate(rows[0])}
     assert len(rows) == 2
     assert rows[1][header_columns["ID sprawy"]] == "CASE-ŁÓDŹ"
@@ -109,9 +130,9 @@ def test_spreadsheet_formula_text_is_kept_as_literal_in_xlsx_and_escaped_in_csv(
     assert investor_cell.data_type != "f"
     workbook.close()
 
-    csv_output = StringIO()
+    csv_output = BytesIO()
     write_csv((item,), csv_output)
-    rows = list(csv.reader(StringIO(csv_output.getvalue().removeprefix("\ufeff"))))
+    rows = list(csv.reader(StringIO(csv_output.getvalue().decode("utf-8-sig"), newline="")))
     csv_headers = {name: index for index, name in enumerate(rows[0])}
     assert rows[1][csv_headers["Inwestor"]] == "'" + formula_text
 
@@ -119,15 +140,33 @@ def test_spreadsheet_formula_text_is_kept_as_literal_in_xlsx_and_escaped_in_csv(
 @pytest.mark.parametrize("formula_text", ("=1+1", "+1+1", "-1+1", "@SUM(1,1)", " \t=1+1"))
 def test_csv_escapes_each_supported_formula_prefix(formula_text: str) -> None:
     item = make_item("CASE-FORMULA", DeliveryCategory.NEW, inwestor=formula_text)
-    output = StringIO()
+    output = BytesIO()
 
     write_csv((item,), output)
 
-    rows = list(csv.reader(StringIO(output.getvalue().removeprefix("\ufeff"))))
+    rows = list(csv.reader(StringIO(output.getvalue().decode("utf-8-sig"), newline="")))
     investor_column = rows[0].index("Inwestor")
     assert rows[1][investor_column] == "'" + formula_text
+
+
+def test_csv_binary_stream_has_deterministic_utf8_bom_and_crlf(tmp_path) -> None:
+    destination = tmp_path / "delivery.csv"
+
+    with destination.open("wb") as output:
+        write_csv((), output)
+
+    payload = destination.read_bytes()
+    assert payload.count(b"\xef\xbb\xbf") == 1
+    assert payload.endswith(b"\r\n")
+    assert payload.count(b"\r\n") == 1
+    assert b"\r\r\n" not in payload
 
 
 def test_xlsx_requires_reference_date_when_a_trade_window_is_requested() -> None:
     with pytest.raises(ValueError, match="as_of"):
         write_xlsx((make_item("CASE-1", DeliveryCategory.NEW),), BytesIO(), trade_key="dach")
+
+
+def test_xlsx_requires_status_history_for_full_snapshot() -> None:
+    with pytest.raises(ValueError, match="historii statusów"):
+        write_xlsx((make_item("CASE-FULL", DeliveryCategory.FULL),), BytesIO())
