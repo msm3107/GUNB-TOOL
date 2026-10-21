@@ -1,6 +1,7 @@
 # Runtime dependencies of GUNB Data Engine (keep this file ASCII-only: pip reads it in the system encoding)
 requests>=2.31,<3
 PyYAML>=6.0,<7
+openpyxl>=3.1,<4
 python-dotenv>=1.0,<2
 # Europe/Warsaw time zone for the schedule (Windows has no system zone database; fallback on Linux)
 tzdata>=2024.1
