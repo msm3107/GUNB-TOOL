@@ -8,17 +8,18 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .models import DeliveryCategory, Investment
-from .storage import LeadRepository
+from .storage import LeadRepository, StatusChange
 from .text import normalize_text
 
 
 @dataclass(frozen=True)
 class ClassifiedDeliveryItem:
-    """Inwestycja zaklasyfikowana do bieżącej paczki wraz z zapisywaną rewizją."""
+    """Inwestycja w paczce wraz z rewizją i historią statusów dla pełnego snapshotu."""
 
     investment: Investment
     revision: str
     category: DeliveryCategory
+    status_history: tuple[StatusChange, ...] | None = None
 
 
 class DeliveryClassifier:
@@ -75,11 +76,17 @@ class DeliveryClassifier:
         """Zwraca nowe/zmienione sprawy albo wszystkie sprawy dla pełnej paczki.
 
         Zwykła dostawa pomija niezmienione sprawy, które klient już otrzymał.
-        Historia jest czytana jednym zapytaniem dla całego zamówienia.
+        Historię doręczeń pobiera tylko dla kandydatów deltowych; pełny snapshot
+        dołącza historie statusów wsadowo.
         """
         candidates = tuple(investments)
         latest_revisions = (
             self._latest_revisions(order_id, candidates) if candidates and not full else {}
+        )
+        status_histories = (
+            self._repository.status_histories(item.id_sprawy for item in candidates)
+            if candidates and full
+            else {}
         )
 
         result: list[ClassifiedDeliveryItem] = []
@@ -96,7 +103,14 @@ class DeliveryClassifier:
             else:
                 continue
 
-            result.append(ClassifiedDeliveryItem(investment, revision, category))
+            result.append(
+                ClassifiedDeliveryItem(
+                    investment,
+                    revision,
+                    category,
+                    status_histories.get(investment.id_sprawy) if full else None,
+                )
+            )
 
         return tuple(result)
 

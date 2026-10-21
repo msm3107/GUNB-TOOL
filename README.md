@@ -8,9 +8,9 @@ GUNB Lead Tool rozwija istniejący silnik pobierania i wzbogacania danych z reje
 
 Silnik obsługuje pobieranie paczek RWDZ, filtrowanie i klasyfikację spraw, geokodowanie ULDK, zapis w SQLite oraz kontrolę stanu bazy. CLI jest dostępne w pliku main.py.
 
-Ta gałąź dodaje fundament danych B2B: schemat SQLite v16 dla klientów, zamówień i dostaw oraz odczytowy klasyfikator dostaw, który rozróżnia nowe inwestycje, zmiany i pełny snapshot.
+Silnik B2B korzysta ze schematu SQLite v16 dla klientów, zamówień i dostaw. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
 
-Katalog app jest obecnie szkieletem portalu i API. Zamówienia internetowe, płatności, generowanie plików i doręczanie paczek są opisane jako kolejne etapy w planie projektu.
+Katalog app jest obecnie szkieletem portalu i API. Zamówienia internetowe, płatności i automatyczne doręczanie wygenerowanych paczek pozostają kolejnymi etapami planu projektu.
 
 Runtime botów Telegram/WhatsApp, inne kanały powiadomień i stary instalator VPS nie należą do bieżącego produktu.
 
@@ -45,5 +45,5 @@ CI uruchamia testy na Pythonie 3.10–3.14.
 
 - core/ — autonomiczny silnik, modele, konfiguracja, SQLite i import RWDZ.
 - app/ — przyszły portal B2B, bez zależności silnika od frameworka WWW.
-- tests/ — testy silnika, migracji schematu i klasyfikatora dostaw.
+- tests/ — testy silnika, migracji schematu, klasyfikatora dostaw i eksportu XLSX/CSV.
 - projectplan.md — bieżący plan etapów produktu.
