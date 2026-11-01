@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -33,7 +34,7 @@ def create_app(config: WebConfig | None = None) -> ASGIApp:
     """
     config = WebConfig.from_env() if config is None else config
     api = FastAPI(
-        title="GUNB Leads B2B",
+        title="Żółta Tablica",
         description="Portal B2B dla handlowców – inwestycje budowlane z rejestru RWDZ",
         version="0.1.0",
         debug=False,
@@ -42,12 +43,15 @@ def create_app(config: WebConfig | None = None) -> ASGIApp:
         openapi_url=None,
     )
     api.add_exception_handler(Exception, _server_error)
+    # Windows registry mappings can otherwise serve these assets as octet-stream.
+    mimetypes.add_type("image/webp", ".webp")
+    mimetypes.add_type("font/woff2", ".woff2")
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @api.get("/", response_class=HTMLResponse, name="home", include_in_schema=False)
     def home(request: Request) -> Response:
         return templates.TemplateResponse(
-            request=request, name="base.html", context={"page_title": "Portal B2B w przygotowaniu"}
+            request=request, name="index.html", context={"page_title": "Inwestycje z RWDZ dla Twojej branży"}
         )
 
     @api.api_route("/zdrowie", methods=["GET", "HEAD"], include_in_schema=False)

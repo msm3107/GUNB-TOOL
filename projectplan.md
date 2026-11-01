@@ -1,7 +1,7 @@
-# GUNB B2B Lead Tool — Plan Projektu i Wizja Architektoniczna
+# Żółta Tablica V2 — Plan Projektu i Wizja Architektoniczna
 
 ## 1. Wizja Produktu
-**GUNB B2B Lead Tool** to wyspecjalizowany system wywiadu gospodarczego dla handlowców, dystrybutorów materiałów budowlanych oraz wykonawców (B2B). Narzędzie monitoruje oficjalny Rejestr Wniosków, Decyzji i Zgłoszeń (RWDZ) Głównego Urzędu Nadzoru Budowlanego (GUNB), przekształcając surowe, chaotyczne wpisy urzędowe w wyselekcjonowane, precyzyjnie dopasowane szanse sprzedażowe (leady).
+**Żółta Tablica** to wyspecjalizowany system wywiadu gospodarczego dla handlowców, dystrybutorów materiałów budowlanych oraz wykonawców (B2B). Narzędzie monitoruje oficjalny Rejestr Wniosków, Decyzji i Zgłoszeń (RWDZ) Głównego Urzędu Nadzoru Budowlanego (GUNB), przekształcając surowe, chaotyczne wpisy urzędowe w wyselekcjonowane, precyzyjnie dopasowane szanse sprzedażowe (leady).
 
 ### Model Biznesowy: Hybryda
 - **Jednorazowa Paczka (One-off):** Handlowiec kupuje spójną, historyczną paczkę inwestycji dla wybranego rejonu (np. województwo, powiat, promień km) i branży (np. HVAC, stolarka, stan surowy, elewacje).

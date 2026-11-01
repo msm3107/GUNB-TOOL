@@ -1,8 +1,8 @@
-# GUNB Lead Tool
+# Żółta Tablica
 
 [![tests](https://github.com/msm3107/GUNB-TOOL/actions/workflows/tests.yml/badge.svg)](https://github.com/msm3107/GUNB-TOOL/actions/workflows/tests.yml)
 
-GUNB Lead Tool rozwija istniejący silnik pobierania i wzbogacania danych z rejestru RWDZ GUNB. Projekt jest przebudowywany według aktualnego [planu](projectplan.md) na niezależny silnik w katalogu core oraz aplikację B2B w katalogu app.
+Żółta Tablica rozwija istniejący silnik pobierania i wzbogacania danych z rejestru RWDZ GUNB. Projekt jest przebudowywany według aktualnego [planu](projectplan.md) na niezależny silnik w katalogu core oraz aplikację B2B w katalogu app.
 
 ## Aktualny zakres
 
@@ -14,7 +14,7 @@ Silnik B2B korzysta ze schematu SQLite v17 dla klientów, zamówień, dostaw i z
 
 Zgłoszenie nadaje leadowi etykietę „Zgłoszona uwaga — wymaga weryfikacji”, widoczną również w kolumnie „Jakość danych” w XLSX/CSV. Opis i autor zgłoszenia nie trafiają do paczki. Etykieta nie potwierdza błędu ani ukończenia budowy i nie zmienia statusu GUNB; brak etykiety nie oznacza zweryfikowanej poprawności. Import zachowuje flagę. Formularz WWW i rozstrzyganie zgłoszeń nie są jeszcze dostępne.
 
-Katalog app udostępnia fundament FastAPI: fabrykę ASGI, bazowy szablon Jinja2 z lokalnym CSS, informację o przygotowywanym portalu oraz sondę żywotności HTTP. Strona ofertowa, zamówienia internetowe, płatności i automatyczne doręczanie paczek pozostają kolejnymi etapami planu projektu.
+Katalog app udostępnia publiczną stronę B2B w FastAPI/Jinja2: trzy filary produktu, trzy rozwijane fikcyjne przykłady inwestycji, porównanie planowanej Paczki i Abonamentu oraz FAQ. Przykłady są statyczne i nie pobierają danych z bazy. Ceny zostaną podane przed uruchomieniem sprzedaży; konfigurator, zamówienia internetowe, płatności i automatyczne doręczanie paczek pozostają kolejnymi etapami planu projektu.
 
 Runtime botów Telegram/WhatsApp, inne kanały powiadomień i stary instalator VPS nie należą do bieżącego produktu.
 
@@ -42,7 +42,9 @@ Po instalacji zależności uruchom serwer lokalny:
 
     python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
 
-`GET /` renderuje informację o przygotowywanym portalu, a `GET /zdrowie` zwraca `{"status":"ok","service":"gunb-web"}`. Sonda HTTP potwierdza działanie serwera WWW; nie czyta bazy ani blokad silnika. Pełną diagnostykę silnika nadal wykonuje `python main.py --zdrowie`.
+`GET /` renderuje stronę B2B z informacją o przygotowywanym portalu. Przykłady i FAQ rozwijają się natywnie przez HTML `details/summary`, również bez JavaScriptu. Strona korzysta z lokalnego CSS, logo, ilustracji budowlanych i fontów Manrope przeniesionych z poprzedniej witryny Żółtej Tablicy. Pochodzenie i licencję opisuje [WEB_ASSETS.md](docs/WEB_ASSETS.md). Nie ładuje analityki, zewnętrznych fontów ani skryptów. Nie zawiera formularza zamówienia ani zakupu.
+
+`GET /zdrowie` zwraca `{"status":"ok","service":"gunb-web"}`. Sonda HTTP potwierdza działanie serwera WWW; nie czyta bazy ani blokad silnika. Pełną diagnostykę silnika nadal wykonuje `python main.py --zdrowie`.
 
 CORS jest domyślnie zamknięty. Jeśli osobny frontend potrzebuje dostępu, ustaw w środowisku procesu `GUNB_WEB_CORS_ORIGINS` jako listę jawnych originów oddzielonych przecinkiem, np. `https://portal.example.test,http://localhost:3000`. Wartości nie mogą zawierać wildcardów, ścieżek, danych logowania ani parametrów URL; dozwolone są obecnie wyłącznie metody GET/HEAD, bez credentials. Konfiguracja WWW nie ładuje pliku `.env` silnika.
 
