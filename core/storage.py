@@ -382,6 +382,26 @@ CREATE INDEX IF NOT EXISTS ix_b2b_delivery_items_case_revision
     ON b2b_delivery_items (id_sprawy, rewizja);
 """
 
+_ISSUE_SCHEMA = """
+ALTER TABLE investments ADD COLUMN wymaga_weryfikacji INTEGER NOT NULL DEFAULT 0
+    CHECK (wymaga_weryfikacji IN (0, 1));
+
+CREATE TABLE issue_reports (
+    issue_id       INTEGER PRIMARY KEY,
+    customer_id    INTEGER NOT NULL REFERENCES b2b_customers (customer_id),
+    id_sprawy      TEXT NOT NULL REFERENCES investments (id_sprawy),
+    typ            TEXT NOT NULL CHECK (typ IN (
+        'zly_telefon', 'to_nie_inwestor_tylko_projektant', 'inwestycja_juz_stoi', 'inna_uwaga'
+    )),
+    opis           TEXT NOT NULL DEFAULT '' CHECK (length(opis) <= 1000 AND instr(opis, char(0)) = 0),
+    zgloszono_utc  TEXT NOT NULL,
+    CHECK (typ <> 'inna_uwaga' OR length(trim(opis)) > 0),
+    UNIQUE (customer_id, id_sprawy, typ)
+);
+CREATE INDEX ix_issue_reports_customer_time ON issue_reports (customer_id, zgloszono_utc);
+CREATE INDEX ix_issue_reports_case ON issue_reports (id_sprawy);
+"""
+
 
 Migration = str | Callable[[sqlite3.Connection, int], None]
 
@@ -402,6 +422,7 @@ _MIGRATIONS: tuple[Migration, ...] = (
     "SELECT 1;",                                          # v14: legacy placeholder
     "SELECT 1;",                                          # v15: legacy placeholder
     _B2B_SCHEMA,                                           # v16: klienci B2B, zamówienia i pamięć dostaw
+    _ISSUE_SCHEMA,                                         # v17: zgłoszenia jakości danych
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 
@@ -431,7 +452,7 @@ GEO_FIELDS: tuple[str, ...] = (
 )
 """Pola z geokodowania – brak nowej lokalizacji nie nadpisuje zapisanej."""
 
-_BOOL_FIELDS = frozenset({"is_residential", "is_commercial", "is_noise", "czy_wyslano"})
+_BOOL_FIELDS = frozenset({"is_residential", "is_commercial", "is_noise", "czy_wyslano", "wymaga_weryfikacji"})
 _INVESTMENT_FIELDS = tuple(f.name for f in fields(Investment))
 
 

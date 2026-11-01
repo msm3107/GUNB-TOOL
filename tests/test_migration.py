@@ -131,7 +131,7 @@ def test_export_import_keeps_b2b_delivery_memory(tmp_path, clock):
     package = export_state(source, tmp_path / "pakiety")
     result = import_state(package, tmp_path / "serwer" / "config.yaml")
 
-    assert result.schema_version == SCHEMA_VERSION == 16
+    assert result.schema_version == SCHEMA_VERSION
     assert dump(result.database) == dump(db_of(source))
 
 
