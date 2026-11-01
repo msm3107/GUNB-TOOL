@@ -47,7 +47,7 @@ def create_app(config: WebConfig | None = None) -> ASGIApp:
     @api.get("/", response_class=HTMLResponse, name="home", include_in_schema=False)
     def home(request: Request) -> Response:
         return templates.TemplateResponse(
-            request=request, name="base.html", context={"page_title": "Portal B2B w przygotowaniu"}
+            request=request, name="index.html", context={"page_title": "Inwestycje z RWDZ dla Twojej branży"}
         )
 
     @api.api_route("/zdrowie", methods=["GET", "HEAD"], include_in_schema=False)

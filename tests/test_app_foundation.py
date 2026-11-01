@@ -64,9 +64,9 @@ def test_root_renders_reusable_polish_layout(client):
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert response.template.name == "base.html"
+    assert response.template.name == "index.html"
     assert '<html lang="pl">' in response.text
-    assert "Portal B2B w przygotowaniu" in response.text
+    assert "Portal w przygotowaniu" in response.text
     assert "<nav" in response.text and "<main" in response.text and "<footer" in response.text
     assert 'href="#main-content"' in response.text
     assert '/static/style.css' in response.text

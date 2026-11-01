@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block meta %}
+    <meta name="description" content="Poznaj GUNB Lead Tool: dopasowanie inwestycji z RWDZ, pamięć dostaw i jawna jakość danych. Fikcyjne przykłady paczek B2B. Portal w przygotowaniu.">
+{% endblock %}
+{% block content %}
+<p class="launch-notice"><span class="site-state">Portal w przygotowaniu</span> Zamówienia i płatności online nie są jeszcze dostępne.</p>
+
+<section class="hero" aria-labelledby="page-heading">
+  <div>
+    <p class="eyebrow">Dane o inwestycjach dla firm</p>
+    <h1 id="page-heading">Mniej wpisów.<br>Więcej kontekstu do rozmowy.</h1>
+    <p class="intro">Dla handlowców, składów budowlanych i wykonawców, którzy szukają inwestycji pasujących do swojej branży. GUNB Lead Tool porządkuje dane z rejestru RWDZ: pokazuje dopasowanie, zmiany i braki w danych.</p>
+    <a class="button-link" href="#przyklady">Zobacz przykłady <span aria-hidden="true">↗</span></a>
+    <p class="hero-note">Punkt wyjścia do własnej weryfikacji. Wpis w rejestrze nie jest gotowym zamówieniem ani potwierdzeniem trwającej budowy.</p>
+  </div>
+  <aside class="package-outline" aria-labelledby="package-heading">
+    <p class="eyebrow">Kontekst zamiast samego wpisu</p>
+    <h2 id="package-heading">Co wnosi paczka?</h2>
+    <dl>
+      <div><dt>Dopasowanie</dt><dd>Typ inwestycji i czytelne uzasadnienie</dd></div>
+      <div><dt>Pamięć</dt><dd>Nowe sprawy, istotne zmiany, pełny snapshot</dd></div>
+      <div><dt>Jakość</dt><dd>Organ źródłowy, dokładność lokalizacji i uwagi</dd></div>
+    </dl>
+    <p class="small-note">Format eksportu: XLSX i CSV. Dostęp przez portal jest przygotowywany.</p>
+  </aside>
+</section>
+
+<section class="page-section" id="jak-to-dziala" aria-labelledby="pillars-heading">
+  <p class="eyebrow">01 / Trzy filary</p>
+  <h2 id="pillars-heading">Wiesz, dlaczego warto sprawdzić daną inwestycję.</h2>
+  <div class="pillars">
+    <article>
+      <span class="pillar-number" aria-hidden="true">01</span>
+      <h3>Ścisłe dopasowanie</h3>
+      <p>Silnik odrzuca nieistotne wpisy, np. rozbiórki i sieci gazowe. Przy inwestycji pokazuje klasyfikację i uzasadnienie, aby ułatwić ocenę jej znaczenia dla Twojej branży.</p>
+    </article>
+    <article>
+      <span class="pillar-number" aria-hidden="true">02</span>
+      <h3>Pamięć dostaw</h3>
+      <p>Znana już klientowi, niezmieniona sprawa nie wraca jako nowość. Istotna aktualizacja trafia do zmian. Pełny snapshot to osobny widok, który może obejmować także znane sprawy.</p>
+    </article>
+    <article>
+      <span class="pillar-number" aria-hidden="true">03</span>
+      <h3>Jawna jakość danych</h3>
+      <p>Widzisz organ źródłowy, dokładność lokalizacji oraz zgłoszone uwagi. Brak geometrii działki ma jawną etykietę; brak zgłoszenia błędu nie oznacza zweryfikowanej poprawności.</p>
+    </article>
+  </div>
+</section>
+
+<section class="page-section" id="przyklady" aria-labelledby="examples-heading">
+  <div class="section-heading">
+    <div><p class="eyebrow">02 / Zajrzyj do środka</p><h2 id="examples-heading">Trzy inwestycje. Trzy różne konteksty.</h2></div>
+    <p>Rozwiń przykład, żeby zobaczyć uzasadnienie i ograniczenia danych.</p>
+  </div>
+  <p class="sample-notice">Wszystkie poniższe przykłady są fikcyjne i służą wyłącznie demonstracji. Nie są to rzeczywiste oferty ani dane konkretnych inwestorów.</p>
+  <details class="lead-example">
+    <summary><span class="example-type">Dom jednorodzinny <span class="example-label">Fikcyjny przykład 01</span></span><span class="delivery-label">Nowa sprawa</span></summary>
+    <div class="details-body">
+      <dl class="sample-facts">
+        <div><dt>Status w scenariuszu</dt><dd>Wniosek o pozwolenie na budowę</dd></div>
+        <div><dt>Dlaczego pasuje</dt><dd>Nowa budowa kubaturowa, a nie drobna instalacja. Punkt wyjścia do oceny potrzeb związanych ze stanem surowym i stolarką.</dd></div>
+        <div><dt>Szacunek branżowy</dt><dd>Wczesne planowanie oferty. Sam wniosek nie potwierdza rozpoczęcia robót ani terminu zakupu materiałów.</dd></div>
+        <div><dt>Źródło</dt><dd>Fikcyjny wpis RWDZ; przykładowy organ: starostwo powiatowe.</dd></div>
+        <div><dt>Jakość lokalizacji</dt><dd>Poziom gminy — brak współrzędnych działki. Przykład nie zawiera adresu ani linku do mapy.</dd></div>
+      </dl>
+    </div>
+  </details>
+  <details class="lead-example">
+    <summary><span class="example-type">Hala magazynowa <span class="example-label">Fikcyjny przykład 02</span></span><span class="delivery-label">Zmiana statusu</span></summary>
+    <div class="details-body">
+      <dl class="sample-facts">
+        <div><dt>Status w scenariuszu</dt><dd>Decyzja o pozwoleniu po wcześniejszym wniosku</dd></div>
+        <div><dt>Dlaczego pasuje</dt><dd>Obiekt komercyjny. Aktualizacja znanej sprawy może uzasadniać ponowną ocenę potrzeb dotyczących obudowy hali i instalacji.</dd></div>
+        <div><dt>Szacunek branżowy</dt><dd>Warto ponownie sprawdzić plany inwestycji. Decyzja nie potwierdza rozpoczęcia robót ani harmonogramu dostaw.</dd></div>
+        <div><dt>Źródło</dt><dd>Fikcyjny wpis RWDZ; przykładowy organ: prezydent miasta.</dd></div>
+        <div><dt>Jakość lokalizacji</dt><dd>Ilustracja wariantu z geometrią działki. W rzeczywistej paczce centroid z ULDK wskazuje działkę, nie położenie budynku. Tutaj nie publikujemy współrzędnych.</dd></div>
+      </dl>
+    </div>
+  </details>
+  <details class="lead-example">
+    <summary><span class="example-type">Rozbudowa szkoły <span class="example-label">Fikcyjny przykład 03</span></span><span class="delivery-label">Pełny snapshot</span></summary>
+    <div class="details-body">
+      <dl class="sample-facts">
+        <div><dt>Status w scenariuszu</dt><dd>Wydana decyzja; sprawa widoczna w pełnym zestawieniu</dd></div>
+        <div><dt>Dlaczego pasuje</dt><dd>Rozbudowa obiektu publicznego. Wymaga sprawdzenia zakresu zamówienia i trybu wyboru wykonawcy; sam wpis nie jest ogłoszeniem przetargowym.</dd></div>
+        <div><dt>Szacunek branżowy</dt><dd>Termin zależy od harmonogramu i postępowania zakupowego. Status w rejestrze nie potwierdza rozpoczęcia robót.</dd></div>
+        <div><dt>Źródło</dt><dd>Fikcyjny wpis RWDZ; przykładowy organ: starostwo powiatowe.</dd></div>
+        <div><dt>Jakość lokalizacji</dt><dd>Poziom gminy — brak współrzędnych działki. Przykładowa uwaga: „Zgłoszona uwaga — wymaga weryfikacji”; nie jest potwierdzeniem błędu.</dd></div>
+      </dl>
+    </div>
+  </details>
+</section>
+
+<section class="page-section" id="oferta" aria-labelledby="offers-heading">
+  <p class="eyebrow">03 / Planowane warianty</p>
+  <h2 id="offers-heading">Jednorazowy przegląd czy regularne aktualizacje?</h2>
+  <p class="section-intro">Porównanie planowanej oferty. Sprzedaż nie jest uruchomiona; nie można jeszcze złożyć zamówienia ani opłacić abonamentu.</p>
+  <table class="offer-table">
+    <caption>Paczka i abonament — zakres oraz status cen</caption>
+    <thead><tr><th scope="col">Zakres</th><th scope="col">Paczka jednorazowa</th><th scope="col">Abonament</th></tr></thead>
+    <tbody>
+      <tr><th scope="row">Dla kogo</th><td>Do jednorazowej analizy wybranego rejonu i branży</td><td>Do śledzenia nowych spraw i istotnych zmian w czasie</td></tr>
+      <tr><th scope="row">Dane</th><td>Snapshot dopasowanych inwestycji</td><td>Planowane cykliczne paczki nowych spraw i zmian</td></tr>
+      <tr><th scope="row">Format</th><td>XLSX i CSV</td><td>XLSX i CSV</td></tr>
+      <tr><th scope="row">Cena</th><td>Cena przed uruchomieniem sprzedaży</td><td>Cena przed uruchomieniem sprzedaży</td></tr>
+      <tr><th scope="row">Warunki</th><td>Zakres i cena końcowa zostaną podane przed zakupem</td><td>Częstotliwość, rozliczenie i zasady rezygnacji zostaną podane przed zakupem</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="page-section faq" id="pytania" aria-labelledby="faq-heading">
+  <p class="eyebrow">04 / Warto wiedzieć</p>
+  <h2 id="faq-heading">Najczęstsze pytania</h2>
+  <details class="faq-item"><summary>Skąd pochodzą dane i co potwierdzają?</summary><div class="details-body"><p>Silnik korzysta z Rejestru Wniosków, Decyzji i Zgłoszeń (RWDZ) GUNB. To informacje o sprawach urzędowych, a nie raport z placu budowy. Pozwolenie nie oznacza rozpoczęcia ani ukończenia prac. GUNB Lead Tool jest niezależnym narzędziem i nie jest oficjalnym serwisem GUNB.</p></div></details>
+  <details class="faq-item"><summary>Czy dostanę gotowych klientów i ich telefony?</summary><div class="details-body"><p>Paczka opisuje inwestycje do sprawdzenia, nie gotowych klientów. Nie obiecujemy telefonu ani zweryfikowanego kontaktu do inwestora. Publiczny wpis nie oznacza zgody na kontakt marketingowy; przed kontaktem trzeba osobno ustalić jego dopuszczalność.</p></div></details>
+  <details class="faq-item"><summary>Co oznaczają nowe sprawy, zmiany i pełny snapshot?</summary><div class="details-body"><p>Nowa sprawa to inwestycja dotąd nieznana danemu klientowi. Zmiana oznacza istotną aktualizację wcześniej doręczonej sprawy. Niezmieniony wpis nie wraca w dostawie różnicowej; pełny snapshot celowo może obejmować także znane inwestycje.</p></div></details>
+  <details class="faq-item"><summary>Co zrobić z brakami lokalizacji lub zgłoszoną uwagą?</summary><div class="details-body"><p>Brak współrzędnych działki jest jawnie oznaczany. Lokalizacja gminna nie wskazuje konkretnej budowy, a centroid działki nie wskazuje budynku. Zgłoszona uwaga wymaga weryfikacji; jej brak nie daje gwarancji poprawności danych.</p></div></details>
+  <details class="faq-item"><summary>Czy mogę już kupić paczkę lub abonament?</summary><div class="details-body"><p>Jeszcze nie. Portal w przygotowaniu — konfigurator, zamówienia i płatności online nie są dostępne. Ceny i kompletne warunki pojawią się przed uruchomieniem sprzedaży. Obecna strona pozwala poznać zakres i obejrzeć fikcyjne przykłady.</p></div></details>
+</section>
+{% endblock %}
