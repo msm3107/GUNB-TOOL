@@ -11,10 +11,15 @@ from zipfile import is_zipfile
 import pytest
 from openpyxl import load_workbook
 
-from core.delivery_memory import ClassifiedDeliveryItem
+from core.config import FilterConfig
+from core.data_filter import LeadFilter
+from core.delivery_memory import ClassifiedDeliveryItem, DeliveryClassifier
 from core.export_package import write_csv, write_xlsx
-from core.models import DeliveryCategory, Investment
+from core.gunb_scraper import FetchQuery, parse_archive
+from core.models import DeliveryCategory, Investment, Source
+from core.pipeline import build_investment
 from core.storage import StatusChange
+from tests.gunb_fixtures import POZWOLENIA_HEADER, pozwolenie, write_zip
 
 
 def make_item(
@@ -116,6 +121,64 @@ def test_csv_is_flat_utf8_bom_export_with_polish_text_and_csv_quoting() -> None:
     assert rows[1][header_columns["Miejscowość"]] == "Łódź"
 
 
+def test_xlsx_exports_every_record_from_zip_with_nul_through_filter_and_sqlite(tmp_path, repo) -> None:
+    source_description = "Budowa domu\x00 jednorodzinnego"
+    archive = write_zip(tmp_path / "synthetic.zip", POZWOLENIA_HEADER, [
+        pozwolenie(numer_gunb="CASE/GOOD-1"),
+        pozwolenie(numer_gunb="CASE/NUL", nazwa_zam_budowlanego=source_description),
+        pozwolenie(numer_gunb="CASE/GOOD-2"),
+    ])
+    cases = parse_archive(archive, Source.POZWOLENIA, FetchQuery(voivodeships=("16",)))
+    assert len(cases) == 3
+    lead_filter = LeadFilter(FilterConfig())
+    for case in cases:
+        decision = lead_filter.evaluate(case)
+        assert decision.keep
+        repo.upsert(build_investment(case, decision))
+    investments = tuple(repo.get(case.id_sprawy) for case in cases)
+    assert all(investment is not None for investment in investments)
+    assert repo.get("CASE/NUL").nazwa_zamierzenia == source_description
+    items = DeliveryClassifier(repo).classify(1, investments)
+    output = BytesIO()
+
+    write_xlsx(items, output)
+
+    workbook = load_workbook(BytesIO(output.getvalue()), data_only=False)
+    sheet = workbook["1. Nowe"]
+    rows = list(sheet.iter_rows(values_only=True))
+    columns = {name: index for index, name in enumerate(rows[0])}
+    descriptions = {
+        row[columns["ID sprawy"]]: row[columns["Nazwa zamierzenia"]] for row in rows[1:]
+    }
+    assert set(descriptions) == {"CASE/GOOD-1", "CASE/NUL", "CASE/GOOD-2"}
+    assert descriptions["CASE/NUL"] == source_description.replace("\x00", "\ufffd")
+    workbook.close()
+    assert repo.get("CASE/NUL").nazwa_zamierzenia == source_description
+
+
+def test_xlsx_replaces_xml_invalid_characters_and_preserves_valid_literal_text() -> None:
+    forbidden = "".join(chr(code) for code in (
+        *range(0x09), 0x0B, 0x0C, *range(0x0E, 0x20), 0xD800, 0xDFFF, 0xFFFE, 0xFFFF
+    ))
+    prefix, suffix = "=Łódź", "\ttekst\nwiersz\r🙂"
+    source_text = prefix + forbidden + suffix
+    item = make_item("CASE-XML", DeliveryCategory.NEW, nazwa_zamierzenia=source_text)
+    output = BytesIO()
+
+    write_xlsx((item,), output)
+
+    workbook = load_workbook(BytesIO(output.getvalue()), data_only=False)
+    sheet = workbook["1. Nowe"]
+    columns = {cell.value: cell.column for cell in sheet[1]}
+    cell = sheet.cell(2, columns["Nazwa zamierzenia"])
+    # XML readers may normalize a literal CR to LF; neither may become U+FFFD.
+    expected = prefix + "\ufffd" * len(forbidden) + suffix
+    assert cell.value.replace("\r", "\n") == expected.replace("\r", "\n")
+    assert cell.data_type == "s"
+    workbook.close()
+    assert item.investment.nazwa_zamierzenia == source_text
+
+
 def test_spreadsheet_formula_text_is_kept_as_literal_in_xlsx_and_escaped_in_csv() -> None:
     formula_text = "=HYPERLINK(\"https://example.test\",\"lead\")"
     item = make_item("CASE-FORMULA", DeliveryCategory.NEW, inwestor=formula_text)
@@ -148,6 +211,20 @@ def test_csv_escapes_each_supported_formula_prefix(formula_text: str) -> None:
     rows = list(csv.reader(StringIO(output.getvalue().decode("utf-8-sig"), newline="")))
     investor_column = rows[0].index("Inwestor")
     assert rows[1][investor_column] == "'" + formula_text
+
+
+@pytest.mark.parametrize("text", ("", " \t\r\n", "\ufeff \t"))
+def test_csv_preserves_empty_and_whitespace_fields(text: str) -> None:
+    item = make_item("CASE-EMPTY", DeliveryCategory.NEW, nazwa_zamierzenia=text)
+    output = BytesIO()
+
+    write_csv((item,), output)
+
+    rows = list(csv.reader(StringIO(output.getvalue().decode("utf-8-sig"), newline="")))
+    columns = {name: index for index, name in enumerate(rows[0])}
+    assert rows[1][columns["Nazwa zamierzenia"]] == text
+    assert rows[1][columns["Działki"]] == ""
+    assert rows[1][columns["Uzasadnienie"]] == ""
 
 
 def test_csv_binary_stream_has_deterministic_utf8_bom_and_crlf(tmp_path) -> None:

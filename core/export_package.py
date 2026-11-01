@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from collections.abc import Iterable, Sequence
 from datetime import date
 from typing import BinaryIO
@@ -59,6 +60,10 @@ EXPORT_COLUMNS: tuple[str, ...] = (
 )
 
 _FORMULA_PREFIXES = "=+-@"
+# XML 1.0 permits tab/LF/CR, but excludes other C0 controls, surrogates and FFFE/FFFF.
+_XML_INVALID_CHARACTERS_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]"
+)
 
 
 def _resolve_trade(trade_key: str | None, as_of: date | None) -> Trade | None:
@@ -140,7 +145,7 @@ def _append_literal_row(sheet, values: Iterable[object]) -> None:
     cells = []
     for value in values:
         if isinstance(value, str):
-            cell = WriteOnlyCell(sheet, value=value)
+            cell = WriteOnlyCell(sheet, value=_XML_INVALID_CHARACTERS_RE.sub("\ufffd", value))
             # Keep source text literal even when it starts with a formula marker.
             cell.data_type = "s"
             cells.append(cell)
@@ -153,7 +158,7 @@ def _protect_csv_value(value: object) -> object:
     if not isinstance(value, str):
         return value
     first = value.lstrip().lstrip("\ufeff").lstrip()[:1]
-    return "'" + value if first in _FORMULA_PREFIXES else value
+    return "'" + value if first and first in _FORMULA_PREFIXES else value
 
 
 class _Utf8CsvSink:
@@ -177,6 +182,7 @@ def write_xlsx(
     """Zapisuje trzy arkusze dostawy do strumienia binarnego w trybie write-only.
 
     ``trade_key`` razem z ``as_of`` włącza orientacyjne okno branżowe. Funkcja
+    zastępuje niedozwolone znaki XML znakiem U+FFFD w pliku wynikowym;
     nie otwiera ścieżek ani nie zapisuje historii doręczeń.
     """
     trade = _resolve_trade(trade_key, as_of)
