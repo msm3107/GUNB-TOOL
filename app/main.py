@@ -13,6 +13,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
 from .config import WebConfig
+from .estimator import Estimator
+from .routes.orders import order_router
 from .security import SecurityHeadersMiddleware
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -47,6 +49,7 @@ def create_app(config: WebConfig | None = None) -> ASGIApp:
     mimetypes.add_type("image/webp", ".webp")
     mimetypes.add_type("font/woff2", ".woff2")
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    api.include_router(order_router(Estimator(config.database_path), templates))
 
     @api.get("/", response_class=HTMLResponse, name="home", include_in_schema=False)
     def home(request: Request) -> Response:

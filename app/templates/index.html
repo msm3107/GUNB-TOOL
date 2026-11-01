@@ -12,7 +12,8 @@
     <p class="eyebrow">Dane o inwestycjach dla firm</p>
     <h1 id="page-heading">Nowe inwestycje.<br>Lepszy kontekst.</h1>
     <p class="intro">Dla handlowców, składów budowlanych i wykonawców, którzy szukają inwestycji pasujących do swojej branży. Żółta Tablica porządkuje dane z rejestru RWDZ: pokazuje dopasowanie, zmiany i braki w danych.</p>
-    <a class="button-link" href="#przyklady">Zobacz przykłady <span aria-hidden="true">↗</span></a>
+    <a class="button-link" href="{{ url_for('order_configurator') }}">Sprawdź swój obszar <span aria-hidden="true">↗</span></a>
+    <a class="examples-link" href="#przyklady">Zobacz przykłady</a>
     <p class="hero-note">Punkt wyjścia do własnej weryfikacji. Wpis w rejestrze nie jest gotowym zamówieniem ani potwierdzeniem trwającej budowy.</p>
   </div>
   <aside class="package-outline" aria-labelledby="package-heading">
@@ -125,6 +126,6 @@
   <details class="faq-item"><summary>Czy dostanę gotowych klientów i ich telefony?</summary><div class="details-body"><p>Paczka opisuje inwestycje do sprawdzenia, nie gotowych klientów. Nie obiecujemy telefonu ani zweryfikowanego kontaktu do inwestora. Publiczny wpis nie oznacza zgody na kontakt marketingowy; przed kontaktem trzeba osobno ustalić jego dopuszczalność.</p></div></details>
   <details class="faq-item"><summary>Co oznaczają nowe sprawy, zmiany i pełny snapshot?</summary><div class="details-body"><p>Nowa sprawa to inwestycja dotąd nieznana danemu klientowi. Zmiana oznacza istotną aktualizację wcześniej doręczonej sprawy. Niezmieniony wpis nie wraca w dostawie różnicowej; pełny snapshot celowo może obejmować także znane inwestycje.</p></div></details>
   <details class="faq-item"><summary>Co zrobić z brakami lokalizacji lub zgłoszoną uwagą?</summary><div class="details-body"><p>Brak współrzędnych działki jest jawnie oznaczany. Lokalizacja gminna nie wskazuje konkretnej budowy, a centroid działki nie wskazuje budynku. Zgłoszona uwaga wymaga weryfikacji; jej brak nie daje gwarancji poprawności danych.</p></div></details>
-  <details class="faq-item"><summary>Czy mogę już kupić paczkę lub abonament?</summary><div class="details-body"><p>Jeszcze nie. Portal w przygotowaniu — konfigurator, zamówienia i płatności online nie są dostępne. Ceny i kompletne warunki pojawią się przed uruchomieniem sprzedaży. Obecna strona pozwala poznać zakres i obejrzeć fikcyjne przykłady.</p></div></details>
+  <details class="faq-item"><summary>Czy mogę już kupić paczkę lub abonament?</summary><div class="details-body"><p>Jeszcze nie. Konfigurator pozwala już oszacować liczbę pasujących inwestycji; zamówienia i płatności online pozostają niedostępne. Ceny i kompletne warunki pojawią się przed uruchomieniem sprzedaży. Przykłady na stronie są fikcyjne, a estymator korzysta z zaimportowanych danych.</p></div></details>
 </section>
 {% endblock %}
