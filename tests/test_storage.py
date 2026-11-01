@@ -346,6 +346,7 @@ def legacy_database(path, version: int):
 
 def test_version_16_migrates_issue_schema_with_backup_and_preserved_lead(tmp_path, clock):
     import sqlite3
+
     from core import storage
 
     path = tmp_path / "v16.sqlite"
@@ -355,6 +356,15 @@ def test_version_16_migrates_issue_schema_with_backup_and_preserved_lead(tmp_pat
         "status_zmieniony, ostatnio_widziany) VALUES ('KEPT/16', 'pozwolenia', 'decyzja', 'x', 'x', 'x', 'x')"
     )
     legacy.execute("INSERT INTO b2b_customers (customer_id, email) VALUES (1, 'one@example.test')")
+    legacy.execute("INSERT INTO b2b_orders (order_id, customer_id, typ_pakietu) VALUES (1, 1, 'jednorazowy')")
+    legacy.execute(
+        "INSERT INTO b2b_deliveries (delivery_id, order_id, typ_dostawy, doreczono_utc) "
+        "VALUES (1, 1, 'pelna', '2026-10-01T00:00:00+00:00')"
+    )
+    legacy.execute(
+        "INSERT INTO b2b_delivery_items (delivery_id, id_sprawy, rewizja, kategoria_dostawy) "
+        "VALUES (1, 'KEPT/16', 'kept-revision', 'full')"
+    )
     legacy.commit()
     legacy.close()
 
@@ -365,6 +375,9 @@ def test_version_16_migrates_issue_schema_with_backup_and_preserved_lead(tmp_pat
         assert stored.status == "decyzja"
         assert stored.wymaga_weryfikacji is False
         assert stored.data_quality_label is None
+        assert tuple(repository.connection.execute(
+            "SELECT delivery_id, id_sprawy, rewizja FROM b2b_delivery_items"
+        ).fetchone()) == (1, "KEPT/16", "kept-revision")
         assert repository.connection.execute("PRAGMA foreign_key_check").fetchall() == []
         repository.connection.execute(
             "INSERT INTO issue_reports (customer_id, id_sprawy, typ, opis, zgloszono_utc) "
@@ -392,6 +405,7 @@ def test_version_16_migrates_issue_schema_with_backup_and_preserved_lead(tmp_pat
         assert check.execute("PRAGMA user_version").fetchone()[0] == 16
         assert check.execute("SELECT id_sprawy, status FROM investments").fetchall() == [("KEPT/16", "decyzja")]
         assert check.execute("SELECT customer_id FROM b2b_customers").fetchall() == [(1,)]
+        assert check.execute("SELECT delivery_id, rewizja FROM b2b_delivery_items").fetchall() == [(1, "kept-revision")]
         assert check.execute("SELECT name FROM sqlite_master WHERE name = 'issue_reports'").fetchone() is None
 
 

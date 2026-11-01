@@ -57,8 +57,8 @@
 
 **Interfaces:** XLSX/CSV “Jakość danych” column consumes Investment.data_quality_label; it does not include the report body or customer ID.
 
-- [ ] Add failing tests for the label in XLSX and CSV and issue state in export/import packages.
-- [ ] Implement the label column and document the current API, defaults and unverified meaning.
-- [ ] Run the full suite, Ruff for changed feature/test files, compileall, dependency ASCII and diff checks.
+- [x] Add failing tests for the label in XLSX and CSV and issue state in export/import packages.
+- [x] Implement the label column and document the current API, defaults and unverified meaning.
+- [x] Run the full suite, Ruff for changed feature/test files, compileall, dependency ASCII and diff checks.
 - [ ] Commit, push and open the next PR. Request independent review of the complete BASE..HEAD and check CI for the exact HEAD; fix P0/P1 and fix or explicitly justify P2.
 - [ ] Save the report under ignored .local-review, update the PR description, and leave merge to the user.

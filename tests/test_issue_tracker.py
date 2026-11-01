@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import csv
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO, StringIO
 from threading import Barrier
 
 import pytest
+from openpyxl import load_workbook
 
+from core.delivery_memory import DeliveryClassifier
+from core.export_package import write_csv, write_xlsx
 from core.issue_tracker import (
     IssueNotAllowed,
     IssueRateLimitExceeded,
@@ -215,3 +220,32 @@ def test_concurrent_duplicate_reports_are_idempotent(tmp_path, clock):
     assert results[0] == results[1]
     with LeadRepository(path) as repository:
         assert repository.connection.execute("SELECT COUNT(*) FROM issue_reports").fetchone()[0] == 1
+
+
+def test_exports_include_only_unverified_label_without_private_report_details(tracker, repo):
+    private_note = "PRIVATE-REPORT-NOTE: mój klient przekazał informację"
+    tracker.report_issue(1, "CASE/1", "inna_uwaga", private_note)
+    repo.upsert(Investment(id_sprawy="CASE/CLEAN", zrodlo="pozwolenia", status="decyzja"))
+    items = DeliveryClassifier(repo).classify(
+        1, (repo.get("CASE/1"), repo.get("CASE/CLEAN")), full=True
+    )
+    xlsx_output = BytesIO()
+
+    write_xlsx(items, xlsx_output)
+
+    workbook = load_workbook(BytesIO(xlsx_output.getvalue()), data_only=False)
+    rows = list(workbook["3. Pełna baza"].iter_rows(values_only=True))
+    columns = {name: index for index, name in enumerate(rows[0])}
+    labels = {row[columns["ID sprawy"]]: row[columns["Jakość danych"]] for row in rows[1:]}
+    assert labels == {"CASE/1": "Zgłoszona uwaga — wymaga weryfikacji", "CASE/CLEAN": None}
+    assert not any(private_note in str(cell) or "customer-1@example.test" in str(cell) for row in rows for cell in row)
+    workbook.close()
+
+    csv_output = BytesIO()
+    write_csv(items, csv_output)
+    text = csv_output.getvalue().decode("utf-8-sig")
+    csv_rows = list(csv.reader(StringIO(text, newline="")))
+    csv_columns = {name: index for index, name in enumerate(csv_rows[0])}
+    csv_labels = {row[csv_columns["ID sprawy"]]: row[csv_columns["Jakość danych"]] for row in csv_rows[1:]}
+    assert csv_labels == {"CASE/1": "Zgłoszona uwaga — wymaga weryfikacji", "CASE/CLEAN": ""}
+    assert private_note not in text and "customer-1@example.test" not in text
