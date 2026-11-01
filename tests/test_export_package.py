@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 from datetime import date
 from io import BytesIO, StringIO
 from zipfile import is_zipfile
@@ -121,11 +122,17 @@ def test_csv_is_flat_utf8_bom_export_with_polish_text_and_csv_quoting() -> None:
     assert rows[1][header_columns["Miejscowość"]] == "Łódź"
 
 
-def test_xlsx_exports_every_record_from_zip_with_nul_through_filter_and_sqlite(tmp_path, repo) -> None:
-    source_description = "Budowa domu\x00 jednorodzinnego"
+@pytest.mark.parametrize("invalid_character", (
+    pytest.param("\x00", id="nul", marks=pytest.mark.skipif(
+        sys.version_info < (3, 11), reason="Python 3.10 csv.reader rejects NUL before export"
+    )),
+    pytest.param("\x01", id="soh"),
+))
+def test_xlsx_exports_every_record_from_zip_with_xml_controls(tmp_path, repo, invalid_character) -> None:
+    source_description = f"Budowa domu{invalid_character} jednorodzinnego"
     archive = write_zip(tmp_path / "synthetic.zip", POZWOLENIA_HEADER, [
         pozwolenie(numer_gunb="CASE/GOOD-1"),
-        pozwolenie(numer_gunb="CASE/NUL", nazwa_zam_budowlanego=source_description),
+        pozwolenie(numer_gunb="CASE/INVALID", nazwa_zam_budowlanego=source_description),
         pozwolenie(numer_gunb="CASE/GOOD-2"),
     ])
     cases = parse_archive(archive, Source.POZWOLENIA, FetchQuery(voivodeships=("16",)))
@@ -137,7 +144,7 @@ def test_xlsx_exports_every_record_from_zip_with_nul_through_filter_and_sqlite(t
         repo.upsert(build_investment(case, decision))
     investments = tuple(repo.get(case.id_sprawy) for case in cases)
     assert all(investment is not None for investment in investments)
-    assert repo.get("CASE/NUL").nazwa_zamierzenia == source_description
+    assert repo.get("CASE/INVALID").nazwa_zamierzenia == source_description
     items = DeliveryClassifier(repo).classify(1, investments)
     output = BytesIO()
 
@@ -150,10 +157,10 @@ def test_xlsx_exports_every_record_from_zip_with_nul_through_filter_and_sqlite(t
     descriptions = {
         row[columns["ID sprawy"]]: row[columns["Nazwa zamierzenia"]] for row in rows[1:]
     }
-    assert set(descriptions) == {"CASE/GOOD-1", "CASE/NUL", "CASE/GOOD-2"}
-    assert descriptions["CASE/NUL"] == source_description.replace("\x00", "\ufffd")
+    assert set(descriptions) == {"CASE/GOOD-1", "CASE/INVALID", "CASE/GOOD-2"}
+    assert descriptions["CASE/INVALID"] == source_description.replace(invalid_character, "\ufffd")
     workbook.close()
-    assert repo.get("CASE/NUL").nazwa_zamierzenia == source_description
+    assert repo.get("CASE/INVALID").nazwa_zamierzenia == source_description
 
 
 def test_xlsx_replaces_xml_invalid_characters_and_preserves_valid_literal_text() -> None:
