@@ -7,7 +7,9 @@
 #   run the tests (CI uses this file as constraints), commit, then deploy the new version.
 certifi==2026.7.22
 charset-normalizer==3.5.1
+et_xmlfile==2.0.0
 idna==3.20
+openpyxl==3.1.5
 python-dotenv==1.2.3
 PyYAML==6.0.3
 requests==2.34.2

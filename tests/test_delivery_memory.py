@@ -162,6 +162,28 @@ def test_full_delivery_includes_previously_delivered_investments(repo):
     ]
 
 
+def test_full_delivery_carries_batched_status_history(repo):
+    candidates = []
+    for index in range(25):
+        case_id = f"CASE/HISTORY/{index}"
+        repo.upsert(investment(case_id, status="wniosek"))
+        latest_status = investment(case_id, status="decyzja")
+        repo.upsert(latest_status)
+        candidates.append(latest_status)
+    statements: list[str] = []
+    repo.connection.set_trace_callback(statements.append)
+
+    result = DeliveryClassifier(repo).classify(1, candidates, full=True)
+
+    assert len(result) == len(candidates)
+    assert all(
+        [(row.stary_status, row.nowy_status) for row in item.status_history]
+        == [(None, "wniosek"), ("wniosek", "decyzja")]
+        for item in result
+    )
+    assert sum("FROM STATUS_HISTORY" in statement.upper() for statement in statements) == 1
+
+
 @pytest.mark.parametrize("full, investments", [(False, []), (True, [investment()])])
 def test_empty_delta_and_full_delivery_skip_history_lookup(repo, full, investments):
     statements: list[str] = []
