@@ -21,6 +21,7 @@ from core.instance import (
     lock_is_free,
     maintenance_lock_path,
 )
+from core.issue_tracker import IssueTracker
 from core.migration import (
     CONFIG_ENTRY,
     ENV_ENTRY,
@@ -128,11 +129,19 @@ def test_export_import_keeps_b2b_delivery_memory(tmp_path, clock):
             "VALUES (126, 'A/1', 'rev-1', 'full')"
         )
 
+    with LeadRepository(db_of(source), now=clock.now_utc) as repo:
+        IssueTracker(repo).report_issue(42, "A/1", "zly_telefon", "Błędny numer w rejestrze")
+
     package = export_state(source, tmp_path / "pakiety")
     result = import_state(package, tmp_path / "serwer" / "config.yaml")
 
-    assert result.schema_version == SCHEMA_VERSION == 16
+    assert result.schema_version == SCHEMA_VERSION
+    assert result.counts["issue_reports"] == 1
     assert dump(result.database) == dump(db_of(source))
+    with LeadRepository(result.database) as repo:
+        assert repo.get("A/1").wymaga_weryfikacji is True
+        row = repo.connection.execute("SELECT customer_id, opis FROM issue_reports").fetchone()
+        assert tuple(row) == (42, "Błędny numer w rejestrze")
 
 
 def test_command_line_round_trip(tmp_path, source, capsys):

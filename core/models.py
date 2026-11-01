@@ -310,6 +310,7 @@ class Investment:
     telefon: str | None = None
     email: str | None = None
     # --- Pola księgowe: ustawia wyłącznie warstwa storage. ---
+    wymaga_weryfikacji: bool = False
     nr: int | None = None
     czy_wyslano: bool = False
     wyslano_kanaly: str = ""
@@ -318,6 +319,11 @@ class Investment:
     status_zmieniony: str | None = None
     zsynchronizowano: str | None = None
     ostatnio_widziany: str | None = None
+
+    @property
+    def data_quality_label(self) -> str | None:
+        """Zgłoszenie jest sygnałem do sprawdzenia, nie potwierdzeniem błędu danych."""
+        return "Zgłoszona uwaga — wymaga weryfikacji" if self.wymaga_weryfikacji else None
 
 
 class DeliveryCategory(str, enum.Enum):
@@ -374,6 +380,7 @@ class B2BDeliveryItem:
 
 
 BOOKKEEPING_FIELDS: tuple[str, ...] = (
+    "wymaga_weryfikacji",
     "nr",
     "czy_wyslano",
     "wyslano_kanaly",

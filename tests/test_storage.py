@@ -344,6 +344,87 @@ def legacy_database(path, version: int):
     return conn
 
 
+def test_version_16_migrates_issue_schema_with_backup_and_preserved_lead(tmp_path, clock):
+    import sqlite3
+
+    from core import storage
+
+    path = tmp_path / "v16.sqlite"
+    legacy = legacy_database(path, 16)
+    legacy.execute(
+        "INSERT INTO investments (id_sprawy, zrodlo, status, utworzono, zmieniono, "
+        "status_zmieniony, ostatnio_widziany) VALUES ('KEPT/16', 'pozwolenia', 'decyzja', 'x', 'x', 'x', 'x')"
+    )
+    legacy.execute("INSERT INTO b2b_customers (customer_id, email) VALUES (1, 'one@example.test')")
+    legacy.execute("INSERT INTO b2b_orders (order_id, customer_id, typ_pakietu) VALUES (1, 1, 'jednorazowy')")
+    legacy.execute(
+        "INSERT INTO b2b_deliveries (delivery_id, order_id, typ_dostawy, doreczono_utc) "
+        "VALUES (1, 1, 'pelna', '2026-10-01T00:00:00+00:00')"
+    )
+    legacy.execute(
+        "INSERT INTO b2b_delivery_items (delivery_id, id_sprawy, rewizja, kategoria_dostawy) "
+        "VALUES (1, 'KEPT/16', 'kept-revision', 'full')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    with LeadRepository(path, now=clock) as repository:
+        assert storage.SCHEMA_VERSION == 17
+        assert repository.connection.execute("PRAGMA user_version").fetchone()[0] == 17
+        stored = repository.get("KEPT/16")
+        assert stored.status == "decyzja"
+        assert stored.wymaga_weryfikacji is False
+        assert stored.data_quality_label is None
+        assert tuple(repository.connection.execute(
+            "SELECT delivery_id, id_sprawy, rewizja FROM b2b_delivery_items"
+        ).fetchone()) == (1, "KEPT/16", "kept-revision")
+        assert repository.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        repository.connection.execute(
+            "INSERT INTO issue_reports (customer_id, id_sprawy, typ, opis, zgloszono_utc) "
+            "VALUES (1, 'KEPT/16', 'zly_telefon', 'Opis', '2026-10-01T00:00:00+00:00')"
+        )
+        for customer_id, case_id, kind, description in (
+            (999, "KEPT/16", "inna_uwaga", "Opis"),
+            (1, "MISSING", "inna_uwaga", "Opis"),
+            (1, "KEPT/16", "unknown", "Opis"),
+            (1, "KEPT/16", "inna_uwaga", "x" * 1001),
+            (1, "KEPT/16", "inna_uwaga", ""),
+            (1, "KEPT/16", "zly_telefon", "Duplikat"),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                repository.connection.execute(
+                    "INSERT INTO issue_reports (customer_id, id_sprawy, typ, opis, zgloszono_utc) "
+                    "VALUES (?, ?, ?, ?, '2026-10-01T00:00:00+00:00')",
+                    (customer_id, case_id, kind, description),
+                )
+        with pytest.raises(sqlite3.IntegrityError):
+            repository.connection.execute("UPDATE investments SET wymaga_weryfikacji = 2")
+
+    (backup,) = (path.parent / "backups").glob("v16-przed-v17-*.sqlite")
+    with sqlite3.connect(backup) as check:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert check.execute("SELECT id_sprawy, status FROM investments").fetchall() == [("KEPT/16", "decyzja")]
+        assert check.execute("SELECT customer_id FROM b2b_customers").fetchall() == [(1,)]
+        assert check.execute("SELECT delivery_id, rewizja FROM b2b_delivery_items").fetchall() == [(1, "kept-revision")]
+        assert check.execute("SELECT name FROM sqlite_master WHERE name = 'issue_reports'").fetchone() is None
+
+
+def test_quality_flag_is_storage_owned_and_survives_import(repo):
+    source = lead()
+    source.wymaga_weryfikacji = True
+    repo.upsert(source)
+    assert repo.get(source.id_sprawy).wymaga_weryfikacji is False
+    repo.connection.execute("UPDATE investments SET wymaga_weryfikacji = 1 WHERE id_sprawy = ?", (source.id_sprawy,))
+
+    result = repo.upsert(lead())
+    assert result.change is ChangeType.UNCHANGED
+    result = repo.upsert(lead(status="odmowa"))
+    assert result.change is ChangeType.STATUS_CHANGED
+    stored = repo.get(source.id_sprawy)
+    assert stored.wymaga_weryfikacji is True
+    assert stored.data_quality_label == "Zgłoszona uwaga — wymaga weryfikacji"
+
+
 def test_version_15_migrates_to_b2b_schema_and_preserves_leads(tmp_path, clock):
     import sqlite3
     from core import storage
@@ -358,8 +439,7 @@ def test_version_15_migrates_to_b2b_schema_and_preserves_leads(tmp_path, clock):
     legacy.close()
 
     with LeadRepository(path, now=clock) as repo:
-        assert storage.SCHEMA_VERSION == 16
-        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         assert repo.get("KEPT/1").status == "decyzja"
         assert repo.connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -403,7 +483,7 @@ def test_version_15_migrates_to_b2b_schema_and_preserves_leads(tmp_path, clock):
             "ix_b2b_delivery_items_case_revision",
         }
 
-    (backup,) = (path.parent / "backups").glob("v15-przed-v16-*.sqlite")
+    (backup,) = (path.parent / "backups").glob(f"v15-przed-v{storage.SCHEMA_VERSION}-*.sqlite")
     check = sqlite3.connect(backup)
     try:
         assert check.execute("PRAGMA user_version").fetchone()[0] == 15
