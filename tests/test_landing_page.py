@@ -61,6 +61,42 @@ def test_home_has_named_sections_unique_ids_and_semantic_landmarks(landing):
             assert attrs.get("aria-labelledby") in ids
 
 
+def test_public_brand_and_reused_images_are_served_locally(landing):
+    http, response, page = landing
+    assert "Żółta Tablica" in response.text
+    assert "GUNB Lead Tool" not in response.text
+    assert "Telegram" not in response.text and "t.me" not in response.text
+    images = [attrs for tag, attrs in page.elements if tag == "img"]
+    assert images and all("alt" in attrs and "width" in attrs and "height" in attrs for attrs in images)
+    sources = {urlsplit(attrs["src"]).path for attrs in images}
+    assert {
+        "/static/images/company-logo.png",
+        "/static/images/hero-construction.webp",
+        "/static/images/construction-detail.webp",
+    } <= sources
+    for source in sources:
+        asset = http.get(source)
+        assert asset.status_code == 200
+        assert asset.headers["content-type"].startswith("image/")
+        assert asset.headers["x-content-type-options"] == "nosniff"
+    for name in ("manrope-latin-wght-normal.woff2", "manrope-latin-ext-wght-normal.woff2"):
+        assert http.get("/static/fonts/" + name).status_code == 200
+
+
+@pytest.mark.parametrize("extension,path,want", (
+    (".webp", "images/hero-construction.webp", "image/webp"),
+    (".woff2", "fonts/manrope-latin-wght-normal.woff2", "font/woff2"),
+))
+def test_static_media_types_do_not_depend_on_windows_registry(monkeypatch, extension, path, want):
+    import mimetypes
+
+    monkeypatch.setitem(mimetypes.types_map, extension, "application/octet-stream")
+    with TestClient(create_app()) as http:
+        response = http.get("/static/" + path)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == want
+
+
 def test_public_examples_are_synthetic_disclosures_with_quality_and_timing(landing):
     _, response, page = landing
     samples = [item for item in page.details if "lead-example" in item["attrs"].get("class", "").split()]

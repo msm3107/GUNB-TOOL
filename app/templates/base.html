@@ -3,7 +3,9 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}{{ page_title }} · GUNB Lead Tool{% endblock %}</title>
+    <title>{% block title %}{{ page_title }} · Żółta Tablica{% endblock %}</title>
+    <meta name="theme-color" content="#0b2231">
+    <link rel="icon" type="image/png" href="{{ url_for('static', path='/images/company-logo.png') }}">
     {% block meta %}{% endblock %}
     <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
   </head>
@@ -12,11 +14,17 @@
     <header class="site-header">
       {% include "components/navbar.html" %}
     </header>
-    <main class="container main-content" id="main-content" tabindex="-1">
+    <main class="main-content" id="main-content" tabindex="-1">
       {% block content %}{% endblock %}
     </main>
     <footer class="site-footer">
-      <div class="container">GUNB Lead Tool · dane z rejestru RWDZ</div>
+      <div class="container footer-inner">
+        <a class="brand brand-footer" href="{{ url_for('home') }}">
+          <img class="brand-logo" src="{{ url_for('static', path='/images/company-logo.png') }}" alt="" width="83" height="83" loading="lazy">
+          <span>Żółta Tablica</span>
+        </a>
+        <p>Dane z RWDZ. Kontekst dla Twojego biznesu.<br><span>Niezależne narzędzie — nie jest oficjalnym serwisem GUNB.</span></p>
+      </div>
     </footer>
   </body>
 </html>

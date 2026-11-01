@@ -1,31 +1,35 @@
 {% extends "base.html" %}
 {% block meta %}
-    <meta name="description" content="Poznaj GUNB Lead Tool: dopasowanie inwestycji z RWDZ, pamięć dostaw i jawna jakość danych. Fikcyjne przykłady paczek B2B. Portal w przygotowaniu.">
+    <meta name="description" content="Żółta Tablica: inwestycje z RWDZ dla Twojej branży. Ścisłe dopasowanie, pamięć dostaw i jawna jakość danych. Poznaj planowane paczki B2B i fikcyjne przykłady. Portal w przygotowaniu.">
 {% endblock %}
 {% block content %}
-<p class="launch-notice"><span class="site-state">Portal w przygotowaniu</span> Zamówienia i płatności online nie są jeszcze dostępne.</p>
+<p class="container launch-notice"><span class="site-state">Portal w przygotowaniu</span> Zamówienia i płatności online nie są jeszcze dostępne.</p>
 
-<section class="hero" aria-labelledby="page-heading">
-  <div>
+<section class="hero-section" aria-labelledby="page-heading">
+  <img class="hero-art" src="{{ url_for('static', path='/images/hero-construction.webp') }}" alt="" width="1400" height="788">
+  <div class="container hero">
+  <div class="hero-copy">
     <p class="eyebrow">Dane o inwestycjach dla firm</p>
-    <h1 id="page-heading">Mniej wpisów.<br>Więcej kontekstu do rozmowy.</h1>
-    <p class="intro">Dla handlowców, składów budowlanych i wykonawców, którzy szukają inwestycji pasujących do swojej branży. GUNB Lead Tool porządkuje dane z rejestru RWDZ: pokazuje dopasowanie, zmiany i braki w danych.</p>
+    <h1 id="page-heading">Nowe inwestycje.<br>Lepszy kontekst.</h1>
+    <p class="intro">Dla handlowców, składów budowlanych i wykonawców, którzy szukają inwestycji pasujących do swojej branży. Żółta Tablica porządkuje dane z rejestru RWDZ: pokazuje dopasowanie, zmiany i braki w danych.</p>
     <a class="button-link" href="#przyklady">Zobacz przykłady <span aria-hidden="true">↗</span></a>
     <p class="hero-note">Punkt wyjścia do własnej weryfikacji. Wpis w rejestrze nie jest gotowym zamówieniem ani potwierdzeniem trwającej budowy.</p>
   </div>
   <aside class="package-outline" aria-labelledby="package-heading">
-    <p class="eyebrow">Kontekst zamiast samego wpisu</p>
-    <h2 id="package-heading">Co wnosi paczka?</h2>
+    <p class="eyebrow">Paczka B2B / XLSX + CSV</p>
+    <h2 id="package-heading">Kontekst zamiast<br>samego wpisu.</h2>
     <dl>
-      <div><dt>Dopasowanie</dt><dd>Typ inwestycji i czytelne uzasadnienie</dd></div>
-      <div><dt>Pamięć</dt><dd>Nowe sprawy, istotne zmiany, pełny snapshot</dd></div>
-      <div><dt>Jakość</dt><dd>Organ źródłowy, dokładność lokalizacji i uwagi</dd></div>
+      <div><dt><span aria-hidden="true">01</span> Dopasowanie</dt><dd>Typ inwestycji i czytelne uzasadnienie</dd></div>
+      <div><dt><span aria-hidden="true">02</span> Pamięć</dt><dd>Nowe sprawy, istotne zmiany, pełny snapshot</dd></div>
+      <div><dt><span aria-hidden="true">03</span> Jakość</dt><dd>Organ źródłowy, dokładność lokalizacji i uwagi</dd></div>
     </dl>
     <p class="small-note">Format eksportu: XLSX i CSV. Dostęp przez portal jest przygotowywany.</p>
   </aside>
+  </div>
 </section>
 
-<section class="page-section" id="jak-to-dziala" aria-labelledby="pillars-heading">
+<section class="page-section pillars-section" id="jak-to-dziala" aria-labelledby="pillars-heading">
+  <div class="container">
   <p class="eyebrow">01 / Trzy filary</p>
   <h2 id="pillars-heading">Wiesz, dlaczego warto sprawdzić daną inwestycję.</h2>
   <div class="pillars">
@@ -45,14 +49,20 @@
       <p>Widzisz organ źródłowy, dokładność lokalizacji oraz zgłoszone uwagi. Brak geometrii działki ma jawną etykietę; brak zgłoszenia błędu nie oznacza zweryfikowanej poprawności.</p>
     </article>
   </div>
+  </div>
 </section>
 
-<section class="page-section" id="przyklady" aria-labelledby="examples-heading">
+<section class="container page-section" id="przyklady" aria-labelledby="examples-heading">
+  <div class="examples-intro">
+  <div>
   <div class="section-heading">
     <div><p class="eyebrow">02 / Zajrzyj do środka</p><h2 id="examples-heading">Trzy inwestycje. Trzy różne konteksty.</h2></div>
     <p>Rozwiń przykład, żeby zobaczyć uzasadnienie i ograniczenia danych.</p>
   </div>
   <p class="sample-notice">Wszystkie poniższe przykłady są fikcyjne i służą wyłącznie demonstracji. Nie są to rzeczywiste oferty ani dane konkretnych inwestorów.</p>
+  </div>
+  <img class="construction-detail" src="{{ url_for('static', path='/images/construction-detail.webp') }}" alt="" width="760" height="570" loading="lazy">
+  </div>
   <details class="lead-example">
     <summary><span class="example-type">Dom jednorodzinny <span class="example-label">Fikcyjny przykład 01</span></span><span class="delivery-label">Nowa sprawa</span></summary>
     <div class="details-body">
@@ -91,7 +101,7 @@
   </details>
 </section>
 
-<section class="page-section" id="oferta" aria-labelledby="offers-heading">
+<section class="container page-section" id="oferta" aria-labelledby="offers-heading">
   <p class="eyebrow">03 / Planowane warianty</p>
   <h2 id="offers-heading">Jednorazowy przegląd czy regularne aktualizacje?</h2>
   <p class="section-intro">Porównanie planowanej oferty. Sprzedaż nie jest uruchomiona; nie można jeszcze złożyć zamówienia ani opłacić abonamentu.</p>
@@ -108,10 +118,10 @@
   </table>
 </section>
 
-<section class="page-section faq" id="pytania" aria-labelledby="faq-heading">
+<section class="container page-section faq" id="pytania" aria-labelledby="faq-heading">
   <p class="eyebrow">04 / Warto wiedzieć</p>
   <h2 id="faq-heading">Najczęstsze pytania</h2>
-  <details class="faq-item"><summary>Skąd pochodzą dane i co potwierdzają?</summary><div class="details-body"><p>Silnik korzysta z Rejestru Wniosków, Decyzji i Zgłoszeń (RWDZ) GUNB. To informacje o sprawach urzędowych, a nie raport z placu budowy. Pozwolenie nie oznacza rozpoczęcia ani ukończenia prac. GUNB Lead Tool jest niezależnym narzędziem i nie jest oficjalnym serwisem GUNB.</p></div></details>
+  <details class="faq-item"><summary>Skąd pochodzą dane i co potwierdzają?</summary><div class="details-body"><p>Silnik korzysta z Rejestru Wniosków, Decyzji i Zgłoszeń (RWDZ) GUNB. To informacje o sprawach urzędowych, a nie raport z placu budowy. Pozwolenie nie oznacza rozpoczęcia ani ukończenia prac. Żółta Tablica jest niezależnym narzędziem i nie jest oficjalnym serwisem GUNB.</p></div></details>
   <details class="faq-item"><summary>Czy dostanę gotowych klientów i ich telefony?</summary><div class="details-body"><p>Paczka opisuje inwestycje do sprawdzenia, nie gotowych klientów. Nie obiecujemy telefonu ani zweryfikowanego kontaktu do inwestora. Publiczny wpis nie oznacza zgody na kontakt marketingowy; przed kontaktem trzeba osobno ustalić jego dopuszczalność.</p></div></details>
   <details class="faq-item"><summary>Co oznaczają nowe sprawy, zmiany i pełny snapshot?</summary><div class="details-body"><p>Nowa sprawa to inwestycja dotąd nieznana danemu klientowi. Zmiana oznacza istotną aktualizację wcześniej doręczonej sprawy. Niezmieniony wpis nie wraca w dostawie różnicowej; pełny snapshot celowo może obejmować także znane inwestycje.</p></div></details>
   <details class="faq-item"><summary>Co zrobić z brakami lokalizacji lub zgłoszoną uwagą?</summary><div class="details-body"><p>Brak współrzędnych działki jest jawnie oznaczany. Lokalizacja gminna nie wskazuje konkretnej budowy, a centroid działki nie wskazuje budynku. Zgłoszona uwaga wymaga weryfikacji; jej brak nie daje gwarancji poprawności danych.</p></div></details>

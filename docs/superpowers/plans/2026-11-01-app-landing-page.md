@@ -6,9 +6,9 @@
 
 **Architecture:** GET / renders index.html extending the existing base. Public examples are explicitly synthetic, static template content without database access. Native details/summary provides keyboard-accessible interaction without JavaScript or changes to CSP. Reuse local CSS and the ASGI factory/security boundary.
 
-**Tech Stack:** Existing FastAPI, Jinja2, semantic HTML and vanilla CSS; no additional dependencies or external assets.
+**Tech Stack:** Existing FastAPI, Jinja2, semantic HTML and vanilla CSS; local imagery and Manrope fonts reused from the owner's GUNB-WEBSITE, no new runtime dependencies or externally loaded assets.
 
-**Spec:** projectplan.md PR6; user requested the next PR after merging PR23. User confirmed comparison without numeric prices until sales launch.
+**Spec:** projectplan.md PR6; user requested the next PR after merging PR23. User confirmed comparison without numeric prices until sales launch. Before merging PR24 the user corrected the brand to Żółta Tablica and requested the visual style/assets from C:/Users/SLC/Documents/GUNB-WEBSITE adapted to V2.
 
 ## Global Constraints
 
@@ -19,7 +19,7 @@
 - Registry status is a fact within the fictional scenario; trade timing is an estimate, never confirmation of work starting.
 - Present Paczka jednorazowa vs Abonament as planned offers. Price: Cena przed uruchomieniem sprzedaży. No invented amounts or VAT terms.
 - Orders and online payments are not yet available; links navigate only to existing page sections. No dead purchase/login links or forms.
-- Follow the existing system font, ink/teal/light palette, reusable shell and local assets. Native disclosures function without JavaScript. No trackers or webfonts.
+- Use the Żółta Tablica logo, navy #0b2231, yellow #ffd02b, cream #faf8f1, Georgia headings and local Manrope font from GUNB-WEBSITE. Reuse hero-construction.webp and construction-detail.webp; preserve their bytes and the font's OFL license. Native disclosures function without JavaScript. No trackers, external font services, Telegram UI, bot links or legacy trial promises.
 
 ## Review Focus
 
@@ -46,5 +46,14 @@
 
 - [x] Document the current public page, fictional examples and sales limitation.
 - [x] Run full pytest, changed-file lint, compile and diff checks; inspect real Uvicorn output and desktop/mobile browser interactions/console/assets.
-- [ ] Commit and push, open PR with exact BASE/HEAD, verify CI for current HEAD.
-- [ ] Obtain independent read-only review per local instructions, fix P0/P1 and fix or justify P2; save report locally and leave PR open for human evaluation.
+- [x] Commit and push, open PR with exact BASE/HEAD, verify CI for current HEAD.
+- [x] Obtain independent read-only review per local instructions, fix P0/P1 and fix or justify P2; save report locally and leave PR open for human evaluation.
+
+### Task 3: Owner-requested brand and visual revision of the same PR
+
+**Files:** app/templates/base.html, components/navbar.html, index.html; app/static/style.css, images/, fonts/; app/main.py; README.md, docs/WEB_ASSETS.md; tests/test_landing_page.py.
+
+- [x] Add a failing rendered-page regression for Żółta Tablica branding, locally served original images/fonts, and absence of the former product name/Telegram promotion.
+- [x] Copy only the logo, two construction illustrations, Latin/Latin-ext Manrope WOFF2 and its license from the supplied source project. Record provenance/hashes. Leave the source project unchanged.
+- [x] Adapt the source site's visual system to the existing V2 page: cream/navy/yellow, serif headings, local Manrope, construction artwork and actual logo; preserve all V2 sections, disclosures and sales limitations.
+- [ ] Rerun web/full tests, lint, asset and desktop/mobile browser checks. Update the existing PR and obtain follow-up from the same independent reviewer for the new whole-PR HEAD.
