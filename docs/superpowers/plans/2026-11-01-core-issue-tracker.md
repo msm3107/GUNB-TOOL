@@ -47,9 +47,9 @@
 
 **Interfaces:** IssueType enum; frozen IssueReport; IssueNotAllowed(PermissionError), IssueRateLimitExceeded(RuntimeError). IssueTracker(repository).report_issue(customer_id: int, id_sprawy: str, issue_type: IssueType | str, description: str = "") -> IssueReport.
 
-- [ ] Add failing tests for all four types, sanitization/limits, authorization across orders/customers, duplicate retries, quota boundary, concurrency and transactional rollback.
-- [ ] Confirm RED, implement report_issue using parameterized SQL and repository.transaction(), then confirm GREEN.
-- [ ] Verify no source status change or private report leakage, then commit.
+- [x] Add failing tests for all four types, sanitization/limits, authorization across orders/customers, duplicate retries, quota boundary, concurrency and transactional rollback.
+- [x] Confirm RED, implement report_issue using parameterized SQL and repository.transaction(), then confirm GREEN.
+- [x] Verify no source status change or private report leakage, then commit.
 
 ### Task 3: Label in exports and end-to-end preservation
 
