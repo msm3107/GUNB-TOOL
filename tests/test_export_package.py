@@ -163,7 +163,7 @@ def test_xlsx_exports_every_record_from_zip_with_xml_controls(tmp_path, repo, in
     assert repo.get("CASE/INVALID").nazwa_zamierzenia == source_description
 
 
-def test_xlsx_replaces_xml_invalid_characters_and_preserves_valid_literal_text() -> None:
+def test_exports_replace_xml_invalid_characters_and_preserve_valid_literal_text() -> None:
     forbidden = "".join(chr(code) for code in (
         *range(0x09), 0x0B, 0x0C, *range(0x0E, 0x20), 0xD800, 0xDFFF, 0xFFFE, 0xFFFF
     ))
@@ -183,6 +183,12 @@ def test_xlsx_replaces_xml_invalid_characters_and_preserves_valid_literal_text()
     assert cell.value.replace("\r", "\n") == expected.replace("\r", "\n")
     assert cell.data_type == "s"
     workbook.close()
+
+    csv_output = BytesIO()
+    write_csv((item,), csv_output)
+    rows = list(csv.reader(StringIO(csv_output.getvalue().decode("utf-8-sig"), newline="")))
+    csv_columns = {name: index for index, name in enumerate(rows[0])}
+    assert rows[1][csv_columns["Nazwa zamierzenia"]] == "'" + expected
     assert item.investment.nazwa_zamierzenia == source_text
 
 
@@ -232,6 +238,29 @@ def test_csv_preserves_empty_and_whitespace_fields(text: str) -> None:
     assert rows[1][columns["Nazwa zamierzenia"]] == text
     assert rows[1][columns["Działki"]] == ""
     assert rows[1][columns["Uzasadnienie"]] == ""
+
+
+def test_csv_replaces_nul_without_losing_records() -> None:
+    source_text = "A\x00B"
+    invalid_item = make_item("CASE/NUL", DeliveryCategory.NEW, nazwa_zamierzenia=source_text)
+    items = (
+        make_item("CASE/BEFORE", DeliveryCategory.NEW),
+        invalid_item,
+        make_item("CASE/AFTER", DeliveryCategory.NEW),
+    )
+    output = BytesIO()
+
+    write_csv(items, output)
+
+    payload = output.getvalue()
+    assert b"\x00" not in payload
+    rows = list(csv.reader(StringIO(payload.decode("utf-8-sig"), newline="")))
+    columns = {name: index for index, name in enumerate(rows[0])}
+    assert [row[columns["ID sprawy"]] for row in rows[1:]] == [
+        "CASE/BEFORE", "CASE/NUL", "CASE/AFTER"
+    ]
+    assert rows[2][columns["Nazwa zamierzenia"]] == "A\ufffdB"
+    assert invalid_item.investment.nazwa_zamierzenia == source_text
 
 
 def test_csv_binary_stream_has_deterministic_utf8_bom_and_crlf(tmp_path) -> None:

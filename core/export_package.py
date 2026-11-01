@@ -157,6 +157,7 @@ def _append_literal_row(sheet, values: Iterable[object]) -> None:
 def _protect_csv_value(value: object) -> object:
     if not isinstance(value, str):
         return value
+    value = _XML_INVALID_CHARACTERS_RE.sub("\ufffd", value)
     first = value.lstrip().lstrip("\ufeff").lstrip()[:1]
     return "'" + value if first and first in _FORMULA_PREFIXES else value
 
@@ -213,6 +214,7 @@ def write_csv(
 
     ``destination`` to otwarty strumień binarny w pustej pozycji. Eksport sam
     kontroluje UTF-8, pojedynczy BOM i końce wierszy CRLF; nie zamyka strumienia.
+    Niedozwolone znaki XML zastępuje U+FFFD, tak samo jak w XLSX.
     """
     trade = _resolve_trade(trade_key, as_of)
     destination.write(b"\xef\xbb\xbf")
