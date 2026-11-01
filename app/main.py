@@ -1,53 +1,68 @@
-"""Punkt wejścia aplikacji FastAPI + Jinja2.
-
-Moduł szkieletowy przygotowany pod implementację:
-- /: strona główna / panel klienta
-- /zamowienie: konfigurator paczki B2B (filtry branżowe, zasięg terytorialny)
-- /pobierz/{token}: bezpieczne pobieranie paczek leadów (Nowe, Zmiany, Pełna baza)
-- /api/webhook/stripe: obsługa zdarzeń płatności Stripe
-- /zdrowie: endpoint liveness/readiness
-"""
+"""ASGI factory for the B2B web foundation, without engine startup or database access."""
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
-log = logging.getLogger("app")
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp
+
+from .config import WebConfig
+from .security import SecurityHeadersMiddleware
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
-def create_app():
-    """Fabryka aplikacji FastAPI z konfiguracją szablonów Jinja2 i plików statycznych."""
-    try:
-        from fastapi import FastAPI
-        from fastapi.staticfiles import StaticFiles
-    except ImportError:
-        raise RuntimeError(
-            "FastAPI nie jest zainstalowane. Zainstaluj zależności webowe: pip install fastapi uvicorn jinja2"
-        )
+async def _server_error(_request: Request, _exception: Exception) -> JSONResponse:
+    return JSONResponse(
+        {"detail": "Wewnętrzny błąd serwera"}, status_code=500, headers={"Cache-Control": "no-store"}
+    )
 
-    app = FastAPI(
+
+def create_app(config: WebConfig | None = None) -> ASGIApp:
+    """Build FastAPI with CORS/security policy covering errors as well as routes.
+
+    The returned ASGI application runs with ``uvicorn app.main:create_app --factory``.
+    HTTP liveness deliberately does not inspect engine configuration, locks or SQLite.
+    """
+    config = WebConfig.from_env() if config is None else config
+    api = FastAPI(
         title="GUNB Leads B2B",
         description="Portal B2B dla handlowców – inwestycje budowlane z rejestru RWDZ",
         version="0.1.0",
+        debug=False,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
+    api.add_exception_handler(Exception, _server_error)
+    api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-    if STATIC_DIR.is_dir():
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    @api.get("/", response_class=HTMLResponse, name="home", include_in_schema=False)
+    def home(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request=request, name="base.html", context={"page_title": "Portal B2B w przygotowaniu"}
+        )
 
-    @app.get("/zdrowie")
-    def health_check() -> dict[str, str]:
+    @api.api_route("/zdrowie", methods=["GET", "HEAD"], include_in_schema=False)
+    async def health_check(response: Response) -> dict[str, str]:
+        response.headers["Cache-Control"] = "no-store"
         return {"status": "ok", "service": "gunb-web"}
 
-    return app
+    cors = CORSMiddleware(
+        api, allow_origins=config.cors_origins, allow_methods=("GET", "HEAD"),
+        allow_headers=(), allow_credentials=False,
+    )
+    return SecurityHeadersMiddleware(cors)
 
 
 if __name__ == "__main__":
-    try:
-        import uvicorn
-        uvicorn.run("app.main:create_app", factory=True, host="127.0.0.1", port=8000, reload=True)
-    except ImportError:
-        print("Uruchomienie wymaga pakietu uvicorn: pip install uvicorn")
+    import uvicorn
+
+    uvicorn.run("app.main:create_app", factory=True, host="127.0.0.1", port=8000)

@@ -1,7 +1,11 @@
-# Runtime dependencies of GUNB Data Engine (keep this file ASCII-only: pip reads it in the system encoding)
+# Runtime dependencies of the engine and B2B app (keep ASCII-only for pip on Windows)
 requests>=2.31,<3
 PyYAML>=6.0,<7
 openpyxl>=3.1,<4
 python-dotenv>=1.0,<2
 # Europe/Warsaw time zone for the schedule (Windows has no system zone database; fallback on Linux)
 tzdata>=2024.1
+# Web application foundation (the core engine does not import these packages)
+fastapi>=0.162,<0.163
+jinja2>=3.1.6,<4
+uvicorn>=0.54,<0.55
