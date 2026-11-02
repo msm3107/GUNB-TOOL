@@ -33,7 +33,10 @@ def portal_router(
     async def portal(request: Request):
         if not service.settings.test_mode:
             return failure(503)
-        principal = await run_in_threadpool(identity_resolver, request)
+        try:
+            principal = await run_in_threadpool(identity_resolver, request)
+        except CheckoutUnavailable:
+            return failure(503)
         if not isinstance(principal, AuthenticatedCustomer):
             return failure(401)
         if request.headers.get("origin") != service.settings.origin:

@@ -8,7 +8,7 @@
 
 Silnik obsługuje pobieranie paczek RWDZ, filtrowanie i klasyfikację spraw, geokodowanie ULDK, zapis w SQLite oraz kontrolę stanu bazy. CLI jest dostępne w pliku main.py.
 
-Silnik B2B korzysta ze schematu SQLite v21 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
+Silnik B2B korzysta ze schematu SQLite v22 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
 
 `core.issue_tracker.IssueTracker.report_issue(...)` zapisuje uwagi do spraw wcześniej doręczonych danemu klientowi. Obsługuje typy `zly_telefon`, `to_nie_inwestor_tylko_projektant`, `inwestycja_juz_stoi` i `inna_uwaga`. Opis jest zwykłym tekstem do 1000 znaków wejściowych, a limit wynosi 20 nowych zgłoszeń na godzinę na klienta. Ponowienie tego samego typu uwagi do tej samej sprawy zwraca oryginalne zgłoszenie, bez zmiany opisu i zużywania limitu. Wywołująca warstwa aplikacji musi ustalać `customer_id` z uwierzytelnionej sesji.
 
@@ -48,7 +48,7 @@ Po instalacji zależności uruchom serwer lokalny:
 
 ### Konfigurator i estymator
 
-Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v21), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
+Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v22), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
 
 `GET /zamowienie` pokazuje formularz, `POST /zamowienie` zwraca wynik HTML (także bez JavaScriptu), a `POST /api/estimate` przyjmuje JSON. Przykład:
 
@@ -79,7 +79,7 @@ Do lokalnej integracji testowej wymagane są jawne zmienne procesu (WWW nie czyt
 | Zmienna | Wartość |
 |---|---|
 | `GUNB_WEB_CHECKOUT_MODE` | `test` (domyślnie `disabled`) |
-| `GUNB_WEB_DB_PATH` | Istniejąca baza WAL v21, zaktualizowana wcześniej przez CLI |
+| `GUNB_WEB_DB_PATH` | Istniejąca baza WAL v22, zaktualizowana wcześniej przez CLI |
 | `GUNB_WEB_STRIPE_SECRET_KEY` | Klucz testowy `sk_test_…` albo `rk_test_…`, nigdy w repo/logach |
 | `GUNB_WEB_PUBLIC_ORIGIN` | Origin HTTPS bez ścieżki, albo lokalne HTTP np. `http://127.0.0.1:8000` |
 | `GUNB_WEB_STRIPE_TEST_PACKAGE_GROSZE` | Dodatnia całkowita kwota fikcyjnej paczki w PLN groszach |
@@ -100,7 +100,7 @@ SDK `stripe==10.12.0` jest przypięty zgodnie z zakresem zatwierdzonym w planie,
 
 ## Testowe webhooki i pierwsza paczka (etap PR9)
 
-Sprzedaż pozostaje wyłączona. Nowa wersja WWW wymaga **schematu v21**:
+Sprzedaż pozostaje wyłączona. Nowa wersja WWW wymaga **schematu v22**:
 przed jej uruchomieniem wykonaj migrację silnikiem CLI, np. `python main.py --stats`
 z właściwą konfiguracją. Migracja dodaje `stripe_events` oraz `paid_package_jobs`,
 robi kopię przed DDL i zachowuje wcześniejsze zamówienia/próby Checkout. WWW i
@@ -226,15 +226,10 @@ Limit portalu:4 operacje i30 prób/minutę na proces, bez sieci pod blokadą DB.
 Brak tożsamości daje401, brak powiązania/niezgodny Origin403, body400, limit429,
 awaria503. Domyślnie wyłączony testowy Checkout daje503 bez bazy i dostawcy.
 
-**Logowanie należy do następnego etapu PR11.** Fabryka ma interfejs
-`identity_resolver(Request) -> AuthenticatedCustomer | None`; domyślnie zawsze
-odmawia. To wewnętrzny interfejs serwera, bez zaufania do klientowskich nagłówków,
-cookies czy ID. Nie ma publicznej ścieżki utworzenia powiązania właściciela Stripe
-w tym PR. Testy używają fikcyjnych, zaufanych powiązań i resolvera serwerowego;
-normalny portal pozostaje niedostępny do podłączenia zweryfikowanego logowania.
-PR11 musi też bezpiecznie uzgodnić własność konta i bieżące abonamenty po
-powiązaniu, zanim dopuści dostęp: pominięte wcześniej zdarzenie nie jest dowodem
-aktywności. Nie uruchamiaj portalu przez dodanie tymczasowego HTTP bypassu.
+Logowanie i potwierdzenie własności dodaje etap PR11 opisany poniżej. Fabryka
+zachowuje interfejs `identity_resolver(Request) -> AuthenticatedCustomer | None`,
+domyślnie używając prawdziwej kontroli sesji. Wyłączone logowanie nadal odmawia
+wszystkim; nie ma zaufania do klientowskich nagłówków ani podanego ID.
 
 Sprzedaż pozostaje wyłączona; brak nowych cen, bez prawdziwych kont/API/płatności
 w testach. Retencja, monitoring, automatyczne recovery i dostawy nadal mają bramki
@@ -242,6 +237,97 @@ opisane powyżej. Weryfikacja kontraktów2026-11-02:
 [Customer Portal API](https://docs.stripe.com/api/customer_portal/sessions/create?api-version=2024-06-20),
 [zdarzenia abonamentu](https://docs.stripe.com/billing/subscriptions/webhooks),
 [odczyt Subscription](https://docs.stripe.com/api/subscriptions/retrieve?api-version=2024-06-20).
+
+## Testowe logowanie Magic Link (etap PR11 / PR29)
+
+Przed nowym WWW wykonaj migrację CLI do **v22**, np. `python main.py --stats`
+z właściwą konfiguracją. Kopia poprzedza DDL; migracja zachowuje dane i dodaje
+hashe linków/sesji, migawkę zweryfikowanego emaila i indeksowane limity żądań.
+WWW nie tworzy ani nie migruje bazy. Rollback wymaga zgodnej kopii i uzgodnienia
+późniejszych zdarzeń; rotacja sekretu natychmiast unieważnia stare linki/sesje.
+
+Domyślnie logowanie jest wyłączone: `/logowanie` pokazuje ten stan, a endpointy
+logowania zwracają503 bez bazy i SMTP. Włączaj tylko na osobnej bazie testowej
+i testowej skrzynce SMTP; aplikacja nie ładuje `.env` silnika.
+
+| Zmienna procesu | Wartość |
+|---|---|
+| `GUNB_WEB_AUTH_MODE` | `test`, domyślnie `disabled`; brak trybu live |
+| `GUNB_WEB_AUTH_SECRET` | Osobny losowy sekret 32bajty jako64 małe cyfry hex; nigdy w repo/logach |
+| `GUNB_WEB_AUTH_ORIGIN` | Stały origin HTTPS; lokalne HTTP tylko localhost/127.0.0.1/::1; zgodny z Checkout, jeśli włączony |
+| `GUNB_WEB_AUTH_SMTP_HOST` | Host serwera testowej poczty |
+| `GUNB_WEB_AUTH_SMTP_PORT` | Port, domyślnie587 |
+| `GUNB_WEB_AUTH_SMTP_FROM` | Pojedynczy adres nadawcy |
+| `GUNB_WEB_AUTH_SMTP_TLS` | `starttls` albo `implicit`; brak trybu bez TLS |
+| `GUNB_WEB_AUTH_SMTP_USERNAME/PASSWORD` | Opcjonalna para; zawsze razem, poza repo/logami |
+| `GUNB_WEB_DB_PATH` | Istniejąca testowa baza WAL v22 |
+
+Formularz `GET /logowanie` ustawia poufne cookie przeglądarki, a
+`POST /auth/magic-link` przyjmuje wyłącznie email (JSON lub formularz). Logowanie
+dotyczy istniejących klientów, nie tworzy kont. Dla poprawnego adresu odpowiedź202
+jest taka sama przy koncie istniejącym, nieznanym i przekroczonym limicie; nie
+gwarantuje doręczenia poczty. Limit trwały wynosi3 próby/adres/h,10/bezpośredni IP/h
+i100 globalnie/h. IP pochodzi z połączenia ASGI, bez zaufania do X-Forwarded-For.
+Wspólne proxy dzieli ten limit; polityka wielu instancji/proxy wymaga kontroli
+przed produkcją. Niepoprawne wejście daje422, format415, body ponad4KiB413,
+niewłaściwy Origin403, niedostępna baza503. Nie loguj treści formularzy.
+
+Wysyłka następuje po HTTP ACK, poza transakcją i blokadą podmiany, przez istniejący
+`core.smtp_process.SupervisedSMTP` (plan używał nieaktualnej lokalizacji klasy).
+Do2 procesów SMTP naraz, budżet nadzoru15s plus ograniczone sprzątanie procesu,
+bez automatycznego retry. Wynik accepted oznacza przyjęcie SMTP, nie doręczenie.
+Unknown zachowuje ważność linku, bo wiadomość mogła dojść. Przeciążenie/błąd ma
+zapisany status; przerwanie procesu po ACK może utracić wysyłkę — zamów nowy link.
+Surowy token jest tylko w pamięci na czas wysyłki, bez trwałego outboxa.
+
+Token ma losowy składnik256bitów, HMAC-SHA256 oddzielony celem od sesji, TTL15min
+i jeden atomowy użytek. Jest powiązany z przeglądarką zamawiającą link, aby obca
+wiadomość nie logowała ofiary na konto napastnika. **Otwórz go w tej samej
+przeglądarce**; przy zmianie urządzenia, czyszczeniu cookies lub innej przeglądarce
+zamów nowy. Zmiana emaila klienta unieważnia jego stare linki i sesje.
+
+Wiadomość ma URL `/auth/verify#TOKEN`: fragment nie trafia do HTTP/access logów
+ani Referer. `GET /auth/verify` nie zużywa tokenu; lokalny skrypt usuwa fragment
+z historii i przygotowuje formularz wymagający przycisku „Potwierdź logowanie”.
+Samo otwarcie linku przez skaner nie loguje. Bez JS można wkleić kod z fragmentu
+do pola potwierdzenia. Nie umieszczaj tokenu w query, logach lub udostępnionych
+zrzutach. CSP pozostaje same-origin; tylko strony auth i przyszły `/panel` mają
+Referrer-Policy:same-origin, aby natywne formularze Chromium zachowały poprawny
+Origin. Pozostałe odpowiedzi nadal mają no-referrer. Origin:null jest odrzucany.
+
+POST potwierdzenia atomowo zużywa link i tworzy nową sesję (8h absolutnego TTL),
+unieważniając starą sesję tej przeglądarki. Cookie ma HttpOnly, SameSite=Lax,
+Path=/ i brak Domain; HTTPS wymusza Secure i prefiks __Host-. Jedyny wyjątek
+Secure to jawny lokalny test HTTP. Sesje przyjmowane są tylko z cookie i sprawdzane
+w DB; surowe tokeny nie są zapisywane. `POST /auth/logout` wymaga Originu, odwołuje
+sesję i usuwa oba cookies. GET nie wylogowuje. Panel klienta i pobrania są dalszymi
+etapami; strona po logowaniu uczciwie informuje o przygotowaniu panelu.
+
+Powiązanie billingu jest osobnym, jawnym `POST /auth/billing-link` z JSON
+`{"request_token":"<pierwotny UUIDv4 próby Checkout>"}`. Wymaga sesji, zgodnego
+Originu, poufnego oryginalnego identyfikatora zamówienia oraz zgodnego emaila,
+klienta, opłaconego zamówienia i zapisanej korelacji ze zweryfikowanego webhooka.
+Hash z metadanych Stripe nie zastępuje oryginalnego UUID. Sam login lub email
+gościa nigdy nie przypisuje Stripe customer. Inne istniejące powiązanie daje409
+i wymaga uzgodnienia przez operatora; endpoint go nie nadpisuje.
+
+Po potwierdzeniu własności bieżący stan abonamentu pobierany jest poza DB przez
+SDK. Lokalny audyt ma prefiks `local_reconcile_` i typ `local.subscription.reconciled`,
+więc nie udaje eventu Stripe. Błąd503 pozostawia świeży dostęp wyłączony i pozwala
+ponowić ten sam dowód. Limit2 uzgodnienia i10 prób/minutę na proces. Dopiero
+zweryfikowana sesja oraz potwierdzony właściciel mogą wejść do testowego portalu.
+Interfejs zamówień/powiązania w panelu zostaje do PR12; nie zgaduj i nie pobieraj
+identyfikatora zamówienia innego klienta.
+
+Przy kolejnych próbach logowania wykonywane jest ograniczone sprzątanie wygasłych
+rekordów (do100/tabelę/operację; limity starsze2h, linki/sesje dzień po wygaśnięciu).
+Bez ruchu mogą pozostać dłużej; harmonogram retencji/monitoring są warunkiem przed
+produkcją. Wymagane są również test rzeczywistej poczty, kontrola wdrożonego TLS,
+proxy, polityki nadużyć i pełnego cyklu klienta. Sprzedaż nadal jest wyłączona.
+
+Sprawdzono2026-11-02: [OWASP tokeny](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html),
+[sesje](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+Testy są syntetyczne; nie wykonano prawdziwej wysyłki SMTP ani Stripe API.
 
 ## Testy
 

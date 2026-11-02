@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import stripe
 
@@ -50,6 +51,10 @@ def parse_notice(value, *, deleted: bool = False) -> SubscriptionNotice | None:
 
 
 class SubscriptionService:
+    def reconcile(self,notice: SubscriptionNotice) -> None:
+        """Internal ownership-confirmation refresh, explicitly not a Stripe event."""
+        self.apply(notice,event_id='local_reconcile_'+uuid4().hex)
+
     def __init__(
         self,
         store: SubscriptionStore,

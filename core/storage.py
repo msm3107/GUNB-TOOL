@@ -500,6 +500,35 @@ _MIGRATIONS: tuple[Migration, ...] = (
     );
     CREATE INDEX ix_b2b_subscriptions_customer ON b2b_subscriptions(customer_id,status,current_period_end);
     """,                                                  # v21: korelacja abonamentów i ich stan testowy
+    """CREATE TABLE auth_magic_links (
+        token_hash TEXT PRIMARY KEY NOT NULL,
+        customer_id INTEGER NOT NULL REFERENCES b2b_customers(customer_id),
+        verified_email TEXT NOT NULL,
+        browser_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER,
+        delivery_status TEXT NOT NULL DEFAULT 'pending' CHECK(delivery_status IN ('pending','accepted','retry','failed','unknown'))
+    );
+    CREATE INDEX ix_auth_links_expiry ON auth_magic_links(expires_at);
+    CREATE TABLE auth_sessions (
+        session_hash TEXT PRIMARY KEY NOT NULL,
+        customer_id INTEGER NOT NULL REFERENCES b2b_customers(customer_id),
+        verified_email TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX ix_auth_sessions_expiry ON auth_sessions(expires_at);
+    CREATE TABLE auth_requests (
+        request_id INTEGER PRIMARY KEY,
+        address_hash TEXT NOT NULL,
+        ip_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE INDEX ix_auth_requests_address ON auth_requests(address_hash,created_at);
+    CREATE INDEX ix_auth_requests_ip ON auth_requests(ip_hash,created_at);
+    CREATE INDEX ix_auth_requests_time ON auth_requests(created_at);
+    """,                                                  # v22: jednorazowe logowanie i sesje
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

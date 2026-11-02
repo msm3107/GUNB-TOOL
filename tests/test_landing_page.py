@@ -123,7 +123,7 @@ def test_planned_offers_have_no_purchase_flow_or_invented_price(landing):
     assert all(attrs.get("scope") in {"col", "row"} for tag, attrs in page.elements if tag == "th")
     assert not {"form", "input", "button"} & set(tags)
     assert http.get("/zamowienie").status_code == 200
-    assert http.get("/logowanie").status_code == 404
+    assert http.get("/logowanie").status_code == 200
     assert http.post("/zamowienie/checkout").status_code == 503  # Sales remain disabled.
 
 

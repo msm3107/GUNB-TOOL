@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="container page-section configurator auth-page" aria-labelledby="auth-heading">
+  <p class="eyebrow">Twoje konto · dostęp testowy</p>
+  <h1 id="auth-heading">{% if logged_in %}Zalogowano.{% elif view == 'verify' %}Potwierdź logowanie.{% else %}Zaloguj się<br>bez hasła.{% endif %}</h1>
+  <div class="configurator-layout">
+    <div>
+    {% if message %}<p role="status" class="intro">{{ message }}</p>{% endif %}
+    {% if not auth_enabled %}
+      <p class="intro">Logowanie jest jeszcze niedostępne. Portal klienta jest przygotowywany.</p>
+    {% elif logged_in %}
+      <p class="intro">Panel klienta jest przygotowywany. Zalogowanie nie uruchamia płatności ani abonamentu.</p>
+      <form method="post" action="/auth/logout"><button class="button-link" type="submit">Wyloguj się</button></form>
+    {% elif view == 'verify' %}
+      <p class="intro">Wybierz przycisk, aby zalogować się do Żółtej Tablicy. Jeśli nie zlecano logowania, zamknij tę stronę.</p>
+      <form method="post" action="/auth/verify" id="magic-confirm">
+        <div id="magic-code-field"><label for="magic-token">Kod z końca linku w wiadomości (po znaku #)</label>
+          <input id="magic-token" name="token" type="password" required maxlength="256" autocomplete="off" spellcheck="false">
+          <p class="field-help">Jeśli kod nie wypełnił się automatycznie, wklej go tutaj. Otwórz link w przeglądarce, w której go zamówiono.</p>
+        </div>
+        <button class="button-link" type="submit">Potwierdź logowanie</button>
+      </form>
+    {% elif view != 'requested' %}
+      <p class="intro">Podaj adres przypisany do konta. Wyślemy jednorazowy link — bez zapamiętywania hasła.</p>
+      <form method="post" action="/auth/magic-link">
+        <label for="auth-email">Adres e-mail</label>
+        <input id="auth-email" name="email" type="email" required maxlength="254" autocomplete="email" aria-describedby="auth-help">
+        <p class="field-help" id="auth-help">Otwórz link w tej samej przeglądarce. Jest ważny 15 minut.</p>
+        <button class="button-link" type="submit">Wyślij link <span aria-hidden="true">↗</span></button>
+      </form>
+    {% endif %}
+    <p class="field-help"><a href="/logowanie">Zamów nowy link</a> · <a href="/zamowienie">Wróć do konfiguratora</a></p>
+    </div>
+    <aside class="estimate-panel"><p class="eyebrow">Spokojnie, bez hasła</p><h2>Twój link.<br>Twoja przeglądarka.</h2>
+      <p>Link działa raz i wygasa po 15 minutach. Samo otwarcie wiadomości nie loguje do konta.</p>
+      <p class="field-help">Nie przekazuj linku innym osobom. Sprawdź folder spam. Jeśli wiadomość nie dotarła, spróbuj później.</p>
+      <p class="sales-note">Sprzedaż pozostaje wyłączona. Logowanie nie jest potwierdzeniem płatności ani doręczenia paczki.</p>
+    </aside>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}{% if view == 'verify' %}<script src="{{ url_for('static', path='/auth-verify.js') }}" defer></script>{% endif %}{% endblock %}
