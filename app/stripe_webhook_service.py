@@ -13,6 +13,8 @@ import stripe
 from core.checkout_store import CheckoutUnavailable
 from core.payment_store import PaidCheckout, PaymentStore
 
+from .subscription_service import SubscriptionService, parse_notice
+
 
 def _unique_object(pairs):
     result = {}
@@ -38,9 +40,10 @@ def _identifier(value, pattern: str) -> str:
 
 
 class StripeWebhookService:
-    def __init__(self, store: PaymentStore, secret: str, *, enabled: bool):
+    def __init__(self, store: PaymentStore, secret: str, *, enabled: bool, subscription_service: SubscriptionService | None = None):
         self.store, self._secret, self.enabled = store, secret, enabled and bool(secret)
         self._slots = threading.BoundedSemaphore(4)
+        self._subscription_service = subscription_service
 
     def receive(self, raw: bytes, signature: str) -> int | None:
         if not self.enabled or not self._slots.acquire(blocking=False):
@@ -73,6 +76,9 @@ class StripeWebhookService:
                 event_id = _identifier(event.get("id"), r"evt_[A-Za-z0-9]+")
                 event_type = _identifier(event.get("type"), r"[a-z][a-z0-9_.]+")
                 completion = None
+                subscription_notice = None
+                if event_type in {'customer.subscription.updated','customer.subscription.deleted'}:
+                    subscription_notice = parse_notice(event['data']['object'],deleted=event_type.endswith('.deleted'))
                 if event_type == "checkout.session.completed":
                     session = event["data"]["object"]
                     if (
@@ -104,6 +110,8 @@ class StripeWebhookService:
                             session["currency"],
                             session["amount_total"],
                             session["created"],
+                            _identifier(session.get('customer'),r'cus_[A-Za-z0-9]+') if session['mode']=='subscription' else None,
+                            _identifier(session.get('subscription'),r'sub_[A-Za-z0-9]+') if session['mode']=='subscription' else None,
                         )
             except (
                 ValueError,
@@ -115,6 +123,11 @@ class StripeWebhookService:
                 stripe.SignatureVerificationError,
             ):
                 raise ValueError("Invalid Stripe test event") from None
+            if subscription_notice is not None:
+                if self._subscription_service is None:
+                    raise CheckoutUnavailable
+                self._subscription_service.apply(subscription_notice,event_id=event_id)
+                return None
             return self.store.record_event(
                 event_id=event_id,
                 event_type=event_type,

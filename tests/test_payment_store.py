@@ -172,7 +172,7 @@ def test_v20_migration_backup_and_rollback(tmp_path, monkeypatch):
     monkeypatch.setattr(
         storage,
         "_MIGRATIONS",
-        steps[:-1] + (steps[-1] + "SELECT missing_payment_function();",),
+        steps[:19] + (steps[19] + "SELECT missing_payment_function();",),
     )
     with pytest.raises(sqlite3.OperationalError):
         LeadRepository(path)
@@ -186,7 +186,7 @@ def test_v20_migration_backup_and_rollback(tmp_path, monkeypatch):
         )
     monkeypatch.setattr(storage, "_MIGRATIONS", steps)
     with LeadRepository(path) as repo:
-        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == 20
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         assert (
             repo.connection.execute(
                 "SELECT status_platnosci FROM b2b_orders"

@@ -466,6 +466,40 @@ _MIGRATIONS: tuple[Migration, ...] = (
     );
     CREATE INDEX ix_paid_package_jobs_pending ON paid_package_jobs(state,lease_until,created_at);
     """,                                                  # v20: testowe płatności i przygotowanie paczek
+    """ALTER TABLE stripe_events RENAME TO stripe_events_v20;
+    CREATE TABLE stripe_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        received_at INTEGER NOT NULL,
+        outcome TEXT NOT NULL CHECK(outcome IN ('ignored','paid','duplicate','subscription')),
+        order_id INTEGER REFERENCES b2b_orders(order_id)
+    );
+    INSERT INTO stripe_events SELECT * FROM stripe_events_v20;
+    DROP TABLE stripe_events_v20;
+    CREATE TABLE checkout_billing_links (
+        order_id INTEGER PRIMARY KEY REFERENCES b2b_orders(order_id),
+        stripe_customer_id TEXT NOT NULL,
+        subscription_id TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE b2b_subscriptions (
+        subscription_id TEXT PRIMARY KEY NOT NULL,
+        customer_id INTEGER NOT NULL REFERENCES b2b_customers(customer_id),
+        stripe_customer_id TEXT NOT NULL,
+        order_id INTEGER NOT NULL UNIQUE REFERENCES checkout_billing_links(order_id),
+        checkout_key TEXT NOT NULL REFERENCES checkout_attempts(key_hash),
+        status TEXT NOT NULL DEFAULT 'incomplete' CHECK(status IN (
+            'active','past_due','canceled','unpaid','paused','trialing','incomplete','incomplete_expired')),
+        current_period_end INTEGER NOT NULL DEFAULT 0,
+        cancel_at_period_end INTEGER NOT NULL DEFAULT 0 CHECK(cancel_at_period_end IN (0,1)),
+        paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),
+        terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0,1)),
+        refresh_token TEXT,
+        refresh_until INTEGER,
+        CHECK ((refresh_token IS NULL AND refresh_until IS NULL)
+            OR (refresh_token IS NOT NULL AND refresh_until IS NOT NULL))
+    );
+    CREATE INDEX ix_b2b_subscriptions_customer ON b2b_subscriptions(customer_id,status,current_period_end);
+    """,                                                  # v21: korelacja abonamentów i ich stan testowy
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

@@ -22,6 +22,8 @@ class PaidCheckout:
     currency: str
     amount_total: int
     session_created: int
+    stripe_customer_id: str | None = None
+    subscription_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,16 @@ class PaymentStore(CheckoutStore):
                     raise CheckoutConflict
                 if job is None and row["status_platnosci"] != "pending":
                     raise CheckoutConflict
+                if p.mode == "subscription":
+                    if not p.stripe_customer_id or not p.subscription_id:
+                        raise CheckoutConflict
+                    link = conn.execute("SELECT stripe_customer_id,subscription_id FROM checkout_billing_links WHERE order_id=?",
+                                        (row["order_id"],)).fetchone()
+                    if link and tuple(link) != (p.stripe_customer_id,p.subscription_id):
+                        raise CheckoutConflict
+                    if link is None:
+                        conn.execute("INSERT INTO checkout_billing_links VALUES(?,?,?)",
+                                     (row["order_id"],p.stripe_customer_id,p.subscription_id))
                 order_id = row["order_id"]
                 new_job = job is None
                 outcome = "paid" if new_job else "duplicate"

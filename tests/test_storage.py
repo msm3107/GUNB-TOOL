@@ -533,6 +533,7 @@ def test_version_15_migrates_to_b2b_schema_and_preserves_leads(tmp_path, clock):
             "ix_b2b_orders_customer_payment",
             "ix_b2b_deliveries_order_delivered",
             "ix_b2b_delivery_items_case_revision",
+            "ix_b2b_subscriptions_customer",
         }
 
     (backup,) = (path.parent / "backups").glob(f"v15-przed-v{storage.SCHEMA_VERSION}-*.sqlite")

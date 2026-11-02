@@ -15,15 +15,20 @@ from starlette.types import ASGIApp
 from core.checkout_store import CheckoutStore
 from core.paid_packages import PaidPackagePreparer
 from core.payment_store import PaymentStore
+from core.subscription_store import SubscriptionStore
 
 from .config import WebConfig
 from .estimator import Estimator
+from .identity import IdentityResolver, deny_identity
+from .portal_service import PortalService
 from .routes.checkout import checkout_router
 from .routes.orders import order_router
+from .routes.portal import portal_router
 from .routes.stripe_webhook import stripe_webhook_router
 from .security import SecurityHeadersMiddleware
 from .stripe_service import CheckoutService
 from .stripe_webhook_service import StripeWebhookService
+from .subscription_service import SubscriptionService
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -36,7 +41,9 @@ async def _server_error(_request: Request, _exception: Exception) -> JSONRespons
     )
 
 
-def create_app(config: WebConfig | None = None, *, checkout_service: CheckoutService | None = None) -> ASGIApp:
+def create_app(config: WebConfig | None = None, *, checkout_service: CheckoutService | None = None,
+               subscription_service: SubscriptionService | None = None, portal_service: PortalService | None = None,
+               identity_resolver: IdentityResolver | None = None) -> ASGIApp:
     """Build FastAPI with CORS/security policy covering errors as well as routes.
 
     The returned ASGI application runs with ``uvicorn app.main:create_app --factory``.
@@ -58,9 +65,12 @@ def create_app(config: WebConfig | None = None, *, checkout_service: CheckoutSer
     mimetypes.add_type("font/woff2", ".woff2")
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     api.include_router(order_router(Estimator(config.database_path), templates))
+    api.include_router(portal_router(portal_service or PortalService(SubscriptionStore(config.database_path),config.checkout),
+                                    identity_resolver or deny_identity))
     api.include_router(checkout_router(checkout_service or CheckoutService(CheckoutStore(config.database_path), config.checkout), templates))
     api.include_router(stripe_webhook_router(
-        StripeWebhookService(PaymentStore(config.database_path),config.webhook_secret,enabled=config.checkout.test_mode),
+        StripeWebhookService(PaymentStore(config.database_path),config.webhook_secret,enabled=config.checkout.test_mode,
+            subscription_service=subscription_service or SubscriptionService(SubscriptionStore(config.database_path),config.checkout)),
         PaidPackagePreparer(config.database_path,config.test_package_dir)
         if config.database_path is not None and config.webhook_secret else None))
 
