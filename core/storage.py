@@ -24,6 +24,7 @@ from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from .geocoding_uldk import CachedGeocode, GeocodeResult
 from .models import CONTENT_FIELDS, Investment
+from .package_sql import PACKAGE_INDEX_SQL
 
 log = logging.getLogger(__name__)
 
@@ -423,6 +424,7 @@ _MIGRATIONS: tuple[Migration, ...] = (
     "SELECT 1;",                                          # v15: legacy placeholder
     _B2B_SCHEMA,                                           # v16: klienci B2B, zamówienia i pamięć dostaw
     _ISSUE_SCHEMA,                                         # v17: zgłoszenia jakości danych
+    PACKAGE_INDEX_SQL,                                     # v18: odczytowy estymator paczek
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="container page-section configurator" aria-labelledby="configurator-heading">
+  <p class="eyebrow">Twój obszar. Twoja branża.</p>
+  <h1 id="configurator-heading">Sprawdź zakres<br>swojej paczki.</h1>
+  <p class="intro">Wybierz obszar i branżę, żeby policzyć pasujące inwestycje w zaimportowanych danych. To podgląd zakresu — nie składa zamówienia i nie uruchamia płatności.</p>
+  <div class="configurator-layout">
+  <form id="package-form" method="post" action="{{ url_for('order_configurator') }}#estimate-heading" data-estimate-url="{{ url_for('package_estimate') }}" data-ready="{{ 'false' if error else 'true' }}">
+    <fieldset>
+      <legend>01 / Obszar</legend>
+      <label for="wojewodztwo">Województwo</label>
+      <select id="wojewodztwo" name="wojewodztwo" required>
+        {% for region in voivodeships %}<option value="{{ region.code }}"{% if selection.wojewodztwo == region.code %} selected{% endif %}>{{ region.name }}</option>{% endfor %}
+      </select>
+      <label for="powiaty">Powiaty — opcjonalnie</label>
+      <select id="powiaty" name="powiaty" multiple size="5" aria-describedby="county-help">
+        {% for code, label in counties %}<option value="{{ code }}" data-region="{{ code[:2] }}"{% if code in selection.powiaty %} selected{% endif %}>{{ code }} — {{ label }}</option>{% endfor %}
+      </select>
+      <p class="field-help" id="county-help">Pozostaw puste, aby uwzględnić całe województwo. Lista obejmuje powiaty obecne w danych; możesz zaznaczyć do 20.</p>
+      {% if county_warning %}<p class="field-help" role="status">{{ county_warning }}</p>{% endif %}
+    </fieldset>
+    <fieldset>
+      <legend>02 / Branża i typy inwestycji</legend>
+      <label for="branza">Branża</label>
+      <select id="branza" name="branza" required aria-describedby="trade-help">
+        {% for trade in trades %}<option value="{{ trade.key }}"{% if selection.branza == trade.key %} selected{% endif %}>{{ trade.label.split(' ', 1)[1] }}</option>{% endfor %}
+      </select>
+      <p class="field-help" id="trade-help">Branża wyznacza szacunkowe okno od daty decyzji, a przy jej braku od daty wniosku. Materiały i stan surowy nie ograniczają wieku sprawy. Jeśli import nie obejmuje odpowiednich dat, wynik może wynosić zero. Okno nie potwierdza faktycznego etapu robót.</p>
+      <div class="category-options">
+        {% for key, label in categories.items() %}<label><input type="checkbox" name="kategorie" value="{{ key }}"{% if key in selection.kategorie %} checked{% endif %}> {{ label }}</label>{% endfor %}
+      </div>
+    </fieldset>
+    <details class="radius-options">
+      <summary>Promień od bazy — opcjonalnie</summary>
+      <div class="radius-fields">
+        <label for="lat">Szerokość geograficzna (N, WGS84)</label>
+        <input id="lat" name="lat" type="number" min="49" max="55.1" step="any" value="{{ selection.lat if selection.lat is not none else '' }}" inputmode="decimal">
+        <label for="lon">Długość geograficzna (E, WGS84)</label>
+        <input id="lon" name="lon" type="number" min="14" max="24.5" step="any" value="{{ selection.lon if selection.lon is not none else '' }}" inputmode="decimal">
+        <label for="promien_km">Promień w kilometrach (1–200)</label>
+        <input id="promien_km" name="promien_km" type="number" min="1" max="200" step="any" value="{{ selection.promien_km if selection.promien_km is not none else '' }}" inputmode="decimal">
+        <p class="field-help">Podaj wszystkie trzy wartości albo pozostaw wszystkie puste. Promień zawęża wybrany obszar; pomija lokalizacje gminne i znane rozbieżności działek. Centroid działki nie wskazuje położenia budynku.</p>
+      </div>
+    </details>
+    <button class="button-link" type="submit">Policz inwestycje <span aria-hidden="true">↗</span></button>
+    <noscript><p class="field-help">Po naciśnięciu przycisku wynik pojawi się na tej stronie.</p></noscript>
+  </form>
+  <aside class="estimate-panel" aria-labelledby="estimate-heading">
+    <p class="eyebrow">Podgląd zakresu</p>
+    <h2 id="estimate-heading">Pasujące inwestycje</h2>
+    <p id="estimate-status" role="status" aria-live="polite">{% if error %}{{ error }}{% elif estimate %}Liczba pasujących inwestycji: {{ estimate.count }}.{% else %}Ustaw filtry i policz inwestycje.{% endif %}</p>
+    <div id="estimate-result"{% if estimate is none %} hidden{% endif %}>
+      <p class="estimate-count" id="estimate-count">{{ estimate.count if estimate else '' }}</p>
+      <dl>
+        <dt>Z lokalizacją działkową</dt><dd id="estimate-located">{{ estimate.with_parcel_coordinates if estimate else '' }}</dd>
+        <dt>Bez pewnej lokalizacji działkowej</dt><dd id="estimate-unlocated">{{ estimate.without_parcel_coordinates if estimate else '' }}</dd>
+      </dl>
+      <p class="field-help" id="estimate-observed">{% if estimate and estimate.last_seen %}Ostatnia obserwacja pasujących danych: {{ estimate.last_seen[:10] }}{% endif %}</p>
+    </div>
+    <p class="field-help">Liczba dotyczy dostępnych, pasujących spraw urzędowych. Nie oznacza nowych spraw dla Twojego konta, gotowych klientów ani gwarantowanej liczby pozycji w przyszłej dostawie.</p>
+    <p class="sales-note">Zamówienia i płatności online nie są jeszcze dostępne. Ceny i warunki pojawią się przed uruchomieniem sprzedaży.</p>
+  </aside>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/order-configurator.js') }}" defer></script>{% endblock %}

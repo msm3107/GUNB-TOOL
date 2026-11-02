@@ -344,6 +344,59 @@ def legacy_database(path, version: int):
     return conn
 
 
+def test_v17_package_index_migration_keeps_rows_and_backup_and_runs_once(tmp_path, clock):
+    import sqlite3
+
+    from core import storage
+    from core.package_selection import PackageFilters, estimate_package
+
+    path = tmp_path / "v17.sqlite"
+    legacy = legacy_database(path, 17)
+    legacy.execute("""INSERT INTO investments
+        (id_sprawy,zrodlo,status,powiat_teryt,kategoria,lat,lon,precyzja_geo,
+         utworzono,zmieniono,status_zmieniony,ostatnio_widziany)
+        VALUES ('KEPT/17','pozwolenia','decyzja','2814','komercyjna',53,20,'dzialka','x','x','x','x')""")
+    legacy.commit()
+    before = legacy.execute("SELECT * FROM investments").fetchall()
+    legacy.close()
+    with LeadRepository(path, now=clock) as upgraded:
+        assert [tuple(row) for row in upgraded.connection.execute("SELECT * FROM investments")] == before
+        assert upgraded.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
+        assert upgraded.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        filters = PackageFilters("28", "materialy")
+        assert estimate_package(upgraded.connection, filters, today=clock().date()).with_parcel_coordinates == 1
+        # Quality and partial-index membership must track subsequent imports.
+        upgraded.upsert(lead("KEPT/17", powiat_teryt="2814", gmina_teryt="2814042"))
+        assert estimate_package(upgraded.connection, filters, today=clock().date()).with_parcel_coordinates == 0
+        upgraded.upsert(lead("KEPT/17", powiat_teryt="2814", status="odmowa"))
+        assert estimate_package(upgraded.connection, filters, today=clock().date()).count == 0
+    (backup,) = (tmp_path / "backups").glob(f"v17-przed-v{storage.SCHEMA_VERSION}-*.sqlite")
+    with sqlite3.connect(backup) as check:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert check.execute("SELECT * FROM investments").fetchall() == before
+        assert check.execute("SELECT name FROM sqlite_master WHERE name='ix_investments_package'").fetchone() is None
+    with LeadRepository(path, now=clock):
+        pass
+    assert len(list((tmp_path / "backups").glob("*.sqlite"))) == 1
+
+
+def test_failed_package_index_migration_rolls_back_version_and_index(tmp_path, monkeypatch):
+    import sqlite3
+
+    from core import storage
+
+    path = tmp_path / "failed.sqlite"
+    legacy_database(path, 17).close()
+    steps = storage._MIGRATIONS
+    monkeypatch.setattr(storage, "_MIGRATIONS", steps[:-1] + (steps[-1] + "SELECT no_such_function();",))
+    with pytest.raises(sqlite3.OperationalError, match="no_such_function"):
+        LeadRepository(path)
+    with sqlite3.connect(path) as check:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert check.execute("SELECT name FROM sqlite_master WHERE name='ix_investments_package'").fetchone() is None
+    assert len(list((tmp_path / "backups").glob("*.sqlite"))) == 1
+
+
 def test_version_16_migrates_issue_schema_with_backup_and_preserved_lead(tmp_path, clock):
     import sqlite3
 
@@ -369,8 +422,7 @@ def test_version_16_migrates_issue_schema_with_backup_and_preserved_lead(tmp_pat
     legacy.close()
 
     with LeadRepository(path, now=clock) as repository:
-        assert storage.SCHEMA_VERSION == 17
-        assert repository.connection.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert repository.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         stored = repository.get("KEPT/16")
         assert stored.status == "decyzja"
         assert stored.wymaga_weryfikacji is False
@@ -400,7 +452,7 @@ def test_version_16_migrates_issue_schema_with_backup_and_preserved_lead(tmp_pat
         with pytest.raises(sqlite3.IntegrityError):
             repository.connection.execute("UPDATE investments SET wymaga_weryfikacji = 2")
 
-    (backup,) = (path.parent / "backups").glob("v16-przed-v17-*.sqlite")
+    (backup,) = (path.parent / "backups").glob(f"v16-przed-v{storage.SCHEMA_VERSION}-*.sqlite")
     with sqlite3.connect(backup) as check:
         assert check.execute("PRAGMA user_version").fetchone()[0] == 16
         assert check.execute("SELECT id_sprawy, status FROM investments").fetchall() == [("KEPT/16", "decyzja")]

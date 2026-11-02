@@ -234,6 +234,7 @@ class BlockWeb(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockWeb())
 import core.issue_tracker
 import core.export_package
+import core.package_selection
 sys.argv = ['main.py', '--help']
 runpy.run_path('main.py', run_name='__main__')
 """
