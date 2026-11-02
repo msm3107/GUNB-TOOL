@@ -58,6 +58,46 @@ def test_native_post_estimates_without_creating_order(client):
     assert "Pasujące inwestycje" in response.text and 'id="estimate-count">1<' in response.text
 
 
+def test_native_form_preserves_county_when_metadata_read_loses_guard(client, database, monkeypatch):
+    from contextlib import ExitStack
+    from html.parser import HTMLParser
+
+    from app.estimator import Estimator
+
+    class SelectedCounties(HTMLParser):
+        values = None
+
+        def handle_starttag(self, tag, attrs):
+            fields = dict(attrs)
+            if tag == "option" and "selected" in fields and "data-region" in fields:
+                self.values.append(fields["value"])
+
+    with LeadRepository(database) as repo:
+        repo.upsert(Investment(id_sprawy="OTHER", zrodlo="pozwolenia", status="decyzja",
+            powiat_teryt="2801", kategoria="komercyjna"))
+    payload = {"wojewodztwo": "28", "branza": "materialy", "kategorie": "komercyjna", "powiaty": "2814"}
+    original = Estimator.estimate
+    with ExitStack() as guards, monkeypatch.context() as patch:
+        def estimate_then_lock(self, filters):
+            result = original(self, filters)
+            guards.enter_context(database_replacement_lock(database))
+            return result
+
+        patch.setattr(Estimator, "estimate", estimate_then_lock)
+        response = client.post("/zamowienie", data=payload)
+    assert response.status_code == 200
+    assert 'id="estimate-count">1<' in response.text
+    assert 'data-ready="true"' in response.text
+    parser = SelectedCounties()
+    parser.values = []
+    parser.feed(response.text)
+    assert parser.values == ["2814"]
+    # Resubmit the county actually present in the rendered form after unlock.
+    payload["powiaty"] = parser.values
+    retry = client.post("/zamowienie", data=payload)
+    assert retry.status_code == 200 and 'id="estimate-count">1<' in retry.text
+
+
 @pytest.mark.parametrize("payload", (
     {"wojewodztwo": "28' OR 1=1", "branza": "materialy"},
     {"wojewodztwo": "28", "branza": "unknown"},

@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from .models import LEAD_CATEGORIES
-from .ranking import haversine_km
+from .package_sql import PARCEL_SQL as _PARCEL
+from .package_sql import SCOPE_SQL as _SCOPE
 from .stages import BIG_BUILDING_FACTOR, DAYS_PER_MONTH, get_trade
 from .teryt import VOIVODESHIPS
 
@@ -53,29 +54,30 @@ class PackageEstimate:
     last_seen: str | None
 
 
-# NULL-safe equivalent of the known-municipality mismatch rule in models.location_mismatch.
-_UNIT = "substr(coalesce(teryt_dzialki, ''), 1, 6)"
-_PARCEL = f"""precyzja_geo = 'dzialka'
-    AND typeof(lat) IN ('real', 'integer') AND lat BETWEEN -90 AND 90
-    AND typeof(lon) IN ('real', 'integer') AND lon BETWEEN -180 AND 180
-    AND NOT (coalesce(gmina_teryt, '') <> '' AND length({_UNIT}) = 6
-        AND {_UNIT} NOT GLOB '*[^0-9]*' AND substr(gmina_teryt, 1, 6) <> {_UNIT})"""
-_SCOPE = """is_noise = 0 AND status IN ('wniosek', 'decyzja', 'zgloszenie', 'brak_sprzeciwu')
-    AND powiat_teryt GLOB '[0-9][0-9][0-9][0-9]'"""
+def _radius_check(base_lat: float, base_lon: float, radius: float):
+    # The engine's haversine formula is monotonic in its `a` term for these
+    # distances. Compare a <= sin(radius / (2*R))**2 directly: no per-row sqrt,
+    # atan2 or repeated conversion of the constant base/radius is needed.
+    rad = math.pi / 180
+    half_rad = rad / 2
+    cos_base = math.cos(base_lat * rad)
+    threshold = math.sin((radius + 1e-9) / (2 * 6371.0)) ** 2
+    sin, cos = math.sin, math.cos
 
+    def within(lat: float, lon: float) -> bool:
+        # Called only inside SQL CASE after PARCEL_SQL has proved that both
+        # coordinates are numeric and in range (CASE evaluation is lazy).
+        a_lat = sin((lat - base_lat) * half_rad)
+        a_lon = sin((lon - base_lon) * half_rad)
+        return a_lat * a_lat + cos_base * cos(lat * rad) * a_lon * a_lon <= threshold
 
-def _distance(lat: object, lon: object, base_lat: float, base_lon: float) -> float:
-    if type(lat) not in (float, int) or type(lon) not in (float, int):
-        return math.inf
-    if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
-        return math.inf
-    return haversine_km(base_lat, base_lon, lat, lon)
+    return within
 
 
 def estimate_package(conn: sqlite3.Connection, filters: PackageFilters, *, today: date) -> PackageEstimate:
     """Count stored matching cases, never delivery novelty or customer access.
 
-    Uses the existing TERYT index to bound reads to one region. SQL aggregates only;
+    Uses the v18 covering index to bound reads to one region. SQL aggregates only;
     radius refines a conservative box with the engine's spherical distance formula.
     The caller owns connection isolation, read budget and replacement protection.
     """
@@ -101,14 +103,23 @@ def estimate_package(conn: sqlite3.Connection, filters: PackageFilters, *, today
     if filters.promien_km is not None:
         delta_lat = filters.promien_km / 110.5
         delta_lon = filters.promien_km / (111 * math.cos(math.radians(abs(filters.lat) + delta_lat)))
-        conditions.extend((f"({_PARCEL})", "lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?",
-                           "package_distance(lat, lon, ?, ?) <= ?"))
+        # A meridian segment followed by a parallel segment is an upper bound
+        # on great-circle distance: R*(abs(dlat)+abs(dlon)) in radians. Points
+        # inside this conservative diamond need no trigonometry. The remainder
+        # still uses the engine's exact spherical distance (including corners).
+        conditions.extend(("lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?",
+                           (f"CASE WHEN ({_PARCEL}) THEN CASE "
+                           "WHEN abs(lat - ?) + abs(lon - ?) <= ? THEN 1 "
+                           "ELSE package_within_radius(lat, lon) END ELSE 0 END")))
         params.extend((filters.lat - delta_lat, filters.lat + delta_lat,
                        filters.lon - delta_lon, filters.lon + delta_lon,
-                       filters.lat, filters.lon, filters.promien_km + 1e-9))
-        conn.create_function("package_distance", 4, _distance, deterministic=True)
-    sql = f"""SELECT COUNT(*), coalesce(SUM(CASE WHEN {_PARCEL} THEN 1 ELSE 0 END), 0),
-        MAX(ostatnio_widziany) FROM investments INDEXED BY ix_investments_powiat
+                       filters.lat, filters.lon, math.degrees(filters.promien_km / 6371.0)))
+        conn.create_function("package_within_radius", 2,
+                             _radius_check(filters.lat, filters.lon, filters.promien_km), deterministic=True)
+    # Every radius match has already passed parcel quality in WHERE.
+    located_sql = "COUNT(*)" if filters.promien_km is not None else f"coalesce(SUM({_PARCEL}), 0)"
+    sql = f"""SELECT COUNT(*), {located_sql},
+        MAX(ostatnio_widziany) FROM investments INDEXED BY ix_investments_package
         WHERE {' AND '.join(conditions)}"""
     count, located, last_seen = conn.execute(sql, params).fetchone()
     return PackageEstimate(count, located, count - located, last_seen)

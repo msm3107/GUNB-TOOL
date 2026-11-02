@@ -17,6 +17,7 @@
         {% for code, label in counties %}<option value="{{ code }}" data-region="{{ code[:2] }}"{% if code in selection.powiaty %} selected{% endif %}>{{ code }} — {{ label }}</option>{% endfor %}
       </select>
       <p class="field-help" id="county-help">Pozostaw puste, aby uwzględnić całe województwo. Lista obejmuje powiaty obecne w danych; możesz zaznaczyć do 20.</p>
+      {% if county_warning %}<p class="field-help" role="status">{{ county_warning }}</p>{% endif %}
     </fieldset>
     <fieldset>
       <legend>02 / Branża i typy inwestycji</legend>

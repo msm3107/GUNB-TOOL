@@ -87,15 +87,49 @@ def test_empty_matching_scope_is_an_actual_zero(repo):
     assert result.last_seen is None
 
 
-def test_selection_uses_existing_teryt_index_and_does_not_write(repo):
+def test_selection_uses_covering_package_index_and_does_not_write(repo):
     add(repo, "A")
     statements = []
     repo.connection.set_trace_callback(statements.append)
     estimate_package(repo.connection, PackageFilters("28", "materialy"), today=TODAY)
     query = next(sql for sql in statements if "SELECT COUNT" in sql)
     plan = repo.connection.execute("EXPLAIN QUERY PLAN " + query).fetchall()
-    assert any("SEARCH" in row[3] and "ix_investments_powiat" in row[3] for row in plan)
+    assert any("SEARCH" in row[3] and "ix_investments_package" in row[3] for row in plan)
     assert not any(sql.startswith(("INSERT", "UPDATE", "DELETE", "BEGIN IMMEDIATE")) for sql in statements)
+
+
+@pytest.mark.parametrize("base_lat,base_lon,radius", ((53, 20, 10), (49, 24.5, 1), (55.1, 14, 200)))
+def test_radius_matches_spherical_reference_inside_outside_and_near_boundary(repo, base_lat, base_lon, radius):
+    import math
+
+    from core.ranking import haversine_km
+
+    # Destination points on the sphere at radius +/- 1 millimetre and radius/2,
+    # around the compass: includes diamond shortcuts and box-corner refinement.
+    phi, lam = math.radians(base_lat), math.radians(base_lon)
+    rows = []
+    expected = 0
+    for distance in (radius / 2, radius - 1e-6, radius, radius + 1e-6, radius * 1.2):
+        for bearing in range(0, 360, 5):
+            angle, delta = math.radians(bearing), distance / 6371
+            lat = math.asin(math.sin(phi) * math.cos(delta) + math.cos(phi) * math.sin(delta) * math.cos(angle))
+            lon = lam + math.atan2(math.sin(angle) * math.sin(delta) * math.cos(phi), math.cos(delta) - math.sin(phi) * math.sin(lat))
+            lat, lon = math.degrees(lat), math.degrees(lon)
+            rows.append((lat, lon))
+            expected += haversine_km(base_lat, base_lon, lat, lon) <= radius + 1e-9
+    assert expected == 216
+    for i, (lat, lon) in enumerate(rows):
+        add(repo, str(i), lat=lat, lon=lon, precyzja_geo="dzialka")
+    result = estimate_package(repo.connection, PackageFilters("28", "materialy", lat=base_lat, lon=base_lon, promien_km=radius), today=TODAY)
+    assert result.count == result.with_parcel_coordinates == expected
+
+
+def test_radius_never_passes_invalid_geometry_to_spherical_math(repo):
+    for i, (lat, lon) in enumerate(((None, 20), (53, None), ("bad", 20), (53, "bad"),
+                                  (float("inf"), 20), (53, float("inf")), (91, 20), (53, 181))):
+        add(repo, str(i), lat=lat, lon=lon, precyzja_geo="dzialka")
+    result = estimate_package(repo.connection, PackageFilters("28", "materialy", lat=53, lon=20, promien_km=50), today=TODAY)
+    assert result.count == result.with_parcel_coordinates == 0
 
 
 def test_county_metadata_scans_covering_codes_and_uses_bounded_label_lookups(repo):

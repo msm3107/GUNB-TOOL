@@ -8,7 +8,7 @@
 
 Silnik obsługuje pobieranie paczek RWDZ, filtrowanie i klasyfikację spraw, geokodowanie ULDK, zapis w SQLite oraz kontrolę stanu bazy. CLI jest dostępne w pliku main.py.
 
-Silnik B2B korzysta ze schematu SQLite v17 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
+Silnik B2B korzysta ze schematu SQLite v18 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
 
 `core.issue_tracker.IssueTracker.report_issue(...)` zapisuje uwagi do spraw wcześniej doręczonych danemu klientowi. Obsługuje typy `zly_telefon`, `to_nie_inwestor_tylko_projektant`, `inwestycja_juz_stoi` i `inna_uwaga`. Opis jest zwykłym tekstem do 1000 znaków wejściowych, a limit wynosi 20 nowych zgłoszeń na godzinę na klienta. Ponowienie tego samego typu uwagi do tej samej sprawy zwraca oryginalne zgłoszenie, bez zmiany opisu i zużywania limitu. Wywołująca warstwa aplikacji musi ustalać `customer_id` z uwierzytelnionej sesji.
 
@@ -48,7 +48,7 @@ Po instalacji zależności uruchom serwer lokalny:
 
 ### Konfigurator i estymator
 
-Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v17), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
+Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v18), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
 
 `GET /zamowienie` pokazuje formularz, `POST /zamowienie` zwraca wynik HTML (także bez JavaScriptu), a `POST /api/estimate` przyjmuje JSON. Przykład:
 
@@ -62,7 +62,9 @@ Odpowiedź zawiera wyłącznie `count`, `with_parcel_coordinates`, `without_parc
 
 Branże z opóźnionym oknem wymagają wcześniejszego importu odpowiedniej historii (np. przez `--historical` CLI). Przy domyślnym krótkim zakresie importu mogą nie mieć wyników. Estymator sam nie rozszerza zakresu pobierania danych.
 
-Żądania mają limit 8 KiB; zapytania SQLite budżet 500 ms i limit współbieżnych operacji. Każdy odczyt otwiera własne połączenie `mode=ro`/`query_only` pod kanoniczną blokadą podmiany bazy. Import WAL może trwać równolegle. Obecna blokada odczytów jest wyłączna, dlatego równoległy odczyt może szybko otrzymać 503 i ponowić próbę. Nie ma operacji sieciowych ani zapisów biznesowych. Selekcja używa istniejącego indeksu powiatów, bez migracji schematu. CORS nadal dopuszcza wyłącznie GET/HEAD dla jawnych originów; formularz i estymator działają w tym samym originie.
+Żądania mają limit 8 KiB; zapytania SQLite budżet 500 ms i limit współbieżnych operacji. Każdy odczyt otwiera własne połączenie `mode=ro`/`query_only` pod kanoniczną blokadą podmiany bazy. Import WAL może trwać równolegle. Obecna blokada odczytów jest wyłączna, dlatego równoległy odczyt może szybko otrzymać 503 i ponowić próbę. Nie ma operacji sieciowych ani zapisów biznesowych. Selekcja używa indeksu pokrywającego `ix_investments_package` dodanego w v18. Migrację wykonuje silnik CLI (np. `python main.py --stats`, z właściwym `--config`), przed zmianą tworząc kopię przez `VACUUM INTO`. WWW odrzuca bazę v17 do czasu migracji. Indeks zwiększa rozmiar bazy i koszt aktualizacji pól selekcji; nie zmienia zapisanych spraw ani pamięci dostaw. Wycofanie kodu wymaga odtworzenia kopii zgodnej ze starszą wersją, z uwzględnieniem późniejszych importów. CORS nadal dopuszcza wyłącznie GET/HEAD dla jawnych originów; formularz i estymator działają w tym samym originie.
+
+Pomiar syntetyczny można odtworzyć poleceniem `python -m tests.benchmark_package_estimator --runs 7`; warianty `--unique --municipality` i `--ring --municipality` sprawdzają różne geometrie, w tym punkty przy granicy promienia. Skrypt tworzy wyłącznie tymczasową bazę 100 tys. fikcyjnych spraw i mierzy pełny odczyt serwisu (blokada, nowe połączenie, zapytanie). Cel <100 ms dotyczy mierzonego scenariusza i sprzętu, nie dowolnego rozmiaru bazy. Budżet 500 ms pozostaje niezmieniony.
 
 CORS jest domyślnie zamknięty. Jeśli osobny frontend potrzebuje dostępu, ustaw w środowisku procesu `GUNB_WEB_CORS_ORIGINS` jako listę jawnych originów oddzielonych przecinkiem, np. `https://portal.example.test,http://localhost:3000`. Wartości nie mogą zawierać wildcardów, ścieżek, danych logowania ani parametrów URL; dozwolone są obecnie wyłącznie metody GET/HEAD, bez credentials. Konfiguracja WWW nie ładuje pliku `.env` silnika.
 

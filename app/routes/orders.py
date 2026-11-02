@@ -75,16 +75,24 @@ def order_router(estimator: Estimator, templates) -> APIRouter:
     router = APIRouter()
 
     async def page(request: Request, *, selection=None, result=None, error=None, status=200):
+        selection = selection or EstimateInput(wojewodztwo="28", branza="materialy")
+        county_warning = None
         try:
             counties = await run_in_threadpool(estimator.counties)
         except EstimateUnavailable:
             counties = ()
-            error = error or UNAVAILABLE
+            county_warning = "Lista powiatów jest chwilowo niedostępna. Zachowano wybrane powiaty; możesz ponowić obliczenie."
+        # Metadata may fail (or change) after a successful estimate. Never let a
+        # re-render silently widen a submitted county scope to the whole region.
+        known = {code for code, _ in counties}
+        counties += tuple((code, f"Powiat {code}") for code in selection.powiaty
+                          if code not in known and len(code) == 4 and code.isascii()
+                          and code.isdigit() and code.startswith(selection.wojewodztwo))
         return templates.TemplateResponse(request=request, name="order_configurator.html", status_code=status,
             headers={"Cache-Control": "no-store"}, context={
                 "page_title": "Konfigurator paczki", "counties": counties, "voivodeships": VOIVODESHIPS,
                 "trades": TRADES, "categories": CATEGORY_PLURALS,
-                "selection": selection or EstimateInput(wojewodztwo="28", branza="materialy"),
+                "selection": selection, "county_warning": county_warning,
                 "estimate": result, "error": error,
             })
 

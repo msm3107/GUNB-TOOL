@@ -4,15 +4,15 @@
 
 **Goal:** Deliver PR7: Żółta Tablica package configurator and dynamic aggregate estimate from existing SQLite data, without creating orders or taking payments.
 
-**Architecture:** Framework-free core/package_selection.py defines validated PackageFilters and aggregate selection using existing powiat TERYT index. app/estimator.py opens an explicitly configured existing WAL database read-only under the canonical replacement guard, one connection per operation. app/routes/orders.py exposes HTML form and bounded JSON API, with same-origin external JavaScript enhancing a native POST fallback. Reuse current brand and assets.
+**Architecture:** Framework-free core/package_selection.py defines validated PackageFilters and aggregate selection using the v18 covering package index. app/estimator.py opens an explicitly configured existing WAL database read-only under the canonical replacement guard, one connection per operation. app/routes/orders.py exposes HTML form and bounded JSON API, with same-origin external JavaScript enhancing a native POST fallback. Reuse current brand and assets.
 
-**Tech Stack:** Existing Python/FastAPI/Jinja/Pydantic/SQLite, standard-library form parsing, vanilla JS; no new dependencies or schema migration.
+**Tech Stack:** Existing Python/FastAPI/Jinja/Pydantic/SQLite, standard-library form parsing, vanilla JS; no new dependencies; v18 adds a covering expression index through the existing backed-up CLI migration.
 
 **Spec:** projectplan.md PR7, user instruction to continue after merged PR24. BASE caf2da6a29d6c9c8904bd235a30ccd13bce18269.
 
 ## Global Constraints
 
-- /core never imports web packages. Existing schema v17 and engine import/filter/delivery behavior stay compatible.
+- /core never imports web packages. Schema v18 adds an index only; engine import/filter/delivery data and behavior stay compatible. HTTP never migrates.
 - Require one explicit wojewodztwo TERYT code; at most20 selected powiaty, matching its prefix. Optional category subset uses existing LEAD_CATEGORIES. No dynamic SQL identifiers.
 - branza uses existing TRADES keys. Materials/structural work have no timing restriction; other trades count cases in their estimated current stage_window, including existing big-building factor. Timing is an estimate, not proof of construction.
 - Optional radius1–200km requires both WGS84 coordinates of a base in Poland (lat49–55.1, lon14–24.5). Radius counts only parcel coordinates without known municipality mismatch. Region/county/category constraints still apply.
@@ -34,7 +34,7 @@
 
 ### Task1: Domain selection and performance
 
-**Files:** core/package_selection.py; tests/test_package_selection.py.
+**Files:** core/package_selection.py, core/package_sql.py, core/storage.py; tests/test_package_selection.py, tests/test_storage.py.
 **Interfaces:** PackageFilters(wojewodztwo, branza, powiaty=(), kategorie=LEAD_CATEGORIES, lat=None, lon=None, promien_km=None); estimate_package(conn, filters, *, today) -> PackageEstimate; list_counties(conn) -> tuple of code/name pairs. No writes.
 
 - [x] Write failing synthetic-data tests for scoped counts/noise/status/categories, trade windows, radius/precision/mismatch and invalid filters.
@@ -58,3 +58,9 @@
 - [x] Add accessible live status/error, same-origin dynamic POST, abort/ignore stale requests, and native form fallback. No inline scripts/styles.
 - [x] Verify full pytest/lint, actual browser desktop/mobile/native fallback/dynamic changes/errors/assets, perf and locks. Save ignored local ledger.
 - [ ] Commit/push/open next PR, verify CI exactHEAD and independent review; repair findings and leave PR open for human evaluation.
+
+## Review corrections (UX-01, PERF-01)
+
+- Preserve selected county options when the separate metadata read is blocked; warn by the county list while retaining a successful result. Real OS-lock regression resubmits the rendered selection.
+- Profiling reproduced >100 ms on 100k parcel rows. Use a partial covering expression index for eligibility, quality, dates and geometry (v18, backup before DDL), no cache of business results and no new dependencies. SQL CASE guards the spherical predicate; a conservative interior diamond skips trig, and the remaining haversine comparison precomputes base/radius terms.
+- Reproducible synthetic benchmark includes clustered/unique coordinates and a near-boundary ring. Verify unchanged radius boundaries, malformed geometry, index maintenance, v17 backup/data preservation/restart, full tests and exact-HEAD CI.
