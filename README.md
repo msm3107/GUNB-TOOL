@@ -157,7 +157,9 @@ Uruchom odzyskiwanie ręcznie po awarii, używając **tej samej** bazy i katalog
 
 Runner nie kontaktuje się z siecią, nie zmienia płatności i nie doręcza paczek.
 Przetwarza do100 zadań na wywołanie (domyślnie10); kod1 sygnalizuje niedostępność
-lub nadal oczekującą pracę. Monitoruj `paid_package_jobs.state/error_code`:
+lub nadal niedokończoną pracę, także `building` z ważnym lease. Po przerwaniu
+wykonawcy odczekaj do wygaśnięcia lease i ponów recovery; aktywny lease może też
+należeć do nadal działającego procesu. Monitoruj `paid_package_jobs.state/error_code`:
 `prepare_failed` wymaga kontroli dysku/uprawnień/bazy, `too_large` oznacza więcej
 niż10000 pasujących rekordów — zakres trzeba obsłużyć operacyjnie, bez cichego
 ucięcia wyniku. Odczyt ma budżet2s, do2 generatorów i4 weryfikacji na proces;

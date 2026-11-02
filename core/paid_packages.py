@@ -130,13 +130,15 @@ def main() -> int:
     try:
         preparer = PaidPackagePreparer(args.database, args.output)
         ready = preparer.run_pending(args.limit)
-        pending = preparer.store.pending_packages(now=preparer._now(), limit=1)
+        pending = preparer.store.has_unfinished_packages()
     except (CheckoutUnavailable, ValueError):
         print("Preparation unavailable; verify existing WAL schema and limit")
         return 1
     print(f"Prepared test packages: {ready}")
     if pending:
-        print("Pending work remains; inspect paid_package_jobs.error_code and retry")
+        print(
+            "Pending work remains; inspect paid_package_jobs.error_code, wait for active lease expiry and retry"
+        )
         return 1
     return 0
 

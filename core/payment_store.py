@@ -124,6 +124,17 @@ class PaymentStore(CheckoutStore):
             )
         )
 
+    def has_unfinished_packages(self) -> bool:
+        """Include active leases: not currently claimable does not mean finished."""
+        return self._write(
+            lambda conn: (
+                conn.execute(
+                    "SELECT 1 FROM paid_package_jobs WHERE state IN ('pending','building') LIMIT 1"
+                ).fetchone()
+                is not None
+            )
+        )
+
     def claim_package(self, order_id: int, *, now: datetime) -> PackageJob | None:
         stamp, token = int(now.timestamp()), uuid4().hex
 

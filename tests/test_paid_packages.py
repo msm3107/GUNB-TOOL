@@ -206,6 +206,37 @@ def test_oversized_job_is_visible_and_cli_returns_failure(
         assert c.execute("SELECT count(*) FROM b2b_deliveries").fetchone() == (0,)
 
 
+def test_recovery_cli_reports_unexpired_abandoned_lease_as_unfinished(
+    payment, tmp_path, monkeypatch, capsys
+):
+    from datetime import datetime, timezone
+
+    from core.paid_packages import main
+
+    store, paid = payment
+    record(store, paid)
+    assert store.claim_package(1, now=datetime.now(timezone.utc)) is not None
+    output = tmp_path / "private"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["paid_packages", "--database", str(store.path), "--output", str(output)],
+    )
+    assert main() == 1
+    assert "lease" in capsys.readouterr().out.lower()
+    assert not output.exists()
+    with sqlite3.connect(store.path) as c:
+        assert c.execute("SELECT state FROM paid_package_jobs").fetchone() == (
+            "building",
+        )
+        assert c.execute("SELECT count(*) FROM b2b_deliveries").fetchone() == (0,)
+        c.execute("UPDATE paid_package_jobs SET lease_until=0")
+    assert main() == 0
+    assert "Prepared test packages: 1" in capsys.readouterr().out
+    assert main() == 0
+    assert "Prepared test packages: 0" in capsys.readouterr().out
+    assert len(list(output.iterdir())) == 2
+
+
 def test_fsync_failure_never_publishes_unflushed_exports(
     payment, tmp_path, monkeypatch
 ):
