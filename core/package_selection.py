@@ -7,10 +7,11 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from .models import LEAD_CATEGORIES
+from .models import LEAD_CATEGORIES, Investment
 from .package_sql import PARCEL_SQL as _PARCEL
 from .package_sql import SCOPE_SQL as _SCOPE
 from .stages import BIG_BUILDING_FACTOR, DAYS_PER_MONTH, get_trade
+from .storage import investment_from_row
 from .teryt import VOIVODESHIPS
 
 
@@ -54,6 +55,10 @@ class PackageEstimate:
     last_seen: str | None
 
 
+class PackageTooLarge(ValueError):
+    """A requested snapshot exceeds the bounded preparation size."""
+
+
 def _radius_check(base_lat: float, base_lon: float, radius: float):
     # The engine's haversine formula is monotonic in its `a` term for these
     # distances. Compare a <= sin(radius / (2*R))**2 directly: no per-row sqrt,
@@ -74,13 +79,8 @@ def _radius_check(base_lat: float, base_lon: float, radius: float):
     return within
 
 
-def estimate_package(conn: sqlite3.Connection, filters: PackageFilters, *, today: date) -> PackageEstimate:
-    """Count stored matching cases, never delivery novelty or customer access.
-
-    Uses the v18 covering index to bound reads to one region. SQL aggregates only;
-    radius refines a conservative box with the engine's spherical distance formula.
-    The caller owns connection isolation, read budget and replacement protection.
-    """
+def _package_scope(conn: sqlite3.Connection, filters: PackageFilters, today: date) -> tuple[str, list[object]]:
+    """One scope for estimation and paid-package selection."""
     conditions = [_SCOPE, "powiat_teryt >= ? AND powiat_teryt < ?"]
     params: list[object] = [filters.wojewodztwo, f"{int(filters.wojewodztwo) + 1:02d}"]
     if filters.powiaty:
@@ -116,13 +116,31 @@ def estimate_package(conn: sqlite3.Connection, filters: PackageFilters, *, today
                        filters.lat, filters.lon, math.degrees(filters.promien_km / 6371.0)))
         conn.create_function("package_within_radius", 2,
                              _radius_check(filters.lat, filters.lon, filters.promien_km), deterministic=True)
+    return ' AND '.join(conditions), params
+
+
+def estimate_package(conn: sqlite3.Connection, filters: PackageFilters, *, today: date) -> PackageEstimate:
+    """Aggregate stored matches; caller owns read isolation/budget/replacement guard."""
+    where, params = _package_scope(conn, filters, today)
     # Every radius match has already passed parcel quality in WHERE.
     located_sql = "COUNT(*)" if filters.promien_km is not None else f"coalesce(SUM({_PARCEL}), 0)"
     sql = f"""SELECT COUNT(*), {located_sql},
         MAX(ostatnio_widziany) FROM investments INDEXED BY ix_investments_package
-        WHERE {' AND '.join(conditions)}"""
+        WHERE {where}"""
     count, located, last_seen = conn.execute(sql, params).fetchone()
     return PackageEstimate(count, located, count - located, last_seen)
+
+
+def select_package(conn: sqlite3.Connection, filters: PackageFilters, *, today: date, limit: int = 10_000) -> tuple[Investment, ...]:
+    """Bounded snapshot using exactly the estimator's geography/category/timing."""
+    if type(limit) is not int or not 1 <= limit <= 10_000:
+        raise ValueError("limit must be 1..10000")
+    where, params = _package_scope(conn, filters, today)
+    rows = conn.execute(f"""SELECT * FROM investments INDEXED BY ix_investments_package
+        WHERE {where} LIMIT ?""", (*params,limit+1)).fetchall()
+    if len(rows) > limit:
+        raise PackageTooLarge("package limit exceeded")
+    return tuple(investment_from_row(row) for row in rows)
 
 
 def list_counties(conn: sqlite3.Connection) -> tuple[tuple[str, str], ...]:

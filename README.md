@@ -8,7 +8,7 @@
 
 Silnik obsługuje pobieranie paczek RWDZ, filtrowanie i klasyfikację spraw, geokodowanie ULDK, zapis w SQLite oraz kontrolę stanu bazy. CLI jest dostępne w pliku main.py.
 
-Silnik B2B korzysta ze schematu SQLite v19 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
+Silnik B2B korzysta ze schematu SQLite v20 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
 
 `core.issue_tracker.IssueTracker.report_issue(...)` zapisuje uwagi do spraw wcześniej doręczonych danemu klientowi. Obsługuje typy `zly_telefon`, `to_nie_inwestor_tylko_projektant`, `inwestycja_juz_stoi` i `inna_uwaga`. Opis jest zwykłym tekstem do 1000 znaków wejściowych, a limit wynosi 20 nowych zgłoszeń na godzinę na klienta. Ponowienie tego samego typu uwagi do tej samej sprawy zwraca oryginalne zgłoszenie, bez zmiany opisu i zużywania limitu. Wywołująca warstwa aplikacji musi ustalać `customer_id` z uwierzytelnionej sesji.
 
@@ -48,7 +48,7 @@ Po instalacji zależności uruchom serwer lokalny:
 
 ### Konfigurator i estymator
 
-Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v19), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
+Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v20), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
 
 `GET /zamowienie` pokazuje formularz, `POST /zamowienie` zwraca wynik HTML (także bez JavaScriptu), a `POST /api/estimate` przyjmuje JSON. Przykład:
 
@@ -79,7 +79,7 @@ Do lokalnej integracji testowej wymagane są jawne zmienne procesu (WWW nie czyt
 | Zmienna | Wartość |
 |---|---|
 | `GUNB_WEB_CHECKOUT_MODE` | `test` (domyślnie `disabled`) |
-| `GUNB_WEB_DB_PATH` | Istniejąca baza WAL v19, zaktualizowana wcześniej przez CLI |
+| `GUNB_WEB_DB_PATH` | Istniejąca baza WAL v20, zaktualizowana wcześniej przez CLI |
 | `GUNB_WEB_STRIPE_SECRET_KEY` | Klucz testowy `sk_test_…` albo `rk_test_…`, nigdy w repo/logach |
 | `GUNB_WEB_PUBLIC_ORIGIN` | Origin HTTPS bez ścieżki, albo lokalne HTTP np. `http://127.0.0.1:8000` |
 | `GUNB_WEB_STRIPE_TEST_PACKAGE_GROSZE` | Dodatnia całkowita kwota fikcyjnej paczki w PLN groszach |
@@ -96,7 +96,89 @@ Ponowienie używa tego samego zamówienia, migawki i Stripe `Idempotency-Key`, r
 
 SDK `stripe==10.12.0` jest przypięty zgodnie z zakresem zatwierdzonym w planie, API `2024-06-20`, timeout HTTP 5 s, bez automatycznych retry. Testy przechwytują HTTP rzeczywistego SDK oraz używają atrap sesji; agent nie wykonuje prawdziwego wywołania Stripe. Podstawy kontraktu: [tworzenie sesji](https://docs.stripe.com/api/checkout/sessions/create?api-version=2024-06-20), [idempotencja](https://docs.stripe.com/api/idempotent_requests), [potwierdzanie i realizacja](https://docs.stripe.com/checkout/fulfillment).
 
-`GET /zamowienie/sukces` ignoruje parametry klienta i pokazuje wyłącznie informację o powrocie z testu. Nie oznacza zamówienia jako opłaconego, nie aktywuje abonamentu i nie generuje/doręcza paczki. Cena/VAT/warunki, zweryfikowane webhooki (PR9), cykl abonamentu, uwierzytelnienie i dostawy wymagają ukończenia przed dopuszczeniem realnej sprzedaży. Ten PR nie zawiera przełącznika live.
+`GET /zamowienie/sukces` ignoruje parametry klienta i pokazuje wyłącznie informację o powrocie z testu. Nie oznacza zamówienia jako opłaconego, nie aktywuje abonamentu i nie generuje/doręcza paczki. Cena/VAT/warunki, cykl abonamentu, uwierzytelnienie i dostawy wymagają ukończenia przed dopuszczeniem realnej sprzedaży. Ten PR nie zawiera przełącznika live.
+
+## Testowe webhooki i pierwsza paczka (etap PR9)
+
+Sprzedaż pozostaje wyłączona. Nowa wersja WWW wymaga **schematu v20**:
+przed jej uruchomieniem wykonaj migrację silnikiem CLI, np. `python main.py --stats`
+z właściwą konfiguracją. Migracja dodaje `stripe_events` oraz `paid_package_jobs`,
+robi kopię przed DDL i zachowuje wcześniejsze zamówienia/próby Checkout. WWW i
+runner przygotowania otwierają wyłącznie istniejącą bazę WAL, bez migracji.
+Wycofanie kodu wymaga zgodnej kopii oraz uzgodnienia zdarzeń otrzymanych po niej;
+przywrócona stara kopia nie zawiera późniejszych płatności ani zadań.
+
+`POST /api/webhook/stripe` domyślnie zwraca 503 bez SQLite/Stripe API. Oprócz
+konfiguracji testowego Checkout ustaw jawnie w środowisku procesu:
+
+| Zmienna | Wartość |
+|---|---|
+| `GUNB_WEB_STRIPE_WEBHOOK_SECRET` | Sekret `whsec_…` własnego testowego endpointu; nie klucz API, nie w repo/logach |
+| `GUNB_WEB_TEST_PACKAGE_DIR` | Dedykowany prywatny katalog eksportów poza `app/static`, bez udostępnienia przez reverse proxy |
+
+W Stripe skonfiguruj **snapshot**, API **2024-06-20**, zdarzenie
+`checkout.session.completed` z własnego konta testowego, bez Connect.
+Sekret webhooka CLI jest inny niż sekret endpointu Dashboard. Nie używaj danych
+prawdziwych klientów; zachowaj osobną bazę i katalog wyłącznie dla testów.
+Konfiguracja nadal nie oferuje trybu live ani publicznego zakupu.
+
+Oficjalny SDK sprawdza `Stripe-Signature` na niezmienionym body (JSON, maks.128KiB).
+Podpis wymaga czasu w granicach ±300s; utrzymuj synchronizację zegara serwera.
+Odrzucane są niepoprawne/niejednoznaczne JSON-y, eventy live/Connect i inne wersje
+API. Ukończona sesja musi mieć `payment_status=paid`, testowy identyfikator, poprawną
+korelację metadanych/`client_reference_id`, rodzaj paczki oraz dokładną zapisaną
+kwotę całkowitą PLN. Zgodne `unpaid`/`no_payment_required` i nieobsługiwane typy
+testowych zdarzeń są zapisywane jako pominięte; opóźnione metody płatności nie są
+włączone w Checkout. `completed` samo nie dowodzi zapłaty.
+
+Zapis ID zdarzenia, `pending→paid` i jedno zadanie na zamówienie są jedną krótką
+transakcją. Dopiero po commicie endpoint zwraca200; powtórzenie ID zwraca200 bez
+ponownego zadania. Inne ID dla tej samej sesji również nie tworzy kolejnej paczki.
+Brak podpisu/błędny podpis lub kształt daje400, niezgodność lokalnego zamówienia409,
+nadmiar body413, format415, blokada/błąd bazy albo limit równoległości503 (ponów).
+Nie utrwalamy surowego eventu, danych karty, emaila ani sekretu w `stripe_events`.
+Webhook nie wywołuje Stripe API i nie wiąże Stripe customer z kontem przez email.
+
+Po odpowiedzi HTTP uruchamiana jest próba przygotowania prywatnych XLSX/CSV.
+Generator używa tego samego zakresu co estymator oraz pamięci doręczeń wszystkich
+zamówień klienta. Jednorazowa paczka i pierwsza paczka abonamentu używają delty
+NEW/CHANGE. Pliki są zamykane i synchronizowane przed publikacją ich nazw w DB;
+generowanie odbywa się po zamknięciu połączenia SQLite i blokady podmiany.
+Katalog/pliki mają na POSIX prawa700/600; na Windows skonfiguruj prywatne ACL dla
+użytkownika usługi. `b2b_deliveries.doreczono_utc` pozostaje NULL: przygotowanie
+nie oznacza doręczenia i nie zużywa pamięci klienta. Nie ma linku pobierania,
+wysyłki email, weryfikacji właściciela emaila ani aktywacji abonamentu w tym etapie.
+
+Zadanie pozostaje trwałe po utracie procesu po ACK. Zajęcie ma losowy token i
+lease10min; wygasły wykonawca nie może opublikować wyniku po przejęciu zadania.
+Uruchom odzyskiwanie ręcznie po awarii, używając **tej samej** bazy i katalogu:
+
+    python -m core.paid_packages --database <test.sqlite> --output <private-test-dir> --limit 10
+
+Runner nie kontaktuje się z siecią, nie zmienia płatności i nie doręcza paczek.
+Przetwarza do100 zadań na wywołanie (domyślnie10); kod1 sygnalizuje niedostępność
+lub nadal niedokończoną pracę, także `building` z ważnym lease. Po przerwaniu
+wykonawcy odczekaj do wygaśnięcia lease i ponów recovery; aktywny lease może też
+należeć do nadal działającego procesu. Monitoruj `paid_package_jobs.state/error_code`:
+`prepare_failed` wymaga kontroli dysku/uprawnień/bazy, `too_large` oznacza więcej
+niż10000 pasujących rekordów — zakres trzeba obsłużyć operacyjnie, bez cichego
+ucięcia wyniku. Odczyt ma budżet2s, do2 generatorów i4 weryfikacji na proces;
+kolizje istniejącej blokady są szybkim błędem z możliwością retry.
+
+Nie ma jeszcze automatycznego harmonogramu odzyskiwania ani retencji. Nagłe zabicie
+procesu może zostawić prywatne osierocone pliki, które operator usuwa po uzgodnieniu
+z DB i wygaśnięciu lease. Nie przenoś katalogu przed rozliczeniem przygotowanych
+zadań; nazwy plików są względne wobec jego skonfigurowanego położenia. Przed live
+koordynator musi zapewnić: ceny/VAT/warunki, cykl abonamentu, uwierzytelnienie,
+bezpieczne pobrania, dyspozytor z odzyskiwaniem/monitorowaniem i retencję. Testowe
+`paid` nie może zostać uznane za realny przychód lub uprawnienie produkcyjne.
+
+Testy używają prawdziwego SDK HMAC, syntetycznych podpisanych body i lokalnych
+plików/baz; nie wykonują Stripe API, prawdziwej płatności ani sesji Excel/browser.
+Kontrakt sprawdzono2026-11-02 w dokumentacji Stripe:
+[webhooki](https://docs.stripe.com/webhooks),
+[realizacja płatności](https://docs.stripe.com/checkout/fulfillment.md?ui=full-page),
+[sesja snapshot](https://docs.stripe.com/api/checkout/sessions/object?api-version=2024-06-20).
 
 ## Testy
 

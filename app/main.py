@@ -13,13 +13,17 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
 from core.checkout_store import CheckoutStore
+from core.paid_packages import PaidPackagePreparer
+from core.payment_store import PaymentStore
 
 from .config import WebConfig
 from .estimator import Estimator
 from .routes.checkout import checkout_router
 from .routes.orders import order_router
+from .routes.stripe_webhook import stripe_webhook_router
 from .security import SecurityHeadersMiddleware
 from .stripe_service import CheckoutService
+from .stripe_webhook_service import StripeWebhookService
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -55,6 +59,10 @@ def create_app(config: WebConfig | None = None, *, checkout_service: CheckoutSer
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     api.include_router(order_router(Estimator(config.database_path), templates))
     api.include_router(checkout_router(checkout_service or CheckoutService(CheckoutStore(config.database_path), config.checkout), templates))
+    api.include_router(stripe_webhook_router(
+        StripeWebhookService(PaymentStore(config.database_path),config.webhook_secret,enabled=config.checkout.test_mode),
+        PaidPackagePreparer(config.database_path,config.test_package_dir)
+        if config.database_path is not None and config.webhook_secret else None))
 
     @api.get("/", response_class=HTMLResponse, name="home", include_in_schema=False)
     def home(request: Request) -> Response:
