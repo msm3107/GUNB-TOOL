@@ -16,7 +16,7 @@ from uuid import UUID
 
 from fastapi import Request
 
-from core.auth_store import AuthRejected, AuthStore
+from core.auth_store import AuthRejected, AuthStore, BillingLinkMissing
 from core.checkout_store import CheckoutUnavailable
 from core.email_sender import SMTPSettings, normalize_address
 from core.smtp_process import SupervisedSMTP
@@ -265,9 +265,15 @@ class AuthService:
                 if len(self._billing_recent) >= 10:
                     raise CheckoutBusy
                 self._billing_recent.append(stamp)
-            notice = self.store.claim_billing(
-                principal.customer_id, digest(request_token)
-            )
+            try:
+                notice = self.store.claim_billing(
+                    principal.customer_id, digest(request_token)
+                )
+            except BillingLinkMissing as missing:
+                restored = subscriptions.recover_checkout(missing.attempt)
+                notice = self.store.claim_billing(
+                    principal.customer_id, digest(request_token), recovered=restored
+                )
             subscriptions.reconcile(notice)
         finally:
             self._billing_slots.release()

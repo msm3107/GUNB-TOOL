@@ -312,6 +312,19 @@ Hash z metadanych Stripe nie zastępuje oryginalnego UUID. Sam login lub email
 gościa nigdy nie przypisuje Stripe customer. Inne istniejące powiązanie daje409
 i wymaga uzgodnienia przez operatora; endpoint go nie nadpisuje.
 
+Historyczne opłacone abonamenty z v20 nie miały jeszcze `checkout_billing_links`.
+Po migracji do v22 ten sam login i oryginalny UUID pozwalają odtworzyć brakującą
+korelację: aplikacja odczytuje **istniejącą** Checkout Session wskazaną lokalnym
+potwierdzeniem płatności. Nie przyjmuje identyfikatora sesji od klienta. Sprawdza
+tryb testowy, sesję abonamentu complete/paid, klienta/metadane/email, kwotę PLN
+i niezmienną migawkę zamówienia, a przed zapisem ponownie kontroluje lokalny dowód
+i właściciela. Odczyt API odbywa się poza bazą i blokadą podmiany. Odtworzenie nie
+tworzy płatności, eventu płatności, zadania ani paczki; późniejszy retry korzysta
+z zapisanej korelacji. Dawne wygaśnięcie opłaconej sesji nie odbiera tego prawa.
+Błąd odczytu/weryfikacji daje503 bez powiązania; zmiana dowodu lub obce konto409.
+Pierwsza taka operacja ma dwa odczyty SDK (sesja Checkout i bieżący abonament),
+każdy z timeout5s i bez automatycznego retry; nie wymaga nowego schematu.
+
 Po potwierdzeniu własności bieżący stan abonamentu pobierany jest poza DB przez
 SDK. Lokalny audyt ma prefiks `local_reconcile_` i typ `local.subscription.reconciled`,
 więc nie udaje eventu Stripe. Błąd503 pozostawia świeży dostęp wyłączony i pozwala

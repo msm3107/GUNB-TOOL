@@ -44,6 +44,17 @@ No sales activation, dashboard/downloads or bot runtime.
 
 ## Review focus
 
+### AUTH-LEGACY-01 follow-up
+
+Missing v20 billing correlation is recovered only after authenticated customer +
+original UUID proof identifies a locally paid subscription and its persisted
+Checkout Session. Retrieve that exact Session with the pinned test SDK outside
+DB/guard; validate payment, metadata, original email, amount/currency and lifetime.
+Atomically recheck the frozen local proof and restore only the missing correlation
+and ownership, then reconcile current subscription. No payment/event/package
+replay or schema change. Cover v20 migration, legacy ready delivery, uncertain
+Session save, malicious/mismatched provider output, DB/network failures and retry.
+
 Login CSRF/browser binding; scanner GET and fragment/log hygiene; enumeration and
 mail flooding; replay/concurrent consumption; session fixation/email mutation;
 cross-customer billing proof and no guest-email binding; SMTP/Stripe outside locks;

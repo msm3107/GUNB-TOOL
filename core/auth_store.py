@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from .checkout_store import CheckoutConflict, CheckoutStore
@@ -12,15 +13,58 @@ class AuthRejected(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class BillingRecovery:
+    key_hash: str
+    order_id: int
+    customer_id: int
+    session_id: str
+    email: str = field(repr=False)
+    filters_json: str = field(repr=False)
+    offer_json: str = field(repr=False)
+    created_at: int
+    expires_at: int
+
+
+@dataclass(frozen=True)
+class RecoveredBilling:
+    attempt: BillingRecovery
+    stripe_customer_id: str
+    subscription_id: str
+
+
+class BillingLinkMissing(CheckoutConflict):
+    def __init__(self, attempt: BillingRecovery):
+        super().__init__("Missing historical billing correlation")
+        self.attempt = attempt
+
+
+def _recovery(row) -> BillingRecovery:
+    session_id = row["paid_session_id"]
+    if session_id is None or row["attempt_session_id"] not in (None, session_id):
+        raise CheckoutConflict
+    return BillingRecovery(
+        row["key_hash"],
+        row["order_id"],
+        row["customer_id"],
+        session_id,
+        row["email"],
+        row["filters_json"],
+        row["offer_json"],
+        row["created_at"],
+        row["expires_at"],
+    )
+
+
 def _cleanup(conn, stamp: int) -> None:
-    for table, field, cutoff in (
+    for table, expiry_field, cutoff in (
         ("auth_requests", "created_at", stamp - 7200),
         ("auth_magic_links", "expires_at", stamp - 86400),
         ("auth_sessions", "expires_at", stamp - 86400),
     ):
         # Identifiers are fixed above; each operation bounds its cleanup work.
         conn.execute(
-            f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {field}<? LIMIT 100)",
+            f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {expiry_field}<? LIMIT 100)",
             (cutoff,),
         )
 
@@ -152,32 +196,74 @@ class AuthStore(CheckoutStore):
             )
         )
 
-    def claim_billing(self, customer_id: int, key_hash: str) -> SubscriptionNotice:
+    def claim_billing(
+        self,
+        customer_id: int,
+        key_hash: str,
+        *,
+        recovered: RecoveredBilling | None = None,
+    ) -> SubscriptionNotice:
         def claim(conn):
             row = conn.execute(
-                """SELECT a.key_hash,a.order_id,a.customer_id,l.stripe_customer_id,l.subscription_id,
-                    c.stripe_customer_id AS trusted
+                """SELECT a.key_hash,a.order_id,a.customer_id,a.email,a.filters_json,a.offer_json,
+                    a.created_at,a.expires_at,a.session_id AS attempt_session_id,j.session_id AS paid_session_id,
+                    l.stripe_customer_id,l.subscription_id,c.stripe_customer_id AS trusted
                 FROM checkout_attempts a JOIN b2b_orders o USING(order_id)
-                JOIN checkout_billing_links l USING(order_id) JOIN b2b_customers c ON c.customer_id=o.customer_id
+                LEFT JOIN checkout_billing_links l USING(order_id)
+                LEFT JOIN paid_package_jobs j ON j.order_id=a.order_id AND j.checkout_key=a.key_hash
+                JOIN b2b_customers c ON c.customer_id=o.customer_id
                 WHERE a.key_hash=? AND o.customer_id=? AND a.customer_id=o.customer_id
-                  AND a.email=c.email COLLATE NOCASE AND o.status_platnosci='paid' AND a.kind='abonament' """,
+                  AND a.email=c.email COLLATE NOCASE AND o.status_platnosci='paid' AND a.kind='abonament'
+                  AND o.typ_pakietu=a.kind AND o.filtry_json=a.filters_json """,
                 (key_hash, customer_id),
             ).fetchone()
-            if row is None or row["trusted"] not in (None, row["stripe_customer_id"]):
+            if row is None:
                 raise CheckoutConflict
+            stripe_customer_id, subscription_id = (
+                row["stripe_customer_id"],
+                row["subscription_id"],
+            )
+            if stripe_customer_id is None or recovered is not None:
+                current = _recovery(row)
+                if recovered is None:
+                    raise BillingLinkMissing(current)
+                if current != recovered.attempt:
+                    raise CheckoutConflict  # local proof changed during provider IO
+                if stripe_customer_id is not None and (
+                    stripe_customer_id,
+                    subscription_id,
+                ) != (recovered.stripe_customer_id, recovered.subscription_id):
+                    raise CheckoutConflict
+                stripe_customer_id, subscription_id = (
+                    recovered.stripe_customer_id,
+                    recovered.subscription_id,
+                )
+            if row["trusted"] not in (None, stripe_customer_id):
+                raise CheckoutConflict
+            other = conn.execute(
+                "SELECT customer_id FROM b2b_customers WHERE stripe_customer_id=?",
+                (stripe_customer_id,),
+            ).fetchone()
+            if other is not None and other[0] != customer_id:
+                raise CheckoutConflict
+            if row["stripe_customer_id"] is None:
+                conn.execute(
+                    "INSERT INTO checkout_billing_links VALUES(?,?,?)",
+                    (row["order_id"], stripe_customer_id, subscription_id),
+                )
             if row["trusted"] is None:
                 conn.execute(
                     "UPDATE b2b_customers SET stripe_customer_id=?,status_subskrypcji='nieaktywna' WHERE customer_id=?",
-                    (row["stripe_customer_id"], customer_id),
+                    (stripe_customer_id, customer_id),
                 )
                 conn.execute(
                     """UPDATE b2b_subscriptions SET status='incomplete',refresh_token=NULL,refresh_until=NULL
                     WHERE customer_id=? AND stripe_customer_id=? AND terminal=0""",
-                    (customer_id, row["stripe_customer_id"]),
+                    (customer_id, stripe_customer_id),
                 )
             return SubscriptionNotice(
-                row["subscription_id"],
-                row["stripe_customer_id"],
+                subscription_id,
+                stripe_customer_id,
                 row["key_hash"],
                 str(row["order_id"]),
                 str(customer_id),
