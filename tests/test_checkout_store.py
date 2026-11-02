@@ -90,7 +90,7 @@ def test_v19_failure_rolls_back_table_and_version(tmp_path, monkeypatch):
     path = tmp_path / "failed.sqlite"
     legacy_database(path, 18).close()
     steps = storage._MIGRATIONS
-    monkeypatch.setattr(storage, "_MIGRATIONS", steps[:-1] + (steps[-1] + "SELECT missing_checkout_function();",))
+    monkeypatch.setattr(storage, "_MIGRATIONS", steps[:18] + (steps[18] + "SELECT missing_checkout_function();",))
     with pytest.raises(sqlite3.OperationalError, match="missing_checkout_function"):
         LeadRepository(path)
     with sqlite3.connect(path) as c:

@@ -443,6 +443,29 @@ _MIGRATIONS: tuple[Migration, ...] = (
     );
     CREATE INDEX ix_checkout_attempts_created ON checkout_attempts(created_at);
     """,                                                  # v19: trwałe próby testowego Checkout
+    """CREATE TABLE stripe_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        received_at INTEGER NOT NULL,
+        outcome TEXT NOT NULL CHECK(outcome IN ('ignored','paid','duplicate')),
+        order_id INTEGER REFERENCES b2b_orders(order_id)
+    );
+    CREATE TABLE paid_package_jobs (
+        order_id INTEGER PRIMARY KEY REFERENCES b2b_orders(order_id),
+        checkout_key TEXT NOT NULL UNIQUE REFERENCES checkout_attempts(key_hash),
+        session_id TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','building','ready')),
+        created_at INTEGER NOT NULL,
+        lease_token TEXT,
+        lease_until INTEGER,
+        delivery_id INTEGER UNIQUE REFERENCES b2b_deliveries(delivery_id),
+        error_code TEXT CHECK(error_code IN ('prepare_failed','too_large')),
+        CHECK ((state='pending' AND lease_token IS NULL AND lease_until IS NULL AND delivery_id IS NULL)
+            OR (state='building' AND lease_token IS NOT NULL AND lease_until IS NOT NULL AND delivery_id IS NULL)
+            OR (state='ready' AND lease_token IS NULL AND lease_until IS NULL AND delivery_id IS NOT NULL))
+    );
+    CREATE INDEX ix_paid_package_jobs_pending ON paid_package_jobs(state,lease_until,created_at);
+    """,                                                  # v20: testowe płatności i przygotowanie paczek
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 
