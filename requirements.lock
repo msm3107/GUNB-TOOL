@@ -24,6 +24,7 @@ python-dotenv==1.2.3
 PyYAML==6.0.3
 requests==2.34.2
 starlette==1.7.0
+stripe==10.12.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzdata==2026.4

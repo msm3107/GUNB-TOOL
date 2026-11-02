@@ -387,7 +387,7 @@ def test_failed_package_index_migration_rolls_back_version_and_index(tmp_path, m
 
     path = tmp_path / "failed.sqlite"
     legacy_database(path, 17).close()
-    steps = storage._MIGRATIONS
+    steps = storage._MIGRATIONS[:18]  # exercise failure of the v18 index step, not later migrations
     monkeypatch.setattr(storage, "_MIGRATIONS", steps[:-1] + (steps[-1] + "SELECT no_such_function();",))
     with pytest.raises(sqlite3.OperationalError, match="no_such_function"):
         LeadRepository(path)
