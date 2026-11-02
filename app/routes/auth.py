@@ -163,6 +163,17 @@ def auth_router(
             if request.headers.get("content-type", "").startswith("application/json")
             else page(request, 202, view="requested", message=GENERIC)
         )
+        # A freshly issued 15-minute link must not outlive an older browser
+        # cookie. Preserve its nonce so other outstanding links still work.
+        response.set_cookie(
+            service.browser_cookie,
+            browser,
+            max_age=1800,
+            httponly=True,
+            secure=service.secure,
+            samesite="lax",
+            path="/",
+        )
         if mail is not None:
             response.background = BackgroundTask(service.deliver, mail)
         return response

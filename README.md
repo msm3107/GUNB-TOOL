@@ -281,7 +281,8 @@ zapisany status; przerwanie procesu po ACK może utracić wysyłkę — zamów n
 Surowy token jest tylko w pamięci na czas wysyłki, bez trwałego outboxa.
 
 Token ma losowy składnik256bitów, HMAC-SHA256 oddzielony celem od sesji, TTL15min
-i jeden atomowy użytek. Jest powiązany z przeglądarką zamawiającą link, aby obca
+i jeden atomowy użytek. Żądanie linku odnawia ważność tego samego cookie przeglądarki,
+aby świeży link miał pełne 15min działania. Jest powiązany z przeglądarką zamawiającą link, aby obca
 wiadomość nie logowała ofiary na konto napastnika. **Otwórz go w tej samej
 przeglądarce**; przy zmianie urządzenia, czyszczeniu cookies lub innej przeglądarce
 zamów nowy. Zmiana emaila klienta unieważnia jego stare linki i sesje.

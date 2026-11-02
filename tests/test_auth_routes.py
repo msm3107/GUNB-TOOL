@@ -153,6 +153,36 @@ def test_csrf_and_extra_fields_are_rejected_without_sending(http):
     assert client.post("/auth/logout").status_code == 403
 
 
+def test_link_request_renews_existing_browser_cookie_for_full_link_ttl(
+    http, monkeypatch
+):
+    import time
+    from datetime import timedelta
+
+    client, service, sender = http
+    clock = [NOW]
+    monkeypatch.setattr(time, "time", lambda: clock[0].timestamp())
+    service._now = lambda: clock[0]
+    client.get("/logowanie")
+    original = client.cookies.get(service.browser_cookie)
+    clock[0] = NOW + timedelta(seconds=1790)
+    response = client.post(
+        "/auth/magic-link",
+        json={"email": "person@example.test"},
+        headers={"Origin": "https://example.test"},
+    )
+    assert response.status_code == 202
+    clock[0] = NOW + timedelta(seconds=1810)
+    response = client.post(
+        "/auth/verify",
+        data={"token": token(sender)},
+        headers={"Origin": "https://example.test"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert client.cookies.get(service.browser_cookie) == original
+
+
 def test_unsupported_media_is_415_and_duplicate_fields_are_rejected(http):
     client, _, sender = http
     client.get("/logowanie")
@@ -207,4 +237,4 @@ def test_login_template_and_script_have_manual_fallback_and_no_query_token(http)
     assert "/static/auth-verify.js" in page.text
     assert page.headers["cache-control"] == "no-store"
     assert page.headers["referrer-policy"] == "same-origin"
-    assert client.get('/').headers['referrer-policy']=='no-referrer'
+    assert client.get("/").headers["referrer-policy"] == "no-referrer"
