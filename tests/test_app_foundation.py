@@ -237,6 +237,7 @@ import core.export_package
 import core.package_selection
 import core.checkout_store
 import core.payment_store
+import core.subscription_store
 import core.paid_packages
 sys.argv = ['main.py', '--help']
 runpy.run_path('main.py', run_name='__main__')

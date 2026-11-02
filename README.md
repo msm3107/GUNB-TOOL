@@ -8,7 +8,7 @@
 
 Silnik obsługuje pobieranie paczek RWDZ, filtrowanie i klasyfikację spraw, geokodowanie ULDK, zapis w SQLite oraz kontrolę stanu bazy. CLI jest dostępne w pliku main.py.
 
-Silnik B2B korzysta ze schematu SQLite v20 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
+Silnik B2B korzysta ze schematu SQLite v21 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
 
 `core.issue_tracker.IssueTracker.report_issue(...)` zapisuje uwagi do spraw wcześniej doręczonych danemu klientowi. Obsługuje typy `zly_telefon`, `to_nie_inwestor_tylko_projektant`, `inwestycja_juz_stoi` i `inna_uwaga`. Opis jest zwykłym tekstem do 1000 znaków wejściowych, a limit wynosi 20 nowych zgłoszeń na godzinę na klienta. Ponowienie tego samego typu uwagi do tej samej sprawy zwraca oryginalne zgłoszenie, bez zmiany opisu i zużywania limitu. Wywołująca warstwa aplikacji musi ustalać `customer_id` z uwierzytelnionej sesji.
 
@@ -48,7 +48,7 @@ Po instalacji zależności uruchom serwer lokalny:
 
 ### Konfigurator i estymator
 
-Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v20), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
+Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v21), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
 
 `GET /zamowienie` pokazuje formularz, `POST /zamowienie` zwraca wynik HTML (także bez JavaScriptu), a `POST /api/estimate` przyjmuje JSON. Przykład:
 
@@ -79,7 +79,7 @@ Do lokalnej integracji testowej wymagane są jawne zmienne procesu (WWW nie czyt
 | Zmienna | Wartość |
 |---|---|
 | `GUNB_WEB_CHECKOUT_MODE` | `test` (domyślnie `disabled`) |
-| `GUNB_WEB_DB_PATH` | Istniejąca baza WAL v20, zaktualizowana wcześniej przez CLI |
+| `GUNB_WEB_DB_PATH` | Istniejąca baza WAL v21, zaktualizowana wcześniej przez CLI |
 | `GUNB_WEB_STRIPE_SECRET_KEY` | Klucz testowy `sk_test_…` albo `rk_test_…`, nigdy w repo/logach |
 | `GUNB_WEB_PUBLIC_ORIGIN` | Origin HTTPS bez ścieżki, albo lokalne HTTP np. `http://127.0.0.1:8000` |
 | `GUNB_WEB_STRIPE_TEST_PACKAGE_GROSZE` | Dodatnia całkowita kwota fikcyjnej paczki w PLN groszach |
@@ -100,7 +100,7 @@ SDK `stripe==10.12.0` jest przypięty zgodnie z zakresem zatwierdzonym w planie,
 
 ## Testowe webhooki i pierwsza paczka (etap PR9)
 
-Sprzedaż pozostaje wyłączona. Nowa wersja WWW wymaga **schematu v20**:
+Sprzedaż pozostaje wyłączona. Nowa wersja WWW wymaga **schematu v21**:
 przed jej uruchomieniem wykonaj migrację silnikiem CLI, np. `python main.py --stats`
 z właściwą konfiguracją. Migracja dodaje `stripe_events` oraz `paid_package_jobs`,
 robi kopię przed DDL i zachowuje wcześniejsze zamówienia/próby Checkout. WWW i
@@ -179,6 +179,69 @@ Kontrakt sprawdzono2026-11-02 w dokumentacji Stripe:
 [webhooki](https://docs.stripe.com/webhooks),
 [realizacja płatności](https://docs.stripe.com/checkout/fulfillment.md?ui=full-page),
 [sesja snapshot](https://docs.stripe.com/api/checkout/sessions/object?api-version=2024-06-20).
+
+## Testowe abonamenty i Customer Portal (etap PR10 / PR28)
+
+Przed nową wersją WWW wykonaj migrację CLI do **v21** z automatyczną kopią.
+Migracja zachowuje wszystkie wpisy `stripe_events`, rozszerza ich wynik o
+`subscription` oraz dodaje korelację Checkout i stan abonamentów. Przebudowa
+ledgera i nowe tabele są jednym krokiem transakcyjnym; błąd zachowuje v20 i dane.
+WWW nadal nie migruje bazy. Rollback wymaga zgodnej kopii i uzgodnienia zdarzeń
+otrzymanych po niej; nie przywracaj jej bez uwzględnienia późniejszych zmian.
+
+Do testowego endpointu snapshot API2024-06-20 dodaj
+`customer.subscription.updated` i `customer.subscription.deleted`. Obowiązują te
+same limity, podpis HMAC i bramka testowa. Opłacony Checkout abonamentu zapisuje
+powiązanie zamówienie→Stripe customer/subscription; **nie przypisuje właściciela
+konta Stripe na podstawie emaila gościa**. Zdarzenia abonamentu wymagają zarówno
+tego powiązania, zgodnych metadanych i opłaconego zamówienia, jak i istniejącego,
+zaufanego `b2b_customers.stripe_customer_id`. Nieznani klienci i niepowiązane
+subskrypcje są trwale pomijani. Znany klient bez jeszcze otrzymanego opłaconego
+Checkout dostaje503, aby Stripe ponowił zdarzenie po uzupełnieniu korelacji.
+
+Aktualizacja rezerwuje odświeżenie z tokenem/lease30s, pobiera **bieżący** obiekt
+Subscription oficjalnym SDK poza bazą i blokadą podmiany, a następnie atomowo
+zapisuje stan i event. Nie ufa staremu statusowi z dostarczonego snapshotu;
+kolejność i jednakowy timestamp eventów nie wybierają wersji stanu. Timeout5s,
+bez automatycznych retry; błąd daje503 bez trwałego ACK i zwalnia lease, a awaria
+procesu pozwala przejąć go po30s. Podpisane usunięcie zapisuje anulowanie bez
+sieci, unieważnia trwające odświeżenie i nie pozwala wskrzesić tego abonamentu.
+
+`has_subscription_access(customer_id, now=...)` sprawdza powiązanie konta,
+opłacone zamówienie, `active`, przyszły `current_period_end` i brak wstrzymania.
+`past_due`, `unpaid`, `canceled`, `paused`, `trialing`, `incomplete` oraz
+`incomplete_expired` odmawiają dostępu. Zaplanowane anulowanie przy `active`
+zachowuje go do końca okresu. Anulowanie jednego abonamentu nie odbiera drugiego,
+aktywnego. `status_subskrypcji` klienta jest projekcją informacyjną; nie wolno
+używać samego tego pola zamiast kontroli czasu i powiązań. To wyłącznie stan
+**testowy**, nie potwierdzenie każdego odnowienia, realnego przychodu lub dostawy.
+
+`POST /panel/portal` przyjmuje puste body i wymaga dokładnego skonfigurowanego
+Originu. Nie przyjmuje ID klienta, emaila, Stripe customer ani URL powrotu.
+Sesja używa wyłącznie zaufanego powiązania zalogowanego klienta, sprawdzanego
+także po wywołaniu API. URL powrotu jest stały: `/zamowienie`. Odpowiedź wymaga
+testowej sesji i HTTPS na `billing.stripe.com`; token URL nie trafia do DB/logów.
+Odpowiedzi mają no-store; proxy również nie powinno logować tokenów przekierowań.
+Limit portalu:4 operacje i30 prób/minutę na proces, bez sieci pod blokadą DB.
+Brak tożsamości daje401, brak powiązania/niezgodny Origin403, body400, limit429,
+awaria503. Domyślnie wyłączony testowy Checkout daje503 bez bazy i dostawcy.
+
+**Logowanie należy do następnego etapu PR11.** Fabryka ma interfejs
+`identity_resolver(Request) -> AuthenticatedCustomer | None`; domyślnie zawsze
+odmawia. To wewnętrzny interfejs serwera, bez zaufania do klientowskich nagłówków,
+cookies czy ID. Nie ma publicznej ścieżki utworzenia powiązania właściciela Stripe
+w tym PR. Testy używają fikcyjnych, zaufanych powiązań i resolvera serwerowego;
+normalny portal pozostaje niedostępny do podłączenia zweryfikowanego logowania.
+PR11 musi też bezpiecznie uzgodnić własność konta i bieżące abonamenty po
+powiązaniu, zanim dopuści dostęp: pominięte wcześniej zdarzenie nie jest dowodem
+aktywności. Nie uruchamiaj portalu przez dodanie tymczasowego HTTP bypassu.
+
+Sprzedaż pozostaje wyłączona; brak nowych cen, bez prawdziwych kont/API/płatności
+w testach. Retencja, monitoring, automatyczne recovery i dostawy nadal mają bramki
+opisane powyżej. Weryfikacja kontraktów2026-11-02:
+[Customer Portal API](https://docs.stripe.com/api/customer_portal/sessions/create?api-version=2024-06-20),
+[zdarzenia abonamentu](https://docs.stripe.com/billing/subscriptions/webhooks),
+[odczyt Subscription](https://docs.stripe.com/api/subscriptions/retrieve?api-version=2024-06-20).
 
 ## Testy
 
