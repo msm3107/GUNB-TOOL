@@ -229,12 +229,13 @@ import runpy
 import sys
 class BlockWeb(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'app', 'fastapi', 'starlette', 'jinja2', 'uvicorn', 'httpx', 'httpx2'}:
+        if fullname.split('.')[0] in {'app', 'fastapi', 'starlette', 'jinja2', 'uvicorn', 'httpx', 'httpx2', 'stripe'}:
             raise ImportError('Forbidden web import: ' + fullname)
 sys.meta_path.insert(0, BlockWeb())
 import core.issue_tracker
 import core.export_package
 import core.package_selection
+import core.checkout_store
 sys.argv = ['main.py', '--help']
 runpy.run_path('main.py', run_name='__main__')
 """

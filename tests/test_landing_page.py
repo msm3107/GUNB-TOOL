@@ -124,7 +124,7 @@ def test_planned_offers_have_no_purchase_flow_or_invented_price(landing):
     assert not {"form", "input", "button"} & set(tags)
     assert http.get("/zamowienie").status_code == 200
     assert http.get("/logowanie").status_code == 404
-    assert http.post("/zamowienie/checkout").status_code == 404
+    assert http.post("/zamowienie/checkout").status_code == 503  # Sales remain disabled.
 
 
 def test_all_navigation_targets_and_assets_resolve_without_external_requests(landing):

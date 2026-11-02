@@ -425,6 +425,24 @@ _MIGRATIONS: tuple[Migration, ...] = (
     _B2B_SCHEMA,                                           # v16: klienci B2B, zamówienia i pamięć dostaw
     _ISSUE_SCHEMA,                                         # v17: zgłoszenia jakości danych
     PACKAGE_INDEX_SQL,                                     # v18: odczytowy estymator paczek
+    """CREATE TABLE checkout_attempts (
+        key_hash TEXT PRIMARY KEY CHECK(length(key_hash)=64),
+        fingerprint TEXT NOT NULL CHECK(length(fingerprint)=64),
+        order_id INTEGER NOT NULL UNIQUE REFERENCES b2b_orders(order_id),
+        customer_id INTEGER NOT NULL REFERENCES b2b_customers(customer_id),
+        email TEXT NOT NULL,
+        filters_json TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('jednorazowy','abonament')),
+        offer_json TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL CHECK(expires_at > created_at),
+        session_id TEXT UNIQUE,
+        url TEXT,
+        CHECK ((session_id IS NULL AND url IS NULL) OR (session_id IS NOT NULL AND url IS NOT NULL))
+    );
+    CREATE INDEX ix_checkout_attempts_created ON checkout_attempts(created_at);
+    """,                                                  # v19: trwałe próby testowego Checkout
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

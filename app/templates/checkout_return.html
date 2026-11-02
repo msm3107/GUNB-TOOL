@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="container page-section" aria-labelledby="checkout-return-heading">
+  <p class="eyebrow">Żółta Tablica / Integracja w przygotowaniu</p>
+  <h1 id="checkout-return-heading">Powrót z testowego Checkout.</h1>
+  <p class="intro">Wyświetlenie tej strony nie potwierdza płatności i nie przyznaje dostępu do paczki.</p>
+  <p>Sprzedaż online nie jest uruchomiona. Ten etap służy przygotowaniu integracji testowej; potwierdzanie płatności i dostawy będą obsługiwane w kolejnych etapach.</p>
+  <a class="button-link" href="{{ url_for('order_configurator') }}">Wróć do konfiguratora <span aria-hidden="true">↗</span></a>
+</section>
+{% endblock %}

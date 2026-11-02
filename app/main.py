@@ -12,10 +12,14 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp
 
+from core.checkout_store import CheckoutStore
+
 from .config import WebConfig
 from .estimator import Estimator
+from .routes.checkout import checkout_router
 from .routes.orders import order_router
 from .security import SecurityHeadersMiddleware
+from .stripe_service import CheckoutService
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -28,7 +32,7 @@ async def _server_error(_request: Request, _exception: Exception) -> JSONRespons
     )
 
 
-def create_app(config: WebConfig | None = None) -> ASGIApp:
+def create_app(config: WebConfig | None = None, *, checkout_service: CheckoutService | None = None) -> ASGIApp:
     """Build FastAPI with CORS/security policy covering errors as well as routes.
 
     The returned ASGI application runs with ``uvicorn app.main:create_app --factory``.
@@ -50,6 +54,7 @@ def create_app(config: WebConfig | None = None) -> ASGIApp:
     mimetypes.add_type("font/woff2", ".woff2")
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     api.include_router(order_router(Estimator(config.database_path), templates))
+    api.include_router(checkout_router(checkout_service or CheckoutService(CheckoutStore(config.database_path), config.checkout), templates))
 
     @api.get("/", response_class=HTMLResponse, name="home", include_in_schema=False)
     def home(request: Request) -> Response:
