@@ -62,7 +62,7 @@ class PortalService:
                 result = self._sessions.create(
                     {
                         "customer": customer,
-                        "return_url": self.settings.origin + "/zamowienie",
+                        "return_url": self.settings.origin + "/panel",
                     }
                 )
                 url = result["url"]

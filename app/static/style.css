@@ -157,6 +157,26 @@ details[open] > summary { background: #f2efe4; }
 }
 
 .examples-link { display: inline-flex; align-items: center; min-height: 44px; margin-left: 1rem; font-size: 0.8rem; font-weight: 750; text-decoration: underline; text-underline-offset: 4px; }
+.dashboard h1 { font-size: clamp(2.5rem, 5vw, 4rem); }
+.dashboard-heading, .dashboard-row { display: flex; justify-content: space-between; align-items: start; gap: 1rem; flex-wrap: wrap; }
+.dashboard-heading form { flex-shrink: 0; }
+.dashboard-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 2.5rem; margin-top: 2rem; }
+.dashboard-layout > *, .dashboard-card { min-width: 0; overflow-wrap: anywhere; }
+.dashboard h2 { font-size: 2rem; }
+.dashboard-card { padding: 1.5rem; border: 1px solid var(--border); background: #fffdf7; border-radius: 5px; margin-bottom: 1rem; }
+.dashboard-billing { border-top: 5px solid var(--yellow); }
+.dashboard-badge { padding: .25rem .6rem; background: #eff0e8; font-size: .75rem; font-weight: 700; }
+.dashboard-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin: 1rem 0 0; }
+.dashboard-counts dt { font-size: .8rem; color: var(--muted); }
+.dashboard-counts dd { font-size: 2rem; line-height: 1.3; font-weight: 800; margin: 0; }
+.dashboard-section { margin-top: 3rem; }
+.dashboard-subscription + .dashboard-subscription { border-top: 1px solid var(--border); padding-top: 1rem; }
+.dashboard input, .dashboard textarea { width: 100%; min-width: 0; min-height: 48px; padding: .65rem; font: inherit; color: var(--navy); background: var(--paper); border: 1px solid #87938f; border-radius: 3px; margin-bottom: 1rem; }
+.dashboard :is(input,select,textarea,button):focus-visible { outline: 3px solid #1765a2; outline-offset: 4px; }
+.dashboard-notice { border-left: 4px solid var(--yellow); background: #fffdf7; padding: 1rem; }
+.dashboard-more { display: inline-block; padding-block: .65rem; text-decoration: underline; text-underline-offset: 4px; font-weight: 700; }
+@media (max-width: 850px) { .dashboard-layout { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; } }
+@media (max-width: 430px) { .dashboard-card { padding: 1rem; } .dashboard-counts dd { font-size: 1.65rem; } }
 .configurator h1 { font-size: clamp(2.5rem, 5vw, 4rem); }
 .configurator-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 4rem; align-items: start; margin-top: 2.5rem; }
 .configurator fieldset { min-inline-size: 0; padding: 1.5rem; margin: 0 0 1.5rem; border: 1px solid var(--border); }

@@ -219,7 +219,7 @@ używać samego tego pola zamiast kontroli czasu i powiązań. To wyłącznie st
 `POST /panel/portal` przyjmuje puste body i wymaga dokładnego skonfigurowanego
 Originu. Nie przyjmuje ID klienta, emaila, Stripe customer ani URL powrotu.
 Sesja używa wyłącznie zaufanego powiązania zalogowanego klienta, sprawdzanego
-także po wywołaniu API. URL powrotu jest stały: `/zamowienie`. Odpowiedź wymaga
+także po wywołaniu API. URL powrotu jest stały: `/panel`. Odpowiedź wymaga
 testowej sesji i HTTPS na `billing.stripe.com`; token URL nie trafia do DB/logów.
 Odpowiedzi mają no-store; proxy również nie powinno logować tokenów przekierowań.
 Limit portalu:4 operacje i30 prób/minutę na proces, bez sieci pod blokadą DB.
@@ -292,7 +292,7 @@ ani Referer. `GET /auth/verify` nie zużywa tokenu; lokalny skrypt usuwa fragmen
 z historii i przygotowuje formularz wymagający przycisku „Potwierdź logowanie”.
 Samo otwarcie linku przez skaner nie loguje. Bez JS można wkleić kod z fragmentu
 do pola potwierdzenia. Nie umieszczaj tokenu w query, logach lub udostępnionych
-zrzutach. CSP pozostaje same-origin; tylko strony auth i przyszły `/panel` mają
+zrzutach. Skrypty/style CSP pozostają same-origin; strony auth i panelu mają
 Referrer-Policy:same-origin, aby natywne formularze Chromium zachowały poprawny
 Origin. Pozostałe odpowiedzi nadal mają no-referrer. Origin:null jest odrzucany.
 
@@ -301,8 +301,8 @@ unieważniając starą sesję tej przeglądarki. Cookie ma HttpOnly, SameSite=La
 Path=/ i brak Domain; HTTPS wymusza Secure i prefiks __Host-. Jedyny wyjątek
 Secure to jawny lokalny test HTTP. Sesje przyjmowane są tylko z cookie i sprawdzane
 w DB; surowe tokeny nie są zapisywane. `POST /auth/logout` wymaga Originu, odwołuje
-sesję i usuwa oba cookies. GET nie wylogowuje. Panel klienta i pobrania są dalszymi
-etapami; strona po logowaniu uczciwie informuje o przygotowaniu panelu.
+sesję i usuwa oba cookies. GET nie wylogowuje. Po logowaniu dostępny jest panel
+klienta; bezpieczne pobrania pozostają kolejnym etapem.
 
 Powiązanie billingu jest osobnym, jawnym `POST /auth/billing-link` z JSON
 `{"request_token":"<pierwotny UUIDv4 próby Checkout>"}`. Wymaga sesji, zgodnego
@@ -330,7 +330,7 @@ SDK. Lokalny audyt ma prefiks `local_reconcile_` i typ `local.subscription.recon
 więc nie udaje eventu Stripe. Błąd503 pozostawia świeży dostęp wyłączony i pozwala
 ponowić ten sam dowód. Limit2 uzgodnienia i10 prób/minutę na proces. Dopiero
 zweryfikowana sesja oraz potwierdzony właściciel mogą wejść do testowego portalu.
-Interfejs zamówień/powiązania w panelu zostaje do PR12; nie zgaduj i nie pobieraj
+Interfejs zamówień/powiązania jest dostępny w panelu (etap12); nie zgaduj i nie pobieraj
 identyfikatora zamówienia innego klienta.
 
 Przy kolejnych próbach logowania wykonywane jest ograniczone sprzątanie wygasłych
@@ -342,6 +342,39 @@ proxy, polityki nadużyć i pełnego cyklu klienta. Sprzedaż nadal jest wyłąc
 Sprawdzono2026-11-02: [OWASP tokeny](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html),
 [sesje](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
 Testy są syntetyczne; nie wykonano prawdziwej wysyłki SMTP ani Stripe API.
+
+## Panel klienta (etap 12)
+
+Po potwierdzeniu Magic Link aplikacja przekierowuje do `/panel`. Niezalogowany
+użytkownik wraca do `/logowanie`. Panel pokazuje wyłącznie zamówienia i paczki
+zalogowanego klienta, po 20 pozycji ze stronicowaniem do starszych identyfikatorów;
+liczniki Nowe/Zmiany/Pełna baza pochodzą z zapisanych pozycji danej paczki.
+Przygotowana paczka jest wyraźnie oddzielona od doręczonej. Widok nie ujawnia
+ścieżek plików ani identyfikatorów Stripe. Bezpieczne pobieranie to następny etap13.
+
+Abonament to ostatni lokalnie potwierdzony stan, nie odczyt na żywo od dostawcy.
+Wygasły okres, pauza, zakończenie, brak opłaconego zamówienia lub zaufanego
+powiązania nie są prezentowane jako aktywny abonament. GET nie wykonuje Stripe,
+nie migruje bazy i czyta spójny snapshot WAL, z limitem0,5s i4 równoległych odczytów
+na instancję store; blokada konserwacji lub przeciążenie zwraca503. Bez nowych tabel.
+
+Formularz `POST /panel/uwagi` przyjmuje do24KiB form-urlencoded: numer sprawy,
+typ i opis do1000 znaków. Istniejący IssueTracker sprawdza doręczenie klientowi,
+deduplikuje uwagi, egzekwuje20 nowych zgłoszeń/h i oznacza dane do weryfikacji.
+Pochodzenie musi dokładnie zgadzać się ze skonfigurowanym origin; ID klienta
+pochodzi wyłącznie z sesji. Błędy zachowują poprawnie sparsowane pola; sukces
+przekierowuje303, aby odświeżenie nie wysyłało ponownie formularza.
+
+Testowy billing ma natywny formularz `POST /panel/rozliczenia`, używający
+istniejącego dowodu oryginalnego UUID Checkout i uzgodnienia Stripe (w tym v20).
+Dowód nigdy nie jest odbijany w HTML/URL. Gdy konto ma zaufane powiązanie, przycisk
+otwiera istniejący Customer Portal; jego stały powrót wskazuje teraz `/panel`.
+CSP wyłącznie stron panelu dopuszcza w `form-action` dokładny host
+`https://billing.stripe.com`, zweryfikowany również przez PortalService, ponieważ
+Chromium sprawdza także przekierowanie natywnego formularza
+([MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/form-action)).
+Skrypty/style i pozostałe strony zachowują dotychczasową politykę. Nie dodano JS
+ani zależności. Wszystkie odpowiedzi panelu są `no-store`; sprzedaż nadal wyłączona.
 
 ## Testy
 

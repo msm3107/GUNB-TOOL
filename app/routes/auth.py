@@ -207,7 +207,7 @@ def auth_router(
         except CheckoutUnavailable:
             return error(request, 503)
         response = RedirectResponse(
-            "/logowanie", status_code=303, headers={"Cache-Control": "no-store"}
+            "/panel", status_code=303, headers={"Cache-Control": "no-store"}
         )
         response.set_cookie(
             service.session_cookie,

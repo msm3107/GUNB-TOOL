@@ -14,6 +14,7 @@ from starlette.types import ASGIApp
 
 from core.auth_store import AuthStore
 from core.checkout_store import CheckoutStore
+from core.customer_dashboard import CustomerDashboardStore
 from core.paid_packages import PaidPackagePreparer
 from core.payment_store import PaymentStore
 from core.subscription_store import SubscriptionStore
@@ -25,6 +26,7 @@ from .identity import IdentityResolver
 from .portal_service import PortalService
 from .routes.auth import auth_router
 from .routes.checkout import checkout_router
+from .routes.dashboard import dashboard_router
 from .routes.orders import order_router
 from .routes.portal import portal_router
 from .routes.stripe_webhook import stripe_webhook_router
@@ -83,6 +85,10 @@ def create_app(
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     api.include_router(order_router(Estimator(config.database_path), templates))
     api.include_router(auth_router(auth_service, subscriptions, templates))
+    api.include_router(dashboard_router(
+        CustomerDashboardStore(config.database_path), identity_resolver or auth_service.resolve,
+        auth_service, subscriptions, templates,
+    ))
     api.include_router(
         portal_router(
             portal_service

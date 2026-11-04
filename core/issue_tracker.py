@@ -5,11 +5,18 @@ from __future__ import annotations
 import enum
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Protocol
 
-from .storage import LeadRepository
+
+class IssueRepository(Protocol):
+    connection: sqlite3.Connection
+
+    def now(self) -> datetime: ...
+
+    def transaction(self) -> AbstractContextManager[None]: ...
 
 MAX_DESCRIPTION_LENGTH = 1000
 MAX_REPORTS_PER_HOUR = 20
@@ -58,7 +65,7 @@ def _from_row(row: sqlite3.Row) -> IssueReport:
 
 
 @contextmanager
-def _atomic_report(repository: LeadRepository) -> Iterator[None]:
+def _atomic_report(repository: IssueRepository) -> Iterator[None]:
     # The savepoint also protects callers that catch a failed report inside an outer transaction.
     with repository.transaction():
         connection = repository.connection
@@ -82,7 +89,7 @@ class IssueTracker:
     the original record and do not edit its description or consume the hourly quota.
     """
 
-    def __init__(self, repository: LeadRepository) -> None:
+    def __init__(self, repository: IssueRepository) -> None:
         self._repository = repository
 
     def report_issue(

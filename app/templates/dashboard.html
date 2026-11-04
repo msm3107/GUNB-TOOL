@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block meta %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block content %}
+<section class="container page-section dashboard configurator" aria-labelledby="dashboard-heading">
+  <div class="dashboard-heading">
+    <div><p class="eyebrow">Twoje konto · dostęp testowy</p><h1 id="dashboard-heading">Twój rejon.<br>Twoje inwestycje.</h1>
+    {% if dashboard %}<p class="field-help">{{ dashboard.company }}{% if dashboard.company %} · {% endif %}{{ dashboard.email }}</p>{% endif %}</div>
+    <form method="post" action="/auth/logout"><button class="button-link" type="submit">Wyloguj się</button></form>
+  </div>
+  {% if message %}<p class="dashboard-notice" role="status">{{ message }}</p>{% endif %}
+  <p class="sales-note">Środowisko testowe. Sprzedaż pozostaje wyłączona. Logowanie nie potwierdza płatności ani doręczenia paczki.</p>
+  {% if dashboard %}
+  <div class="dashboard-layout">
+    <div>
+      <section aria-labelledby="packages-heading">
+        <p class="eyebrow">Pamięć dostaw</p><h2 id="packages-heading">Twoje paczki</h2>
+        <p class="field-help">Liczby pochodzą z zapisanej paczki. Przygotowanie paczki i jej doręczenie to osobne etapy.</p>
+        {% for delivery in dashboard.deliveries %}
+        <article class="dashboard-card">
+          <div class="dashboard-row"><h3>Paczka #{{ delivery.delivery_id }} · zamówienie #{{ delivery.order_id }}</h3><span class="dashboard-badge">{{ 'Doręczona' if delivery.delivered_at else 'Przygotowana · jeszcze niedoręczona' }}</span></div>
+          <dl class="dashboard-counts"><div><dt>Nowe</dt><dd>{{ delivery.new_count }}</dd></div><div><dt>Zmiany</dt><dd>{{ delivery.change_count }}</dd></div><div><dt>Pełna baza</dt><dd>{{ delivery.full_count }}</dd></div></dl>
+          {% if delivery.delivered_at %}<p class="field-help">Doręczono: {{ delivery.delivered_at }}</p>{% endif %}
+        </article>
+        {% else %}<div class="dashboard-card"><h3>Tu pojawią się Twoje paczki.</h3><p>Nie zapisano jeszcze paczek dla tego konta.</p></div>{% endfor %}
+        <p class="field-help">Pobieranie plików z panelu będzie dostępne po uruchomieniu bezpiecznych linków.</p>
+        {% if dashboard.deliveries_next %}<a class="dashboard-more" href="{{ page_link('deliveries_before', dashboard.deliveries_next) }}#packages-heading">Starsze paczki →</a>{% endif %}
+      </section>
+      <section class="dashboard-section" aria-labelledby="orders-heading"><p class="eyebrow">Historia konta</p><h2 id="orders-heading">Zamówienia</h2>
+        {% for order in dashboard.orders %}
+        <article class="dashboard-card"><div class="dashboard-row"><h3>#{{ order.order_id }} · {{ 'Abonament' if order.kind == 'abonament' else 'Paczka jednorazowa' }}</h3><span class="dashboard-badge">{{ {'paid':'Opłacone','pending':'Oczekuje na płatność','expired':'Wygasłe','failed':'Nieopłacone'}.get(order.payment,'Niepotwierdzone') }}</span></div><p class="field-help">{{ order.scope }}</p></article>
+        {% else %}<p>Nie ma jeszcze zamówień przypisanych do tego konta.</p>{% endfor %}
+        {% if dashboard.orders_next %}<a class="dashboard-more" href="{{ page_link('orders_before', dashboard.orders_next) }}#orders-heading">Starsze zamówienia →</a>{% endif %}
+      </section>
+      {% if paged %}<p><a class="dashboard-more" href="/panel">Wróć do najnowszych pozycji</a></p>{% endif %}
+    </div>
+    <div class="dashboard-sidebar">
+      <section class="dashboard-card dashboard-billing" aria-labelledby="subscription-heading"><p class="eyebrow">Rozliczenia</p><h2 id="subscription-heading">Abonament</h2>
+        <p class="field-help">Ostatni lokalnie potwierdzony stan. Widok nie odpytał Stripe; zmiana u dostawcy może jeszcze nie być widoczna.</p>
+        {% for subscription in dashboard.subscriptions %}<div class="dashboard-subscription"><h3>Zamówienie #{{ subscription.order_id }} · {{ subscription_labels.get(subscription.status,'Niepotwierdzony') }}</h3><p class="field-help">Koniec potwierdzonego okresu: {{ format_period(subscription.period_end) }}{% if subscription.cancel_at_period_end %}<br>Ustawiono zakończenie po bieżącym okresie.{% endif %}</p></div>
+        {% else %}<p>Brak potwierdzonego abonamentu dla powiązanych rozliczeń.</p>{% endfor %}
+        {% if dashboard.subscriptions_more %}<p class="field-help">Pokazano 20 ostatnich abonamentów. Pozostałe rozliczenia sprawdzisz w portalu Stripe.</p>{% endif %}
+        {% if portal_enabled %}
+          {% if dashboard.billing_linked %}<form method="post" action="/panel/portal"><button class="button-link" type="submit">Zarządzaj w Stripe · test</button></form>{% endif %}
+          <details><summary>Powiąż lub ponów uzgodnienie abonamentu</summary><p class="field-help" id="billing-help">Wpisz oryginalny, poufny UUID żądania Checkout. Nie podawaj identyfikatora Session ani danych karty. Dowód i bieżący abonament zostaną zweryfikowane.</p><form method="post" action="/panel/rozliczenia"><label for="billing-proof">Oryginalny UUID Checkout</label><input id="billing-proof" type="password" name="request_token" required maxlength="36" autocomplete="off" spellcheck="false" aria-describedby="billing-help"><button class="button-link" type="submit">Potwierdź rozliczenia</button></form></details>
+        {% else %}<p class="field-help">Obsługa rozliczeń testowych jest obecnie niedostępna.</p>{% endif %}
+      </section>
+      <section class="dashboard-card" aria-labelledby="issue-heading"><p class="eyebrow">Jawna jakość danych</p><h2 id="issue-heading">Zgłoś uwagę</h2>
+        <p class="field-help" id="issue-help">Numer sprawy znajdziesz w swojej doręczonej paczce. Przyjmujemy do 20 nowych uwag na godzinę; ponowienie tej samej uwagi nie tworzy duplikatu.</p>
+        <form method="post" action="/panel/uwagi"><label for="issue-case">Numer sprawy</label><input id="issue-case" name="case_id" required maxlength="512" value="{{ issue_values.get('case_id','') }}" aria-describedby="issue-help">
+          <label for="issue-type">Co wymaga sprawdzenia?</label><select id="issue-type" name="issue_type" required>{% for key,label in issue_types.items() %}<option value="{{ key }}"{% if issue_values.get('issue_type') == key %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          <label for="issue-description">Opis (do 1000 znaków)</label><textarea id="issue-description" name="description" maxlength="1000" rows="4" aria-describedby="description-help">{{ issue_values.get('description','') }}</textarea><p class="field-help" id="description-help">Opis wymagany dla „Inna uwaga”. Zgłoszenie jest informacją do weryfikacji, nie potwierdzeniem błędu.</p><button class="button-link" type="submit">Wyślij uwagę</button>
+        </form>
+      </section>
+    </div>
+  </div>
+  {% else %}<p><a class="dashboard-more" href="/panel">Otwórz ponownie panel</a></p>{% endif %}
+</section>
+{% endblock %}
