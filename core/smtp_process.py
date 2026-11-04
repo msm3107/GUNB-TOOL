@@ -58,6 +58,9 @@ class SupervisedSMTP:
     def send(self, endpoint, report, *, idempotency_key: str) -> DeliveryResult:
         return self._run('report', endpoint, report, dict(idempotency_key=idempotency_key))
 
+    def send_email(self, recipient: str, subject: str, body: str, *, idempotency_key: str) -> DeliveryResult:
+        return self._run('send_email', recipient, body, dict(subject=subject,idempotency_key=idempotency_key))
+
     def send_verification(self, endpoint, token: str, *, expires_at: datetime,
                           idempotency_key: str) -> DeliveryResult:
         return self._run('verification', endpoint, token, dict(expires_at=expires_at, idempotency_key=idempotency_key))

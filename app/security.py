@@ -31,6 +31,17 @@ class SecurityHeadersMiddleware:
                 headers = MutableHeaders(scope=message)
                 for name, value in SECURITY_HEADERS.items():
                     headers[name] = value
+                if scope.get("path") in {
+                    "/logowanie",
+                    "/auth/verify",
+                    "/auth/magic-link",
+                    "/auth/logout",
+                    "/panel",
+                }:
+                    # Chromium's native non-CORS form POST can send Origin:null
+                    # under no-referrer. Fragments never enter HTTP Referer;
+                    # same-origin keeps native forms usable without allowing null.
+                    headers["Referrer-Policy"] = "same-origin"
                 # Only the ASGI server's scheme is trusted, not raw forwarded request headers.
                 if scope.get("scheme") == "https":
                     headers["Strict-Transport-Security"] = "max-age=31536000"

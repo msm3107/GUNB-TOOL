@@ -58,13 +58,18 @@ class RefreshTicket:
 
 
 def _receipt(conn, event_id, notice, stamp, outcome):
+    event_type = (
+        "local.subscription.reconciled"
+        if event_id.startswith("local_reconcile_")
+        else "customer.subscription.deleted"
+        if notice.deleted
+        else "customer.subscription.updated"
+    )
     conn.execute(
         "INSERT INTO stripe_events VALUES(?,?,?,?,?)",
         (
             event_id,
-            "customer.subscription.deleted"
-            if notice.deleted
-            else "customer.subscription.updated",
+            event_type,
             stamp,
             outcome,
             int(notice.order_id) if outcome == "subscription" else None,

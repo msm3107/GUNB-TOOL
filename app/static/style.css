@@ -163,6 +163,8 @@ details[open] > summary { background: #f2efe4; }
 .configurator legend { font-size: 0.8rem; font-weight: 800; padding-inline: 0.5rem; }
 .configurator label { display: block; font-size: 0.9rem; font-weight: 650; margin-bottom: 0.5rem; }
 .configurator select, .configurator input[type="number"] { width: 100%; min-width: 0; min-height: 48px; font: inherit; font-size: 0.9rem; color: var(--navy); background: #fffdf7; border: 1px solid #87938f; border-radius: 3px; padding: 0.6rem; margin-bottom: 1rem; }
+.auth-page input { width: 100%; min-width: 0; min-height: 48px; font: inherit; color: var(--navy); background: #fffdf7; border: 1px solid #87938f; border-radius: 3px; padding: .75rem; }
+.auth-page form { max-width: 32rem; }
 .configurator option { padding: 0.25rem; }
 .configurator :is(input, select, button):focus-visible { outline: 3px solid #1765a2; outline-offset: 4px; }
 .category-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1rem; margin-top: 1rem; }

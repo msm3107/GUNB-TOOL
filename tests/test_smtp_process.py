@@ -123,3 +123,12 @@ def test_start_failure_is_generic(monkeypatch, caplog):
 def test_real_spawn_rejects_invalid_recipient_without_network():
     from core.smtp_process import SupervisedSMTP
     assert SupervisedSMTP(SETTINGS, timeout_seconds=10).send(None, None, idempotency_key='test').outcome == 'failed'
+
+
+def test_supervised_login_mail_preserves_subject_and_bounded_worker(monkeypatch):
+    context=Context(b'{"outcome":"accepted","provider_message_id":null,"retry_after_seconds":null}')
+    sender=supervisor(context,monkeypatch)
+    result=sender.send_email('person@example.test','Testowy temat','Synthetic body',idempotency_key='synthetic-key')
+    assert result.outcome=='accepted'
+    assert context.args[2:] == ('send_email','person@example.test','Synthetic body',{'subject':'Testowy temat','idempotency_key':'synthetic-key'})
+    assert not context.process.live and context.read.closed and context.write.closed

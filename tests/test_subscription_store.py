@@ -212,7 +212,7 @@ def test_v21_migration_preserves_ledger_and_rolls_back(tmp_path, monkeypatch):
     monkeypatch.setattr(
         storage,
         "_MIGRATIONS",
-        steps[:-1] + (steps[-1] + "SELECT missing_subscription_function();",),
+        steps[:20] + (steps[20] + "SELECT missing_subscription_function();",),
     )
     with pytest.raises(sqlite3.OperationalError):
         LeadRepository(path)
@@ -229,7 +229,7 @@ def test_v21_migration_preserves_ledger_and_rolls_back(tmp_path, monkeypatch):
         )
     monkeypatch.setattr(storage, "_MIGRATIONS", steps)
     with LeadRepository(path) as repo:
-        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == 21
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
         assert (
             repo.connection.execute("SELECT event_id FROM stripe_events").fetchone()[0]
             == "evt_kept"
