@@ -37,3 +37,8 @@
 - 29 new dashboard tests; full826 passed16 skipped35.21s, Ruff/compile/diff PASS. Schema22 unchanged.
 - Native browser synthetic QA: save303 confirmation, deny undelivered403 while preserving description; no console errors;1280 and390px without horizontal overflow. Existing source branding/local assets preserved; design draft52186bba-5420-4a4d-915f-66d689a22736v2 is visual guidance, production uses current Jinja and truthful data.
 - Exact billing.stripe.com form-action exception only on rendered dashboard routes, to support Chromium POST redirects; scripts/styles unchanged. Portal returns to /panel. Existing Stripe proof/API validation unchanged.
+
+## UX-PORTAL-01 review follow-up
+- Independent reviewer confirmed native Portal failure503/429/403 rendered raw JSON without navigation. Reproduced RED503 vs expected303.
+- HTML Accept now redirects only to fixed /panel?notice=portal-error, no-store and retry hints; panel shows generic retry/pairing guidance. API JSON status/body unchanged. No provider URL or proof echoed.
+- Three regression cases cover SDK failure, process quota and lost trusted mapping, native return+panel and JSON compatibility. Same-reviewer recheck and exact newHEAD CI required.

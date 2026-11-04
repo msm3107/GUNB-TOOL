@@ -397,3 +397,62 @@ def test_unauthenticated_post_cannot_use_forged_identity(dashboard):
     assert response.status_code == 303 and response.headers["location"] == "/logowanie"
     with sqlite3.connect(path) as c:
         assert c.execute("SELECT count(*) FROM issue_reports").fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    "failure,status", [("sdk", 503), ("rate", 429), ("mapping", 403)]
+)
+def test_native_portal_errors_return_to_panel_but_api_keeps_json(
+    _billing_http,  # noqa: F811
+    failure,
+    status,
+    monkeypatch,
+):
+    client, _, sender, store, _, portal = _billing_http
+    login(client, sender)
+    assert (
+        client.post(
+            "/panel/rozliczenia",
+            data={"request_token": UUID},
+            headers={"Origin": "https://example.test"},
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+    if failure == "sdk":
+        portal.fail = True
+    elif failure == "rate":
+        from app.portal_service import PortalService
+        from app.stripe_service import CheckoutBusy
+
+        def limited(self, principal):
+            raise CheckoutBusy
+
+        monkeypatch.setattr(PortalService, "start", limited)
+    else:
+        with sqlite3.connect(store.path) as c:
+            c.execute("UPDATE b2b_customers SET stripe_customer_id=NULL")
+    native = client.post(
+        "/panel/portal",
+        headers={"Origin": "https://example.test", "Accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert (
+        native.status_code == 303
+        and native.headers["location"] == "/panel?notice=portal-error"
+    )
+    assert native.headers["cache-control"] == "no-store"
+    page = client.get(native.headers["location"])
+    assert (
+        page.status_code == 200
+        and "Portal rozliczeń jest chwilowo niedostępny" in page.text
+    )
+    assert "cus_synthetic" not in page.text and "billing.stripe.com/p/" not in page.text
+    api = client.post(
+        "/panel/portal",
+        headers={"Origin": "https://example.test", "Accept": "application/json"},
+        follow_redirects=False,
+    )
+    assert api.status_code == status and api.headers["content-type"].startswith(
+        "application/json"
+    )

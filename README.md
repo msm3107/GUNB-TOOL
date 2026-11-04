@@ -369,6 +369,9 @@ Testowy billing ma natywny formularz `POST /panel/rozliczenia`, używający
 istniejącego dowodu oryginalnego UUID Checkout i uzgodnienia Stripe (w tym v20).
 Dowód nigdy nie jest odbijany w HTML/URL. Gdy konto ma zaufane powiązanie, przycisk
 otwiera istniejący Customer Portal; jego stały powrót wskazuje teraz `/panel`.
+Awaria lub odmowa Portalu dla natywnego żądania HTML wraca303 do panelu
+z ogólnym komunikatem i możliwością ponowienia; API nadal otrzymuje JSON
+z właściwym kodem błędu. Nie ujawniamy URL sesji Stripe w błędzie.
 CSP wyłącznie stron panelu dopuszcza w `form-action` dokładny host
 `https://billing.stripe.com`, zweryfikowany również przez PortalService, ponieważ
 Chromium sprawdza także przekierowanie natywnego formularza

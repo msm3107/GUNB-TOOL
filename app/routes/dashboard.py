@@ -186,6 +186,7 @@ def dashboard_router(
                 "/logowanie", status_code=303, headers={"Cache-Control": "no-store"}
             )
         notice = {
+            "portal-error": "Portal rozliczeń jest chwilowo niedostępny lub nie potwierdzono powiązania. Spróbuj później albo potwierdź rozliczenia poniżej.",
             "issue": "Zgłoszenie zapisano lub było już wcześniej zgłoszone. Wymaga weryfikacji.",
             "billing": "Powiązano rozliczenia i uzgodniono bieżący stan.",
         }.get(request.query_params.get("notice"), "")
