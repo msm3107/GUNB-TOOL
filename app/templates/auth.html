@@ -9,7 +9,8 @@
     {% if not auth_enabled %}
       <p class="intro">Logowanie jest jeszcze niedostępne. Portal klienta jest przygotowywany.</p>
     {% elif logged_in %}
-      <p class="intro">Panel klienta jest przygotowywany. Zalogowanie nie uruchamia płatności ani abonamentu.</p>
+      <p class="intro">Twoje zamówienia, paczki i status abonamentu znajdziesz w panelu.</p>
+      <p><a class="button-link" href="/panel">Przejdź do panelu</a></p>
       <form method="post" action="/auth/logout"><button class="button-link" type="submit">Wyloguj się</button></form>
     {% elif view == 'verify' %}
       <p class="intro">Wybierz przycisk, aby zalogować się do Żółtej Tablicy. Jeśli nie zlecano logowania, zamknij tę stronę.</p>

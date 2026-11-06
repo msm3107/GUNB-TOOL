@@ -15,7 +15,15 @@ def portal_router(
 ) -> APIRouter:
     router = APIRouter()
 
-    def failure(code):
+    def failure(request, code):
+        headers = {
+            "Cache-Control": "no-store",
+            **({"Retry-After": "60"} if code in (429, 503) else {}),
+        }
+        if request.headers.get("accept", "").lower().startswith("text/html"):
+            return RedirectResponse(
+                "/panel?notice=portal-error", status_code=303, headers=headers
+            )
         return JSONResponse(
             {
                 "detail": "Portal niedostępny"
@@ -23,37 +31,34 @@ def portal_router(
                 else "Brak uprawnień lub niepoprawne żądanie"
             },
             status_code=code,
-            headers={
-                "Cache-Control": "no-store",
-                **({"Retry-After": "60"} if code in (429, 503) else {}),
-            },
+            headers=headers,
         )
 
     @router.post("/panel/portal", include_in_schema=False)
     async def portal(request: Request):
         if not service.settings.test_mode:
-            return failure(503)
+            return failure(request, 503)
         try:
             principal = await run_in_threadpool(identity_resolver, request)
         except CheckoutUnavailable:
-            return failure(503)
+            return failure(request, 503)
         if not isinstance(principal, AuthenticatedCustomer):
-            return failure(401)
+            return failure(request, 401)
         if request.headers.get("origin") != service.settings.origin:
-            return failure(403)
+            return failure(request, 403)
         async for chunk in request.stream():
             if chunk:
                 return failure(
-                    400
+                    request, 400
                 )  # no email/customer/order/return_url or other input accepted
         try:
             url = await run_in_threadpool(service.start, principal)
         except PortalForbidden:
-            return failure(403)
+            return failure(request, 403)
         except CheckoutBusy:
-            return failure(429)
+            return failure(request, 429)
         except CheckoutUnavailable:
-            return failure(503)
+            return failure(request, 503)
         return RedirectResponse(
             url, status_code=303, headers={"Cache-Control": "no-store"}
         )

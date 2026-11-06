@@ -61,7 +61,7 @@ def test_owner_gets_only_own_customer_and_server_return_url(portal):
     service, fake = portal
     assert service.start(AuthenticatedCustomer(1)) == URL
     assert fake.calls == [
-        {"customer": "cus_synthetic", "return_url": "https://example.test/zamowienie"}
+        {"customer": "cus_synthetic", "return_url": "https://example.test/panel"}
     ]
     with sqlite3.connect(service.store.path) as c:
         c.execute("INSERT INTO b2b_customers(email) VALUES('other@example.test')")
@@ -120,7 +120,7 @@ def test_real_sdk_portal_payload_and_headers_are_pinned(subscription):
 
         assert parse_qs(request.body) == {
             "customer": ["cus_synthetic"],
-            "return_url": ["https://example.test/zamowienie"],
+            "return_url": ["https://example.test/panel"],
         }
         assert request.headers["Stripe-Version"] == "2024-06-20"
         assert request.headers["Authorization"] == "Bearer sk_test_synthetic123"

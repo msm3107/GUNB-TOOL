@@ -31,12 +31,21 @@ class SecurityHeadersMiddleware:
                 headers = MutableHeaders(scope=message)
                 for name, value in SECURITY_HEADERS.items():
                     headers[name] = value
+                if scope.get("path") in {"/panel", "/panel/uwagi", "/panel/rozliczenia"}:
+                    # Chromium checks form-action against the POST's redirects.
+                    # Only this page's native Portal form needs the exact host
+                    # already enforced by PortalService; no wildcard or script relaxation.
+                    headers["Content-Security-Policy"] = SECURITY_HEADERS["Content-Security-Policy"].replace(
+                        "form-action 'self';", "form-action 'self' https://billing.stripe.com;"
+                    )
                 if scope.get("path") in {
                     "/logowanie",
                     "/auth/verify",
                     "/auth/magic-link",
                     "/auth/logout",
                     "/panel",
+                    "/panel/uwagi",
+                    "/panel/rozliczenia",
                 }:
                     # Chromium's native non-CORS form POST can send Origin:null
                     # under no-referrer. Fragments never enter HTTP Referer;
