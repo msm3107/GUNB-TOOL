@@ -362,7 +362,11 @@ Formularz `POST /panel/uwagi` przyjmuje do24KiB form-urlencoded: numer sprawy,
 typ i opis do1000 znaków. Istniejący IssueTracker sprawdza doręczenie klientowi,
 deduplikuje uwagi, egzekwuje20 nowych zgłoszeń/h i oznacza dane do weryfikacji.
 Pochodzenie musi dokładnie zgadzać się ze skonfigurowanym origin; ID klienta
-pochodzi wyłącznie z sesji. Błędy zachowują poprawnie sparsowane pola; sukces
+pochodzi wyłącznie z sesji. Błędy zachowują poprawnie sparsowane pola także wtedy,
+gdy po uwierzytelnieniu nie można odczytać snapshotu panelu: formularz pozostaje
+dostępny z escapowanym opisem, bez danych konta ze starego odczytu. Ponowienie
+nadal sprawdza sesję i uprawnienia; nie tworzy duplikatu zgłoszenia. Jeśli nie
+można zweryfikować sesji, formularz nie jest udostępniany. Sukces
 przekierowuje303, aby odświeżenie nie wysyłało ponownie formularza.
 
 Testowy billing ma natywny formularz `POST /panel/rozliczenia`, używający

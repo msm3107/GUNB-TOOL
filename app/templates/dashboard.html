@@ -44,15 +44,16 @@
           <details><summary>Powiąż lub ponów uzgodnienie abonamentu</summary><p class="field-help" id="billing-help">Wpisz oryginalny, poufny UUID żądania Checkout. Nie podawaj identyfikatora Session ani danych karty. Dowód i bieżący abonament zostaną zweryfikowane.</p><form method="post" action="/panel/rozliczenia"><label for="billing-proof">Oryginalny UUID Checkout</label><input id="billing-proof" type="password" name="request_token" required maxlength="36" autocomplete="off" spellcheck="false" aria-describedby="billing-help"><button class="button-link" type="submit">Potwierdź rozliczenia</button></form></details>
         {% else %}<p class="field-help">Obsługa rozliczeń testowych jest obecnie niedostępna.</p>{% endif %}
       </section>
-      <section class="dashboard-card" aria-labelledby="issue-heading"><p class="eyebrow">Jawna jakość danych</p><h2 id="issue-heading">Zgłoś uwagę</h2>
-        <p class="field-help" id="issue-help">Numer sprawy znajdziesz w swojej doręczonej paczce. Przyjmujemy do 20 nowych uwag na godzinę; ponowienie tej samej uwagi nie tworzy duplikatu.</p>
-        <form method="post" action="/panel/uwagi"><label for="issue-case">Numer sprawy</label><input id="issue-case" name="case_id" required maxlength="512" value="{{ issue_values.get('case_id','') }}" aria-describedby="issue-help">
-          <label for="issue-type">Co wymaga sprawdzenia?</label><select id="issue-type" name="issue_type" required>{% for key,label in issue_types.items() %}<option value="{{ key }}"{% if issue_values.get('issue_type') == key %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
-          <label for="issue-description">Opis (do 1000 znaków)</label><textarea id="issue-description" name="description" maxlength="1000" rows="4" aria-describedby="description-help">{{ issue_values.get('description','') }}</textarea><p class="field-help" id="description-help">Opis wymagany dla „Inna uwaga”. Zgłoszenie jest informacją do weryfikacji, nie potwierdzeniem błędu.</p><button class="button-link" type="submit">Wyślij uwagę</button>
-        </form>
-      </section>
+      {% include "components/issue_form.html" %}
     </div>
   </div>
-  {% else %}<p><a class="dashboard-more" href="/panel">Otwórz ponownie panel</a></p>{% endif %}
+  {% else %}
+  <div class="dashboard-layout">
+    <div><p><a class="dashboard-more" href="/panel">Otwórz ponownie panel</a></p></div>
+    {% if authenticated %}
+    <div class="dashboard-sidebar">{% include "components/issue_form.html" %}</div>
+    {% endif %}
+  </div>
+  {% endif %}
 </section>
 {% endblock %}

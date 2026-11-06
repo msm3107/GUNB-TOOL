@@ -151,6 +151,7 @@ def dashboard_router(
             context={
                 "page_title": "Panel klienta",
                 "dashboard": snapshot,
+                "authenticated": principal is not None,
                 "message": message,
                 "issue_values": values or {},
                 "issue_types": ISSUE_TYPES,

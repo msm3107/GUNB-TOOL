@@ -42,3 +42,9 @@
 - Independent reviewer confirmed native Portal failure503/429/403 rendered raw JSON without navigation. Reproduced RED503 vs expected303.
 - HTML Accept now redirects only to fixed /panel?notice=portal-error, no-store and retry hints; panel shows generic retry/pairing guidance. API JSON status/body unchanged. No provider URL or proof echoed.
 - Three regression cases cover SDK failure, process quota and lost trusted mapping, native return+panel and JSON compatibility. Same-reviewer recheck and exact newHEAD CI required.
+
+## UX-ISSUE-01 review follow-up
+- External reviewer confirmed that snapshot failure after authenticated issue submission removed the form and unsaved fields from503 HTML. Real OS replacement lock acquired after genuine session verification reproduces the missing form (RED).
+- Keep authenticated state separate from snapshot availability. Share the existing escaped issue form between ordinary panel and authenticated fallback; do not retain/render account snapshots or billing proofs during failure.
+- Regression parses retained503 form values, retries those exact fields after unlock and repeats the POST; one issue is stored. Also check session-verification failure hides the form, unavailable GET shows an empty authenticated form, case/textarea injection remains escaped and billing UUID is never reflected.
+- No core/SQL/schema/dependency/CSRF changes; same-reviewer follow-up and exactHEAD CI required.

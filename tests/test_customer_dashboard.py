@@ -1,4 +1,6 @@
 import sqlite3
+from contextlib import ExitStack, contextmanager
+from html.parser import HTMLParser
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +19,62 @@ from tests.test_auth_store import (
     auth_store_fixture as _auth_store_fixture,  # noqa: F401
 )
 from tests.test_issue_tracker import deliver_case
+
+
+class _IssueForm(HTMLParser):
+    """Read the retry payload from rendered HTML, including decoded entities."""
+
+    def __init__(self, html):
+        super().__init__()
+        self.values = {}
+        self.active = False
+        self.textarea = self.select = None
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self.active = attrs.get("action") == "/panel/uwagi"
+        if not self.active:
+            return
+        if tag == "input":
+            self.values[attrs.get("name")] = attrs.get("value", "")
+        elif tag == "textarea":
+            self.textarea = attrs["name"]
+            self.values[self.textarea] = ""
+        elif tag == "select":
+            self.select = attrs["name"]
+        elif tag == "option" and "selected" in attrs:
+            self.values[self.select] = attrs["value"]
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self.active = False
+        elif tag == "textarea":
+            self.textarea = None
+        elif tag == "select":
+            self.select = None
+
+    def handle_data(self, data):
+        if self.active and self.textarea:
+            self.values[self.textarea] += data
+
+
+@contextmanager
+def _lock_after_real_auth(monkeypatch, path):
+    from core.instance import database_replacement_lock
+
+    original = AuthStore.session_customer
+    with ExitStack() as locks, monkeypatch.context() as patch:
+
+        def session_then_lock(self, *args, **kwargs):
+            customer_id = original(self, *args, **kwargs)
+            assert customer_id == 1  # the real session was checked before the fault
+            locks.enter_context(database_replacement_lock(path))
+            return customer_id
+
+        patch.setattr(AuthStore, "session_customer", session_then_lock)
+        yield
 
 
 @pytest.fixture
@@ -456,3 +514,106 @@ def test_native_portal_errors_return_to_panel_but_api_keeps_json(
     assert api.status_code == status and api.headers["content-type"].startswith(
         "application/json"
     )
+
+
+def test_issue_lock_after_auth_preserves_escaped_form_then_retry_saves_once(
+    dashboard, monkeypatch
+):
+    client, sender, path = dashboard
+    login(client, sender)
+    values = {
+        "case_id": "OWN/CASE",
+        "issue_type": "inna_uwaga",
+        "description": 'Niezapisany opis </textarea><script>alert("synthetic")</script> & "cytat"',
+    }
+    with _lock_after_real_auth(monkeypatch, path):
+        response = client.post(
+            "/panel/uwagi",
+            data=values,
+            headers={"Origin": "https://example.test"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 503
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["retry-after"] == "60"
+        retry_values = _IssueForm(response.text).values
+        assert retry_values == values
+        assert "&lt;/textarea&gt;&lt;script&gt;" in response.text
+        assert "<script>" not in response.text
+        assert "person@example.test" not in response.text
+        assert "FOREIGN_COMPANY" not in response.text
+        with sqlite3.connect(path) as c:
+            assert c.execute("SELECT count(*) FROM issue_reports").fetchone() == (0,)
+            assert c.execute(
+                "SELECT sum(wymaga_weryfikacji) FROM investments"
+            ).fetchone() == (0,)
+    # Retry the actual fields recovered from the503 HTML, then repeat that POST.
+    for _ in range(2):
+        response = client.post(
+            "/panel/uwagi",
+            data=retry_values,
+            headers={"Origin": "https://example.test"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/panel?notice=issue"
+    with sqlite3.connect(path) as c:
+        assert c.execute(
+            "SELECT customer_id,id_sprawy,typ,opis FROM issue_reports"
+        ).fetchall() == [(1, "OWN/CASE", "inna_uwaga", values["description"])]
+
+
+def test_issue_retry_form_is_not_exposed_when_session_cannot_be_verified(dashboard):
+    from core.instance import database_replacement_lock
+
+    client, sender, path = dashboard
+    login(client, sender)
+    with database_replacement_lock(path):
+        response = client.post(
+            "/panel/uwagi",
+            data={
+                "case_id": "OWN/CASE",
+                "issue_type": "inna_uwaga",
+                "description": "UNPARSED_PRIVATE_INPUT",
+            },
+            headers={"Origin": "https://example.test"},
+        )
+    assert response.status_code == 503
+    assert 'action="/panel/uwagi"' not in response.text
+    assert "UNPARSED_PRIVATE_INPUT" not in response.text
+
+
+@pytest.mark.parametrize("page", ["get", "unsafe-case", "billing"])
+def test_authenticated_snapshot_failure_keeps_only_safe_issue_form(
+    dashboard, monkeypatch, page
+):
+    client, sender, path = dashboard
+    login(client, sender)
+    with _lock_after_real_auth(monkeypatch, path):
+        if page == "get":
+            response = client.get("/panel")
+        else:
+            values = {
+                "case_id": '"><img src=x onerror="alert(1)">',
+                "issue_type": "inna_uwaga",
+                "description": "Opis pozostaje przy formularzu",
+            }
+            response = client.post(
+                "/panel/rozliczenia" if page == "billing" else "/panel/uwagi",
+                data={"request_token": UUID} if page == "billing" else values,
+                headers={"Origin": "https://example.test"},
+            )
+    assert response.status_code == 503
+    form = _IssueForm(response.text)
+    assert 'action="/panel/uwagi"' in response.text
+    if page == "unsafe-case":
+        assert form.values == values
+        assert "<img src=x" not in response.text
+    else:
+        assert form.values["case_id"] == form.values["description"] == ""
+    assert UUID not in response.text
+    assert "person@example.test" not in response.text
+    assert "<script>owner</script>" not in response.text
+    assert "FOREIGN_COMPANY" not in response.text
+    assert "/private/SECRET.xlsx" not in response.text
+    assert 'action="/panel/portal"' not in response.text
