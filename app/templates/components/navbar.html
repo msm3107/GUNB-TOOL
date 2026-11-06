@@ -3,13 +3,24 @@
     <img class="brand-logo" src="{{ url_for('static', path='/images/company-logo.png') }}" alt="" width="83" height="83">
     <span>Żółta Tablica</span>
   </a>
-  <div class="nav-links">
+  <div class="navigation-actions">
+    <a class="account-link" href="/panel">Konto</a>
+    <details class="navigation-menu">
+      <summary>Menu</summary>
+      <div class="nav-links">
+    {% if account_navigation %}
+    <a href="/panel#packages-heading">Paczki</a>
+    <a href="/panel#orders-heading">Zamówienia</a>
+    <a href="/panel#subscription-heading">Rozliczenia</a>
+    <a href="/panel#issue-heading">Zgłoś uwagę</a>
+    {% else %}
     <a href="{{ url_for('home') }}#jak-to-dziala">Jak to działa</a>
     <a href="{{ url_for('home') }}#przyklady">Przykłady</a>
     <a href="{{ url_for('home') }}#oferta">Paczka i abonament</a>
     <a href="{{ url_for('home') }}#pytania">FAQ</a>
+    {% endif %}
     <a href="{{ url_for('order_configurator') }}">Konfigurator</a>
-    <a href="/logowanie">Logowanie</a>
-    <a href="/panel">Panel klienta</a>
+      </div>
+    </details>
   </div>
 </nav>

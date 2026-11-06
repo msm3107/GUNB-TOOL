@@ -1,11 +1,13 @@
 {% extends "base.html" %}
+{% block body_class %}work-page{% endblock %}
+{% block navigation %}{% with account_navigation=true %}{% include "components/navbar.html" %}{% endwith %}{% endblock %}
 {% block meta %}<meta name="robots" content="noindex, nofollow">{% endblock %}
 {% block content %}
 <section class="container page-section dashboard configurator" aria-labelledby="dashboard-heading">
   <div class="dashboard-heading">
-    <div><p class="eyebrow">Twoje konto · dostęp testowy</p><h1 id="dashboard-heading">Twój rejon.<br>Twoje inwestycje.</h1>
+    <div><p class="eyebrow">Twoje konto · dostęp testowy</p><h1 id="dashboard-heading">Twój rejon. Twoje inwestycje.</h1>
     {% if dashboard %}<p class="field-help">{{ dashboard.company }}{% if dashboard.company %} · {% endif %}{{ dashboard.email }}</p>{% endif %}</div>
-    <form method="post" action="/auth/logout"><button class="button-link" type="submit">Wyloguj się</button></form>
+    <form method="post" action="/auth/logout"><button class="button-secondary" type="submit">Wyloguj się</button></form>
   </div>
   {% if message %}<p class="dashboard-notice" role="status">{{ message }}</p>{% endif %}
   <p class="sales-note">Środowisko testowe. Sprzedaż pozostaje wyłączona. Logowanie nie potwierdza płatności ani doręczenia paczki.</p>

@@ -120,6 +120,17 @@ def test_anonymous_dashboard_redirects_and_real_login_sees_only_own_data(dashboa
     assert "Przygotowana" in response.text and "Doręczona" in response.text
 
 
+def test_panel_has_local_section_navigation_and_secondary_logout(dashboard):
+    client, sender, _ = dashboard
+    login(client, sender)
+    response = client.get("/panel")
+    header = response.text.split("</header>", 1)[0]
+    for anchor in ("packages-heading", "orders-heading", "subscription-heading"):
+        assert f'href="/panel#{anchor}"' in header
+    assert 'class="button-secondary" type="submit">Wyloguj się' in response.text
+    assert 'class="work-page"' in response.text
+
+
 def test_dashboard_issue_prg_retry_and_ownership(dashboard):
     client, sender, path = dashboard
     login(client, sender)
