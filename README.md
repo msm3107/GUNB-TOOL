@@ -385,6 +385,35 @@ ani zależności. Wszystkie odpowiedzi panelu są `no-store`; sprzedaż nadal wy
 
 ## Testy
 
+UX-02: konfigurator zachowuje wybrane powiaty również przy zmianie województwa,
+błędzie metadanych i walidacji; do rozszerzenia na całe województwo służy jawny
+przycisk czyszczenia. Wyszukiwanie powiatów nie zmienia zaznaczeń. Błędy API nadal
+zawierają `detail`, a walidacja może dodawać `field_errors`. Sukces zachowuje
+dotychczasowe cztery pola. Przy zero widoczny jest zakres i ograniczenie kompletności
+importu; zmiana obszaru lub branży wymaga działania użytkownika.
+
+Opcjonalny szkic zawiera wyłącznie dozwolone filtry w wersjonowanym `sessionStorage`
+tej karty. Nie zawiera emaili, tokenów ani UUID Checkout. Odtworzenie przelicza wynik;
+nieznana wersja/niezgodny szkic wymaga ręcznego wyboru i nie przelicza szerszych
+domyślnych filtrów. Brak pamięci/skryptu nie blokuje podstawowego formularza.
+Wylogowanie zgłasza zamiar wyczyszczenia szkicu; klucz jest usuwany dopiero na GET
+logowania potwierdzającym brak sesji. Błąd POST logout nie usuwa pracy.
+Odczyt estymatora ma timeout10s, przestarzałe odpowiedzi są odrzucane. Ponowienie po
+błędzie/timeoutcie jest ręczne; brak automatycznego retry płatności lub zapisów.
+
+Zwykłe testy uruchamiaj z `python -m pytest --ignore=tests/browser`. Osobne środowisko
+przeglądarkowe (zależności wyłącznie developerskie):
+
+    python -m pip install -c requirements-browser.lock -r requirements-browser.txt
+    python -m playwright install chromium firefox
+    python -m pytest -o addopts= tests/browser --browser chromium --browser firefox
+
+CI ma osobny obowiązkowy job browser na Python3.12; instaluje przeglądarki z
+`--with-deps` na Linuxie. Produkcja nadal instaluje tylko wymagania produkcyjne.
+Testy uruchamiają własny serwer loopback i tymczasową syntetyczną bazę, z atrapą
+poczty i przechwytywaniem żądań. Nie wykonują realnego Stripe/SMTP ani zewnętrznego
+importu. Sposób uruchomienia: [Playwright Python](https://playwright.dev/python/docs/intro).
+
 Zainstaluj zależności deweloperskie i uruchom zestaw testów:
 
     python -m pip install -c requirements.lock -r requirements-dev.txt

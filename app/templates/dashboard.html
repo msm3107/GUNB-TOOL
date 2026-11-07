@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block body_class %}work-page{% endblock %}
+{% block filter_draft %}<script src="{{ url_for('static', path='/filter-draft.js') }}" defer></script>{% endblock %}
 {% block navigation %}{% with account_navigation=true %}{% include "components/navbar.html" %}{% endwith %}{% endblock %}
 {% block meta %}<meta name="robots" content="noindex, nofollow">{% endblock %}
 {% block content %}

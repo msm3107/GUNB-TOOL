@@ -81,6 +81,7 @@ def auth_router(
                 "view": view,
                 "message": message,
                 "logged_in": logged_in,
+                "signed_out": request.method == 'GET' and status == 200 and service.settings.enabled and not logged_in,
             },
             status_code=status,
             headers={

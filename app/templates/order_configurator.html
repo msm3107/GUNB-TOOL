@@ -1,54 +1,72 @@
 {% extends "base.html" %}
+{% block filter_draft %}<script src="{{ url_for('static', path='/filter-draft.js') }}" defer></script>{% endblock %}
+{% macro field_error(name) %}<p class="field-error" id="error-{{ name }}" data-error-for="{{ name }}"{% if name not in field_errors %} hidden{% endif %}>{{ field_errors.get(name,'') }}</p>{% endmacro %}
+{% macro field_state(name, help='') %}aria-describedby="{{ help }} error-{{ name }}" aria-invalid="{{ 'true' if name in field_errors else 'false' }}"{% endmacro %}
 {% block content %}
 <section class="container page-section configurator" aria-labelledby="configurator-heading">
   <p class="eyebrow">Twój obszar. Twoja branża.</p>
   <h1 id="configurator-heading">Sprawdź zakres<br>swojej paczki.</h1>
   <p class="intro">Wybierz obszar i branżę, żeby policzyć pasujące inwestycje w zaimportowanych danych. To podgląd zakresu — nie składa zamówienia i nie uruchamia płatności.</p>
   <div class="configurator-layout">
-  <form id="package-form" method="post" action="{{ url_for('order_configurator') }}#estimate-heading" data-estimate-url="{{ url_for('package_estimate') }}" data-ready="{{ 'false' if error else 'true' }}">
+  <form id="package-form" method="post" action="{{ url_for('order_configurator') }}#estimate-heading" data-estimate-url="{{ url_for('package_estimate') }}" data-native="{{ 'true' if request.method == 'POST' else 'false' }}" data-ready="{{ 'false' if error else 'true' }}">
+    <div id="filter-errors" role="alert"{% if not error %} hidden{% endif %}><p>{{ error or '' }}</p><ul>{% for key,message in field_errors.items() %}<li><a href="#{{ key }}">{{ message }}</a></li>{% endfor %}</ul></div>
+    <p id="draft-status" class="field-help" role="status"></p>
     <fieldset>
       <legend>01 / Obszar</legend>
       <label for="wojewodztwo">Województwo</label>
-      <select id="wojewodztwo" name="wojewodztwo" required>
+      <select id="wojewodztwo" name="wojewodztwo" required {{ field_state('wojewodztwo') }}>
+        {% if selection.wojewodztwo not in voivodeships|map(attribute='code')|list %}<option value="{{ selection.wojewodztwo }}" selected>Wybierz poprawne województwo</option>{% endif %}
         {% for region in voivodeships %}<option value="{{ region.code }}"{% if selection.wojewodztwo == region.code %} selected{% endif %}>{{ region.name }}</option>{% endfor %}
       </select>
-      <label for="powiaty">Powiaty — opcjonalnie</label>
-      <select id="powiaty" name="powiaty" multiple size="5" aria-describedby="county-help">
-        {% for code, label in counties %}<option value="{{ code }}" data-region="{{ code[:2] }}"{% if code in selection.powiaty %} selected{% endif %}>{{ code }} — {{ label }}</option>{% endfor %}
-      </select>
+      {{ field_error('wojewodztwo') }}
+      <fieldset id="powiaty" tabindex="-1" {{ field_state('powiaty','county-help') }}><legend>Powiaty — opcjonalnie</legend>
+      <div id="county-tools" hidden><label for="county-search">Znajdź powiat</label><input id="county-search" type="search" autocomplete="off"><button type="button" id="county-clear" class="button-secondary">Wyczyść wybór</button><button type="button" id="county-whole" class="button-secondary">Całe województwo</button><p id="county-count" role="status"></p></div>
+      <div class="county-options" id="county-options">{% for code,label in counties %}<label data-county-label><input type="checkbox" name="powiaty" value="{{ code }}" data-region="{{ code[:2] }}"{% if code in selection.powiaty %} checked{% endif %}> {{ label }} <span class="field-help">({{ code }})</span></label>{% endfor %}</div>
+      {{ field_error('powiaty') }}
+      </fieldset>
       <p class="field-help" id="county-help">Pozostaw puste, aby uwzględnić całe województwo. Lista obejmuje powiaty obecne w danych; możesz zaznaczyć do 20.</p>
       {% if county_warning %}<p class="field-help" role="status">{{ county_warning }}</p>{% endif %}
     </fieldset>
     <fieldset>
       <legend>02 / Branża i typy inwestycji</legend>
       <label for="branza">Branża</label>
-      <select id="branza" name="branza" required aria-describedby="trade-help">
+      <select id="branza" name="branza" required {{ field_state('branza','trade-help') }}>
+        {% if selection.branza not in trades|map(attribute='key')|list %}<option value="{{ selection.branza }}" selected>Wybierz poprawną branżę</option>{% endif %}
         {% for trade in trades %}<option value="{{ trade.key }}"{% if selection.branza == trade.key %} selected{% endif %}>{{ trade.label.split(' ', 1)[1] }}</option>{% endfor %}
       </select>
+      {{ field_error('branza') }}
       <p class="field-help" id="trade-help">Branża wyznacza szacunkowe okno od daty decyzji, a przy jej braku od daty wniosku. Materiały i stan surowy nie ograniczają wieku sprawy. Jeśli import nie obejmuje odpowiednich dat, wynik może wynosić zero. Okno nie potwierdza faktycznego etapu robót.</p>
-      <div class="category-options">
+      <div class="category-options" id="kategorie" role="group" aria-label="Typy inwestycji" tabindex="-1" {{ field_state('kategorie') }}>
         {% for key, label in categories.items() %}<label><input type="checkbox" name="kategorie" value="{{ key }}"{% if key in selection.kategorie %} checked{% endif %}> {{ label }}</label>{% endfor %}
       </div>
+      {{ field_error('kategorie') }}
     </fieldset>
-    <details class="radius-options">
+    <details class="radius-options"{% if selection.lat or selection.lon or selection.promien_km or 'lat' in field_errors or 'lon' in field_errors or 'promien_km' in field_errors %} open{% endif %}>
       <summary>Promień od bazy — opcjonalnie</summary>
       <div class="radius-fields">
         <label for="lat">Szerokość geograficzna (N, WGS84)</label>
-        <input id="lat" name="lat" type="number" min="49" max="55.1" step="any" value="{{ selection.lat if selection.lat is not none else '' }}" inputmode="decimal">
+        <input id="lat" name="lat" type="{{ 'text' if 'lat' in field_errors else 'number' }}" min="49" max="55.1" step="any" value="{{ selection.lat if selection.lat is not none else '' }}" inputmode="decimal" {{ field_state('lat') }}>
+        {{ field_error('lat') }}
         <label for="lon">Długość geograficzna (E, WGS84)</label>
-        <input id="lon" name="lon" type="number" min="14" max="24.5" step="any" value="{{ selection.lon if selection.lon is not none else '' }}" inputmode="decimal">
+        <input id="lon" name="lon" type="{{ 'text' if 'lon' in field_errors else 'number' }}" min="14" max="24.5" step="any" value="{{ selection.lon if selection.lon is not none else '' }}" inputmode="decimal" {{ field_state('lon') }}>
+        {{ field_error('lon') }}
         <label for="promien_km">Promień w kilometrach (1–200)</label>
-        <input id="promien_km" name="promien_km" type="number" min="1" max="200" step="any" value="{{ selection.promien_km if selection.promien_km is not none else '' }}" inputmode="decimal">
+        <input id="promien_km" name="promien_km" type="{{ 'text' if 'promien_km' in field_errors else 'number' }}" min="1" max="200" step="any" value="{{ selection.promien_km if selection.promien_km is not none else '' }}" inputmode="decimal" {{ field_state('promien_km') }}>
+        {{ field_error('promien_km') }}
         <p class="field-help">Podaj wszystkie trzy wartości albo pozostaw wszystkie puste. Promień zawęża wybrany obszar; pomija lokalizacje gminne i znane rozbieżności działek. Centroid działki nie wskazuje położenia budynku.</p>
       </div>
     </details>
     <button class="button-link" type="submit">Policz inwestycje <span aria-hidden="true">↗</span></button>
+    <p class="compact-estimate" id="estimate-mobile" role="status">Wynik pojawi się po przeliczeniu.</p>
     <noscript><p class="field-help">Po naciśnięciu przycisku wynik pojawi się na tej stronie.</p></noscript>
   </form>
   <aside class="estimate-panel" aria-labelledby="estimate-heading">
     <p class="eyebrow">Podgląd zakresu</p>
     <h2 id="estimate-heading">Pasujące inwestycje</h2>
     <p id="estimate-status" role="status" aria-live="polite">{% if error %}{{ error }}{% elif estimate %}Liczba pasujących inwestycji: {{ estimate.count }}.{% else %}Ustaw filtry i policz inwestycje.{% endif %}</p>
+    <p class="field-help" id="estimate-scope">Zakres: {{ selection.wojewodztwo }}; powiaty: {{ selection.powiaty|join(', ') if selection.powiaty else 'całe województwo' }}; branża: {{ selection.branza }}; typy: {{ selection.kategorie|join(', ') }}; punkt N/E/promień km: {{ selection.lat if selection.lat is not none else '—' }}/{{ selection.lon if selection.lon is not none else '—' }}/{{ selection.promien_km if selection.promien_km is not none else '—' }}.</p>
+    <button class="button-secondary" id="estimate-retry" type="submit" form="package-form">Przelicz ponownie</button>
+    <div id="estimate-zero"{% if not estimate or estimate.count != 0 %} hidden{% endif %}><p>Brak pasujących spraw w dostępnych danych. To nie potwierdza kompletności importu.</p><a href="#branza">Zmień branżę</a> · <a href="#powiaty">Zmień obszar</a></div>
     <div id="estimate-result"{% if estimate is none %} hidden{% endif %}>
       <p class="estimate-count" id="estimate-count">{{ estimate.count if estimate else '' }}</p>
       <dl>

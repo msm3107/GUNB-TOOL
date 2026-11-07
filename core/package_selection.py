@@ -15,6 +15,12 @@ from .storage import investment_from_row
 from .teryt import VOIVODESHIPS
 
 
+class PackageFilterError(ValueError):
+    def __init__(self, field: str, message: str):
+        super().__init__(message)
+        self.field = field
+
+
 @dataclass(frozen=True)
 class PackageFilters:
     wojewodztwo: str
@@ -27,24 +33,24 @@ class PackageFilters:
 
     def __post_init__(self) -> None:
         if not isinstance(self.wojewodztwo, str) or self.wojewodztwo not in {item.code for item in VOIVODESHIPS}:
-            raise ValueError("Wybierz województwo z listy")
+            raise PackageFilterError("wojewodztwo", "Wybierz województwo z listy")
         if not isinstance(self.branza, str) or get_trade(self.branza) is None:
-            raise ValueError("Wybierz branżę z listy")
+            raise PackageFilterError("branza", "Wybierz branżę z listy")
         if (not isinstance(self.powiaty, tuple) or len(self.powiaty) > 20
                 or any(not isinstance(code, str) or len(code) != 4 or not code.isascii()
                        or not code.isdigit() or not code.startswith(self.wojewodztwo) for code in self.powiaty)
                 or len(set(self.powiaty)) != len(self.powiaty)):
-            raise ValueError("Wybierz do 20 różnych powiatów należących do województwa")
+            raise PackageFilterError("powiaty", "Wybierz do 20 różnych powiatów należących do województwa")
         if (not isinstance(self.kategorie, tuple) or not 1 <= len(self.kategorie) <= len(LEAD_CATEGORIES)
                 or any(item not in LEAD_CATEGORIES for item in self.kategorie)
                 or len(set(self.kategorie)) != len(self.kategorie)):
-            raise ValueError("Wybierz co najmniej jeden typ inwestycji z listy")
+            raise PackageFilterError("kategorie", "Wybierz co najmniej jeden typ inwestycji z listy")
         coordinates = (self.lat, self.lon, self.promien_km)
         if any(value is not None for value in coordinates):
             if any(type(value) not in (int, float) or not math.isfinite(value) for value in coordinates):
-                raise ValueError("Promień wymaga dwóch współrzędnych i skończonej odległości")
+                raise PackageFilterError("coordinates", "Promień wymaga dwóch współrzędnych i skończonej odległości")
             if not (49 <= self.lat <= 55.1 and 14 <= self.lon <= 24.5 and 1 <= self.promien_km <= 200):
-                raise ValueError("Baza: WGS84 w Polsce (49–55,1 N, 14–24,5 E), promień 1–200 km")
+                raise PackageFilterError("coordinates", "Baza: WGS84 w Polsce (49–55,1 N, 14–24,5 E), promień 1–200 km")
 
 
 @dataclass(frozen=True)
