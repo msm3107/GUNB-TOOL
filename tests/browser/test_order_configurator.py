@@ -83,6 +83,76 @@ def test_draft_restore_keeps_exact_scope(page, app_server, county):
     assert request.value.post_data_json == filters
 
 
+def test_conflicting_draft_survives_reload_trade_edit_and_retry(page, app_server):
+    requests = []
+    page.on(
+        "request",
+        lambda request: (
+            requests.append(request.post_data_json)
+            if request.url.endswith("/api/estimate")
+            else None
+        ),
+    )
+    ready(page, app_server)
+    page.clock.install()
+    page.locator('input[name=powiaty][value="2814"]').check()
+    for category in page.locator('input[name=kategorie]').all():
+        category.uncheck()
+    page.locator('input[name=kategorie][value="komercyjna"]').check()
+    page.locator(".radius-options summary").click()
+    page.locator("#lat").fill("53")
+    page.locator("#lon").fill("20")
+    page.locator("#promien_km").fill("10")
+    page.select_option("#wojewodztwo", "14")
+    filters = {
+        "wojewodztwo": "14",
+        "branza": "materialy",
+        "powiaty": ["2814"],
+        "kategorie": ["komercyjna"],
+        "lat": 53.0,
+        "lon": 20.0,
+        "promien_km": 10.0,
+    }
+
+    def assert_preserved():
+        expect(page.locator("#wojewodztwo")).to_have_value(filters["wojewodztwo"])
+        expect(page.locator("#branza")).to_have_value(filters["branza"])
+        assert page.locator("input[name=powiaty]:checked").evaluate_all(
+            "nodes => nodes.map(n => n.value)"
+        ) == filters["powiaty"]
+        assert page.locator("input[name=kategorie]:checked").evaluate_all(
+            "nodes => nodes.map(n => n.value)"
+        ) == filters["kategorie"]
+        for key in ("lat", "lon", "promien_km"):
+            assert float(page.locator("#" + key).input_value()) == filters[key]
+        assert page.evaluate("key => JSON.parse(sessionStorage.getItem(key)).filters", KEY) == filters
+
+    assert_preserved()
+    requests.clear()
+    page.reload()
+    assert_preserved()
+    expect(page.locator("#error-powiaty")).to_contain_text("innego województwa")
+    page.select_option("#branza", "dach")
+    filters["branza"] = "dach"
+    page.clock.fast_forward(401)
+    assert_preserved()
+    expect(page.locator("#error-powiaty")).to_contain_text("innego województwa")
+    page.get_by_role("button", name="Przelicz ponownie").click()
+    assert_preserved()
+    expect(page.locator("#estimate-result")).to_be_hidden()
+    assert requests == []
+    page.reload()
+    assert_preserved()
+    assert requests == []
+    with page.expect_request("**/api/estimate") as corrected:
+        page.select_option("#wojewodztwo", "28")
+        page.clock.fast_forward(401)
+    filters["wojewodztwo"] = "28"
+    assert corrected.value.post_data_json == filters
+    expect(page.locator("#estimate-result")).to_be_visible()
+    assert_preserved()
+
+
 def test_storage_denied_still_estimates(page, app_server):
     page.add_init_script(
         "Object.defineProperty(window,'sessionStorage',{get(){throw new DOMException('denied','SecurityError')}})"

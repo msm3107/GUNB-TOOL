@@ -127,7 +127,7 @@
     const hasOption = (name, v) => [...form.elements.namedItem(name).options].some(o => o.value === v);
     const categoryValues = [...form.querySelectorAll("input[name=kategorie]")].map(n => n.value);
     if (!hasOption("wojewodztwo", value.wojewodztwo) || !hasOption("branza", value.branza) ||
-        value.kategorie.some(v => !categoryValues.includes(v)) || value.powiaty.some(v => !/^\d{4}$/.test(v) || !v.startsWith(value.wojewodztwo))) {
+        value.kategorie.some(v => !categoryValues.includes(v)) || value.powiaty.some(v => !/^\d{4}$/.test(v))) {
       draftStatus.textContent = "Szkic wymaga ponownego wyboru filtrów. Niczego nie przeliczono automatycznie."; return false;
     }
     region.value = value.wojewodztwo; form.elements.branza.value = value.branza;
@@ -140,7 +140,7 @@
     for (const input of form.querySelectorAll("input[name=kategorie]")) input.checked = value.kategorie.includes(input.value);
     for (const key of ["lat", "lon", "promien_km"]) form.elements.namedItem(key).value = value[key] ?? "";
     if (value.lat !== null || value.lon !== null || value.promien_km !== null) form.querySelector(".radius-options").open = true;
-    draftStatus.textContent = "Przywrócono dokładny zakres szkicu. Wynik zostanie przeliczony.";
+    draftStatus.textContent = "Przywrócono dokładny zakres szkicu. Sprawdź wynik i ewentualne błędy pól.";
     return true;
   }
   const canStart = restore(); filterCounties(); scope(); document.getElementById("county-tools").hidden = false;
