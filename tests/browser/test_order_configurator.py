@@ -1,4 +1,5 @@
 import json
+from urllib.parse import urlencode
 
 import pytest
 
@@ -228,6 +229,54 @@ def test_native_estimate_preserves_scope(browser, app_server):
         expect(page.locator('input[name=powiaty][value="2814"]')).to_be_checked()
 
 
+@pytest.mark.parametrize(
+    ("numbers", "county"),
+    [
+        ({"lat": "bad-lat", "lon": "bad-lon", "promien_km": "bad-radius"}, "2814"),
+        ({"lat": "nan", "lon": "inf", "promien_km": "-inf"}, "1401"),
+    ],
+)
+def test_native_estimate_retains_all_invalid_numbers(browser, app_server, numbers, county):
+    with browser.new_context(java_script_enabled=False) as context:
+        page = context.new_page()
+        values = {
+            "wojewodztwo": "28",
+            "branza": "materialy",
+            "powiaty": county,
+            "kategorie": "komercyjna",
+            **numbers,
+        }
+        response = page.request.post(
+            app_server.url + "/zamowienie",
+            data=urlencode(values),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status == 422
+        page.route(
+            "**/zamowienie",
+            lambda route: route.fulfill(
+                status=422, body=response.text(), content_type="text/html"
+            ),
+            times=1,
+        )
+        page.goto(app_server.url + "/zamowienie")
+        for key, valid in (("lat", "53"), ("lon", "20"), ("promien_km", "10")):
+            expect(page.locator("#" + key)).to_have_value(values[key])
+            expect(page.locator("#error-" + key)).to_be_visible()
+            page.locator("#" + key).fill(valid)
+        expect(page.locator(f'input[name=powiaty][value="{county}"]')).to_be_checked()
+        if county != "2814":
+            page.locator(f'input[name=powiaty][value="{county}"]').uncheck()
+            page.locator('input[name=powiaty][value="2814"]').check()
+        with page.expect_response(
+            lambda r: r.request.method == "POST" and r.url.endswith("/zamowienie")
+        ) as retry:
+            page.get_by_role("button", name="Policz inwestycje").click()
+        assert retry.value.status == 200
+        expect(page.locator('input[name=powiaty][value="2814"]')).to_be_checked()
+        expect(page.locator("#lon")).to_have_value("20.0")
+
+
 def test_logout_clears_draft_only_after_confirmed_logout(page, app_server):
     ready(page, app_server)
     assert page.evaluate("(key)=>sessionStorage.getItem(key)", KEY)
@@ -235,9 +284,18 @@ def test_logout_clears_draft_only_after_confirmed_logout(page, app_server):
     page.get_by_label("Adres e-mail", exact=True).fill("person@example.test")
     page.get_by_role("button", name="Wyślij link").click()
     expect(page.get_by_role("status")).to_contain_text("Jeśli możemy")
+    # The fake sender appends before the background receipt write has finished.
+    assert app_server.delivery_done.wait(5), "Synthetic mail task did not finish"
     token = app_server.sender.messages[-1][2].split("/auth/verify#")[1].split()[0]
     page.goto(app_server.url + "/auth/verify#" + token)
-    page.get_by_role("button", name="Potwierdź logowanie").click()
+    with page.expect_response(
+        lambda r: r.request.method == "POST" and r.url.endswith("/auth/verify")
+    ) as verification:
+        page.get_by_role("button", name="Potwierdź logowanie").click()
+    assert verification.value.status == 303, (
+        verification.value.status,
+        verification.value.request.header_value("origin"),
+    )
     expect(page).to_have_url(app_server.url + "/panel")
     page.route(
         "**/auth/logout",

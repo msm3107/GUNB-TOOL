@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
 from urllib.parse import parse_qs
 
@@ -110,6 +111,7 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
             }
         )
         values: dict[str, object] = {}
+        number_errors = {}
         for name, items in parsed.items():
             if name in {"powiaty", "kategorie"}:
                 values[name] = items
@@ -118,14 +120,18 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
             elif name in {"lat", "lon", "promien_km"}:
                 try:
                     values[name] = float(items[0]) if items[0] else None
+                    if values[name] is not None and not math.isfinite(values[name]):
+                        number_errors[name] = "Podaj skończoną liczbę"
                 except ValueError:
-                    raise InputError(
-                        "Sprawdź współrzędne i promień",
-                        field_errors={name: "Podaj poprawną liczbę"},
-                        selection=selection,
-                    ) from None
+                    number_errors[name] = "Podaj poprawną liczbę"
             else:
                 values[name] = items[0]
+        if number_errors:
+            raise InputError(
+                "Sprawdź współrzędne i promień",
+                field_errors=number_errors,
+                selection=selection,
+            )
         values.setdefault("kategorie", [])
         return EstimateInput.model_validate(values)
     except InputError:

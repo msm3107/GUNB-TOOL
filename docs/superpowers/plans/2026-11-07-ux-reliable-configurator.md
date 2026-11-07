@@ -18,7 +18,9 @@
 - [x] Chromium+Firefox: late success/error, timeout/late arrival, exact known/missing-metadata draft restoration, denied storage, invalid draft, county search/region change, server field errors, native JS-off parity, real Magic Link + failed/successful logout.
 - [x] Browser negative control removing draft load must fail restoration regression; source restored byte-for-byte.
 - [x] Review regression: failed logout followed by GET `/auth/verify` must retain the draft while the session remains valid; only successful session resolution on `/logowanie` can confirm anonymous state. Native mobile status reflects server-rendered results with JS disabled. Both regressions failed before the fixes.
-- [x] Local unit gate: 841 passed, 16 skipped; browser gate: 26 passed across Chromium/Firefox, including keyboard/zero-scope behavior. Chromium layout probes: no horizontal overflow at 320/390/768/1280 px; visual inspection at 390/1280 px.
+- [x] Review regression: collect all invalid/nonfinite native coordinate numbers before further validation, so browsers retain every raw value instead of sanitizing later number inputs to empty; JS-off browser regressions fail before the fix and verify correction/retry with the selected county, including a foreign county plus nan/inf/-inf.
+- [x] Browser fixture synchronizes on the completed synthetic auth background task, not an early fake-sender message append; a held real OS receipt lock independently reproduces 503 during immediate verification. No test retry or production auth change.
+- [x] Local unit gate: 841 passed, 16 skipped; browser gates across Chromium/Firefox include keyboard/zero-scope behavior and native correction/retry. Chromium layout probes: no horizontal overflow at 320/390/768/1280 px; visual inspection at 390/1280 px. Exact counts for final HEAD are recorded in the PR.
 - [ ] Independent whole-PR review, exactHEAD CI, human acceptance; never merge/deploy.
 
 Out of scope: UX-03 place catalog, new filtering, real checkout/sales, download/publication/outbox. Browser tests use synthetic DB/loopback and fake SMTP only; Safari/screen-reader/fullWCAG and deployed monitoring remain separate checks.

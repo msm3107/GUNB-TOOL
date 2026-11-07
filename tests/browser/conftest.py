@@ -47,7 +47,18 @@ def app_server(tmp_path):
     url = "http://127.0.0.1:" + str(sock.getsockname()[1])
     auth_settings = replace(settings(), origin=url)
     sender = Sender(path)
-    auth = AuthService(AuthStore(path), auth_settings, sender=sender, now=lambda: NOW)
+    delivery_done = threading.Event()
+
+    class CompletedAuthService(AuthService):
+        def deliver(self, mail):
+            try:
+                super().deliver(mail)
+            finally:
+                delivery_done.set()
+
+    auth = CompletedAuthService(
+        AuthStore(path), auth_settings, sender=sender, now=lambda: NOW
+    )
     server = uvicorn.Server(
         uvicorn.Config(
             create_app(
@@ -67,7 +78,9 @@ def app_server(tmp_path):
             if not thread.is_alive() or time.monotonic() > deadline:
                 raise RuntimeError("Synthetic server did not start")
             time.sleep(0.01)
-        yield SimpleNamespace(url=url, sender=sender, path=path)
+        yield SimpleNamespace(
+            url=url, sender=sender, path=path, delivery_done=delivery_done
+        )
     finally:
         server.should_exit = True
         thread.join(5)
