@@ -71,7 +71,9 @@ def auth_router(
 ) -> APIRouter:
     router = APIRouter()
 
-    def page(request, status=200, view="login", message="", logged_in=False):
+    def page(
+        request, status=200, view="login", message="", logged_in=False, signed_out=False
+    ):
         return templates.TemplateResponse(
             request=request,
             name="auth.html",
@@ -81,6 +83,7 @@ def auth_router(
                 "view": view,
                 "message": message,
                 "logged_in": logged_in,
+                "signed_out": signed_out,
             },
             status_code=status,
             headers={
@@ -114,7 +117,11 @@ def auth_router(
             principal = await run_in_threadpool(service.resolve, request)
         except CheckoutUnavailable:
             return error(request, 503)
-        response = page(request, logged_in=principal is not None)
+        response = page(
+            request,
+            logged_in=principal is not None,
+            signed_out=service.settings.enabled and principal is None,
+        )
         if service.settings.enabled and not valid_browser(
             request.cookies.get(service.browser_cookie)
         ):
