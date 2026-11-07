@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.stripe_service import CheckoutBusy, CheckoutService
 from core.checkout_store import CheckoutConflict, CheckoutUnavailable
+from core.places import PlaceCatalog
 
 from .orders import BODY_LIMIT, EstimateInput, InputError
 
@@ -19,7 +20,7 @@ class CheckoutInput(BaseModel):
     filters: EstimateInput
 
 
-def checkout_router(service: CheckoutService, templates) -> APIRouter:
+def checkout_router(service: CheckoutService, templates, places: PlaceCatalog | None = None) -> APIRouter:
     router = APIRouter()
 
     def failure(message, code):
@@ -41,8 +42,9 @@ def checkout_router(service: CheckoutService, templates) -> APIRouter:
                     raise InputError("Zbyt duże żądanie", 413)
                 body.extend(chunk)
             selection = CheckoutInput.model_validate_json(body)
+            filters = await run_in_threadpool(selection.filters.filters, places)
             url = await run_in_threadpool(service.start, email=selection.email, kind=selection.kind,
-                filters=selection.filters.filters(), request_token=selection.request_token)
+                filters=filters, request_token=selection.request_token)
             return RedirectResponse(url, status_code=303, headers={"Cache-Control": "no-store"})
         except InputError as exc:
             return failure(str(exc), exc.status)
