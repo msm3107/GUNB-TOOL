@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% block body_class %}work-page{% endblock %}
 {% block content %}
 <section class="container page-section configurator auth-page" aria-labelledby="auth-heading">
   <p class="eyebrow">Twoje konto · dostęp testowy</p>
-  <h1 id="auth-heading">{% if logged_in %}Zalogowano.{% elif view == 'verify' %}Potwierdź logowanie.{% else %}Zaloguj się<br>bez hasła.{% endif %}</h1>
+  <h1 id="auth-heading">{% if logged_in %}Zalogowano.{% elif view == 'verify' %}Potwierdź logowanie.{% else %}Zaloguj się bez hasła.{% endif %}</h1>
   <div class="configurator-layout">
     <div>
     {% if message %}<p role="status" class="intro">{{ message }}</p>{% endif %}
@@ -11,7 +12,7 @@
     {% elif logged_in %}
       <p class="intro">Twoje zamówienia, paczki i status abonamentu znajdziesz w panelu.</p>
       <p><a class="button-link" href="/panel">Przejdź do panelu</a></p>
-      <form method="post" action="/auth/logout"><button class="button-link" type="submit">Wyloguj się</button></form>
+      <form method="post" action="/auth/logout"><button class="button-secondary" type="submit">Wyloguj się</button></form>
     {% elif view == 'verify' %}
       <p class="intro">Wybierz przycisk, aby zalogować się do Żółtej Tablicy. Jeśli nie zlecano logowania, zamknij tę stronę.</p>
       <form method="post" action="/auth/verify" id="magic-confirm">

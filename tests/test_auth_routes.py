@@ -32,6 +32,20 @@ def request_link(client, email="person@example.test"):
     )
 
 
+def test_auth_uses_compact_work_layout_and_secondary_logout(http):
+    client, _, sender = http
+    request_link(client)
+    client.post(
+        "/auth/verify",
+        data={"token": token(sender)},
+        headers={"Origin": "https://example.test"},
+        follow_redirects=False,
+    )
+    page = client.get("/logowanie")
+    assert 'class="work-page"' in page.text
+    assert 'class="button-secondary" type="submit">Wyloguj się' in page.text
+
+
 def token(sender):
     return sender.messages[-1][2].split("/auth/verify#", 1)[1].split()[0]
 

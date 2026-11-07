@@ -61,6 +61,19 @@ def test_home_has_named_sections_unique_ids_and_semantic_landmarks(landing):
             assert attrs.get("aria-labelledby") in ids
 
 
+def test_public_header_has_one_account_entry_and_native_closed_menu(landing):
+    _, response, page = landing
+    header = response.text.split("</header>", 1)[0]
+    assert header.count('href="/panel"') == 1
+    assert '>Konto</a>' in header
+    assert 'href="/logowanie"' not in header
+    menu = next(d for d in page.details if d["attrs"].get("class") == "navigation-menu")
+    assert "open" not in menu["attrs"] and menu["summaries"] == 1
+    assert "Konfigurator" in menu["text"]
+    assert "snapshot" not in response.text.lower()
+    assert "Pełna baza" in response.text
+
+
 def test_public_brand_and_reused_images_are_served_locally(landing):
     http, response, page = landing
     assert "Żółta Tablica" in response.text

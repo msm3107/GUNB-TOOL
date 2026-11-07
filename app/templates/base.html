@@ -9,10 +9,10 @@
     {% block meta %}{% endblock %}
     <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
   </head>
-  <body>
+  <body class="{% block body_class %}{% endblock %}">
     <a class="skip-link" href="#main-content">Przejdź do treści</a>
     <header class="site-header">
-      {% include "components/navbar.html" %}
+      {% block navigation %}{% include "components/navbar.html" %}{% endblock %}
     </header>
     <main class="main-content" id="main-content" tabindex="-1">
       {% block content %}{% endblock %}
