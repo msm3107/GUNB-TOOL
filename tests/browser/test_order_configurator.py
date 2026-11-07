@@ -222,6 +222,9 @@ def test_native_estimate_preserves_scope(browser, app_server):
         page.locator('input[name=powiaty][value="2814"]').check()
         page.get_by_role("button", name="Policz inwestycje").click()
         expect(page.locator("#estimate-count")).to_have_text("1")
+        expect(page.locator("#estimate-mobile")).to_contain_text(
+            "Liczba pasujących inwestycji: 1."
+        )
         expect(page.locator('input[name=powiaty][value="2814"]')).to_be_checked()
 
 
@@ -243,6 +246,12 @@ def test_logout_clears_draft_only_after_confirmed_logout(page, app_server):
     page.get_by_role("button", name="Wyloguj się").click()
     assert page.evaluate("(key)=>sessionStorage.getItem(key)", KEY)
     page.unroute("**/auth/logout")
+    page.goto(app_server.url + "/auth/verify")
+    expect(page.locator("#magic-confirm")).to_be_visible()
+    assert page.evaluate("(key)=>sessionStorage.getItem(key)", KEY)
+    page.goto(app_server.url + "/logowanie")
+    expect(page.get_by_role("heading", name="Zalogowano.")).to_be_visible()
+    assert page.evaluate("(key)=>sessionStorage.getItem(key)", KEY)
     page.goto(app_server.url + "/panel")
     page.get_by_role("button", name="Wyloguj się").click()
     expect(page).to_have_url(app_server.url + "/logowanie")

@@ -17,6 +17,7 @@
 - [x] API/selection/native metadata-lock tests and malformed input/XSS retention; validation mapping only.
 - [x] Chromium+Firefox: late success/error, timeout/late arrival, exact known/missing-metadata draft restoration, denied storage, invalid draft, county search/region change, server field errors, native JS-off parity, real Magic Link + failed/successful logout.
 - [x] Browser negative control removing draft load must fail restoration regression; source restored byte-for-byte.
+- [x] Review regression: failed logout followed by GET `/auth/verify` must retain the draft while the session remains valid; only successful session resolution on `/logowanie` can confirm anonymous state. Native mobile status reflects server-rendered results with JS disabled. Both regressions failed before the fixes.
 - [x] Local unit gate: 841 passed, 16 skipped; browser gate: 26 passed across Chromium/Firefox, including keyboard/zero-scope behavior. Chromium layout probes: no horizontal overflow at 320/390/768/1280 px; visual inspection at 390/1280 px.
 - [ ] Independent whole-PR review, exactHEAD CI, human acceptance; never merge/deploy.
 

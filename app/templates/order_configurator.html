@@ -57,7 +57,7 @@
       </div>
     </details>
     <button class="button-link" type="submit">Policz inwestycje <span aria-hidden="true">↗</span></button>
-    <p class="compact-estimate" id="estimate-mobile" role="status">Wynik pojawi się po przeliczeniu.</p>
+    <p class="compact-estimate" id="estimate-mobile" role="status">{% if error %}{{ error }}{% elif estimate %}Liczba pasujących inwestycji: {{ estimate.count }}.{% else %}Wynik pojawi się po przeliczeniu.{% endif %}</p>
     <noscript><p class="field-help">Po naciśnięciu przycisku wynik pojawi się na tej stronie.</p></noscript>
   </form>
   <aside class="estimate-panel" aria-labelledby="estimate-heading">
