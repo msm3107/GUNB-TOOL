@@ -45,13 +45,13 @@
       <summary>Promień od bazy — opcjonalnie</summary>
       <div class="radius-fields">
         <label for="lat">Szerokość geograficzna (N, WGS84)</label>
-        <input id="lat" name="lat" type="{{ 'text' if 'lat' in field_errors else 'number' }}" min="49" max="55.1" step="any" value="{{ selection.lat if selection.lat is not none else '' }}" inputmode="decimal" {{ field_state('lat') }}>
+        <input id="lat" name="lat" type="{{ 'text' if 'lat' in field_errors or selection.lat is string else 'number' }}" min="49" max="55.1" step="any" value="{{ selection.lat if selection.lat is not none else '' }}" inputmode="decimal" {{ field_state('lat') }}>
         {{ field_error('lat') }}
         <label for="lon">Długość geograficzna (E, WGS84)</label>
-        <input id="lon" name="lon" type="{{ 'text' if 'lon' in field_errors else 'number' }}" min="14" max="24.5" step="any" value="{{ selection.lon if selection.lon is not none else '' }}" inputmode="decimal" {{ field_state('lon') }}>
+        <input id="lon" name="lon" type="{{ 'text' if 'lon' in field_errors or selection.lon is string else 'number' }}" min="14" max="24.5" step="any" value="{{ selection.lon if selection.lon is not none else '' }}" inputmode="decimal" {{ field_state('lon') }}>
         {{ field_error('lon') }}
         <label for="promien_km">Promień w kilometrach (1–200)</label>
-        <input id="promien_km" name="promien_km" type="{{ 'text' if 'promien_km' in field_errors else 'number' }}" min="1" max="200" step="any" value="{{ selection.promien_km if selection.promien_km is not none else '' }}" inputmode="decimal" {{ field_state('promien_km') }}>
+        <input id="promien_km" name="promien_km" type="{{ 'text' if 'promien_km' in field_errors or selection.promien_km is string else 'number' }}" min="1" max="200" step="any" value="{{ selection.promien_km if selection.promien_km is not none else '' }}" inputmode="decimal" {{ field_state('promien_km') }}>
         {{ field_error('promien_km') }}
         <p class="field-help">Podaj wszystkie trzy wartości albo pozostaw wszystkie puste. Promień zawęża wybrany obszar; pomija lokalizacje gminne i znane rozbieżności działek. Centroid działki nie wskazuje położenia budynku.</p>
       </div>

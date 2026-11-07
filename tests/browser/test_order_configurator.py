@@ -230,13 +230,16 @@ def test_native_estimate_preserves_scope(browser, app_server):
 
 
 @pytest.mark.parametrize(
-    ("numbers", "county"),
+    ("numbers", "county", "duplicate_region"),
     [
-        ({"lat": "bad-lat", "lon": "bad-lon", "promien_km": "bad-radius"}, "2814"),
-        ({"lat": "nan", "lon": "inf", "promien_km": "-inf"}, "1401"),
+        ({"lat": "bad-lat", "lon": "bad-lon", "promien_km": "bad-radius"}, "2814", False),
+        ({"lat": "nan", "lon": "inf", "promien_km": "-inf"}, "1401", False),
+        ({"lat": "bad-lat", "lon": "bad-lon", "promien_km": "10"}, "2814", True),
     ],
 )
-def test_native_estimate_retains_all_invalid_numbers(browser, app_server, numbers, county):
+def test_native_estimate_retains_all_invalid_numbers(
+    browser, app_server, numbers, county, duplicate_region
+):
     with browser.new_context(java_script_enabled=False) as context:
         page = context.new_page()
         values = {
@@ -246,9 +249,12 @@ def test_native_estimate_retains_all_invalid_numbers(browser, app_server, number
             "kategorie": "komercyjna",
             **numbers,
         }
+        fields = list(values.items())
+        if duplicate_region:
+            fields.insert(0, ("wojewodztwo", "28"))
         response = page.request.post(
             app_server.url + "/zamowienie",
-            data=urlencode(values),
+            data=urlencode(fields),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         assert response.status == 422
@@ -262,7 +268,8 @@ def test_native_estimate_retains_all_invalid_numbers(browser, app_server, number
         page.goto(app_server.url + "/zamowienie")
         for key, valid in (("lat", "53"), ("lon", "20"), ("promien_km", "10")):
             expect(page.locator("#" + key)).to_have_value(values[key])
-            expect(page.locator("#error-" + key)).to_be_visible()
+            if not duplicate_region:
+                expect(page.locator("#error-" + key)).to_be_visible()
             page.locator("#" + key).fill(valid)
         expect(page.locator(f'input[name=powiaty][value="{county}"]')).to_be_checked()
         if county != "2814":
