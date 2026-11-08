@@ -8,12 +8,13 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from app.estimator import EstimateUnavailable, Estimator
 from core.models import LEAD_CATEGORIES
 from core.package_selection import PackageFilterError, PackageFilters
+from core.places import PlaceCatalog, PlaceUnavailable
 from core.ranking import CATEGORY_PLURALS
 from core.stages import TRADES
 from core.teryt import VOIVODESHIPS
@@ -33,16 +34,60 @@ class EstimateInput(BaseModel):
     lat: float | None = None
     lon: float | None = None
     promien_km: float | None = None
+    place_query: str = Field(default="", max_length=80)
+    place_id: str | None = Field(default=None, max_length=100)
+    place_version: str | None = Field(default=None, max_length=128)
+    _search_places: bool = PrivateAttr(default=False)
+    _clear_place: bool = PrivateAttr(default=False)
 
-    def filters(self) -> PackageFilters:
+    def filters(self, places: PlaceCatalog | None = None) -> PackageFilters:
+        lat, lon = self.lat, self.lon
+        if self.place_id or self.place_version:
+            if not self.place_id or not self.place_version:
+                raise InputError(
+                    "Wybierz miejscowość z aktualnych wyników",
+                    field_errors={"place_id": "Wybierz miejscowość ponownie"},
+                )
+            if lat is not None or lon is not None:
+                raise InputError(
+                    "Wybierz miejscowość albo ręczne współrzędne",
+                    field_errors={
+                        "place_id": "Usuń ręczne współrzędne lub jawnie wyczyść miejscowość"
+                    },
+                )
+            try:
+                place = (places or PlaceCatalog(None)).get(
+                    self.place_id, self.place_version
+                )
+            except PlaceUnavailable:
+                raise InputError(
+                    "Katalog miejscowości jest niedostępny. Zachowano wybór; ponów ręcznie.",
+                    503,
+                    field_errors={"place_id": "Katalog jest niedostępny"},
+                ) from None
+            if place is None:
+                raise InputError(
+                    "Wersja katalogu lub miejscowość zmieniła się. Wyszukaj i wybierz ponownie.",
+                    field_errors={
+                        "place_id": "Wybierz miejscowość z aktualnego katalogu"
+                    },
+                )
+            lat, lon = place.lat, place.lon
+        elif self.place_query.strip():
+            raise InputError(
+                "Wybierz konkretną miejscowość z wyników",
+                field_errors={
+                    "place_id": "Sama nazwa nie wybiera punktu; wyszukaj i wybierz miejscowość"
+                },
+            )
         try:
             return PackageFilters(
                 self.wojewodztwo,
                 self.branza,
                 tuple(self.powiaty),
                 tuple(self.kategorie),
-                self.lat,
-                self.lon,
+                lat,
+                lon,
                 self.promien_km,
             )
         except PackageFilterError as exc:
@@ -104,12 +149,15 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
             max_num_fields=40,
             errors="strict",
         )
+        action = parsed.pop("place_action", ["estimate"])
         selection = display_selection(
             {
                 key: items if key in ("powiaty", "kategorie") else items[0]
                 for key, items in parsed.items()
             }
         )
+        if action not in (["estimate"], ["search"], ["clear"], ["auto"]):
+            raise ValueError("Niepoprawna akcja formularza")
         values: dict[str, object] = {}
         number_errors = {}
         for name, items in parsed.items():
@@ -124,6 +172,8 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
                         number_errors[name] = "Podaj skończoną liczbę"
                 except ValueError:
                     number_errors[name] = "Podaj poprawną liczbę"
+            elif name in {"place_id", "place_version"}:
+                values[name] = items[0] or None
             else:
                 values[name] = items[0]
         if number_errors:
@@ -133,12 +183,25 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
                 selection=selection,
             )
         values.setdefault("kategorie", [])
-        return EstimateInput.model_validate(values)
+        selected = EstimateInput.model_validate(values)
+        # Native implicit Enter estimates an existing point/GPS; a pending name
+        # without either point must be searched before it can be estimated.
+        selected._search_places = action == ["search"] or (
+            action == ["auto"]
+            and bool(selected.place_query.strip())
+            and not selected.place_id
+            and selected.lat is None
+            and selected.lon is None
+        )
+        selected._clear_place = action == ["clear"]
+        return selected
     except InputError:
         raise
     except ValidationError as exc:
         fields = {
-            str(e["loc"][0]): "Sprawdź wartość pola"
+            (
+                "place_id" if e["loc"][0] == "place_version" else str(e["loc"][0])
+            ): "Sprawdź wartość pola"
             for e in exc.errors()
             if e["loc"] and e["loc"][0] in EstimateInput.model_fields
         }
@@ -151,8 +214,11 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
         raise InputError("Sprawdź format formularza", selection=selection) from None
 
 
-def order_router(estimator: Estimator, templates) -> APIRouter:
+def order_router(
+    estimator: Estimator, templates, places: PlaceCatalog | None = None
+) -> APIRouter:
     router = APIRouter()
+    places = places or PlaceCatalog(None)
 
     async def page(
         request: Request,
@@ -162,6 +228,8 @@ def order_router(estimator: Estimator, templates) -> APIRouter:
         error=None,
         status=200,
         field_errors=None,
+        place_results=None,
+        place_notice=None,
     ):
         selection = (
             selection
@@ -174,6 +242,14 @@ def order_router(estimator: Estimator, templates) -> APIRouter:
         )
         if isinstance(selection, EstimateInput):
             selection = selection.model_dump()
+        selected_place = None
+        if selection.get("place_id") and selection.get("place_version"):
+            try:
+                selected_place = await run_in_threadpool(
+                    places.get, selection["place_id"], selection["place_version"]
+                )
+            except (PlaceUnavailable, ValueError):
+                pass  # Keep the exact ID/version even when metadata cannot be read.
         county_warning = None
         try:
             counties = await run_in_threadpool(estimator.counties)
@@ -207,6 +283,9 @@ def order_router(estimator: Estimator, templates) -> APIRouter:
                 "estimate": result,
                 "error": error,
                 "field_errors": field_errors or {},
+                "place_results": place_results,
+                "selected_place": selected_place,
+                "place_notice": place_notice,
             },
         )
 
@@ -219,7 +298,31 @@ def order_router(estimator: Estimator, templates) -> APIRouter:
         selection = None
         try:
             selection = await read_input(request, native=True)
-            result = await run_in_threadpool(estimator.estimate, selection.filters())
+            if selection._clear_place:
+                view = selection.model_dump()
+                view.update(place_query="", place_id=None, place_version=None)
+                return await page(
+                    request,
+                    selection=view,
+                    place_notice="Usunięto wybór miejscowości. Promień i pozostałe filtry zachowano.",
+                )
+            if selection._search_places:
+                try:
+                    results = await run_in_threadpool(
+                        places.search, selection.place_query, selection.wojewodztwo
+                    )
+                except ValueError as exc:
+                    raise InputError(
+                        str(exc), field_errors={"place_query": str(exc)}
+                    ) from None
+                view = selection.model_dump()
+                view.update(
+                    place_id=None,
+                    place_version=results[0].source_version if results else None,
+                )
+                return await page(request, selection=view, place_results=results)
+            filters = await run_in_threadpool(selection.filters, places)
+            result = await run_in_threadpool(estimator.estimate, filters)
             return await page(request, selection=selection, result=result)
         except InputError as exc:
             return await page(
@@ -235,12 +338,20 @@ def order_router(estimator: Estimator, templates) -> APIRouter:
             return await page(
                 request, selection=selection, error=UNAVAILABLE, status=503
             )
+        except PlaceUnavailable:
+            return await page(
+                request,
+                selection=selection,
+                error="Katalog miejscowości jest niedostępny. Zachowano filtry.",
+                status=503,
+            )
 
     @router.post("/api/estimate", name="package_estimate", include_in_schema=False)
     async def estimate(request: Request):
         try:
             selection = await read_input(request)
-            result = await run_in_threadpool(estimator.estimate, selection.filters())
+            filters = await run_in_threadpool(selection.filters, places)
+            result = await run_in_threadpool(estimator.estimate, filters)
             return JSONResponse(asdict(result), headers={"Cache-Control": "no-store"})
         except InputError as exc:
             return JSONResponse(

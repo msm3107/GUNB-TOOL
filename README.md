@@ -383,6 +383,53 @@ Chromium sprawdza także przekierowanie natywnego formularza
 Skrypty/style i pozostałe strony zachowują dotychczasową politykę. Nie dodano JS
 ani zależności. Wszystkie odpowiedzi panelu są `no-store`; sprzedaż nadal wyłączona.
 
+## Miejscowość i promień (UX-03)
+
+Konfigurator pozwala wyszukać nazwę i jawnie wybrać miejscowość z gminą/powiatem,
+także bez JavaScript. Żaden pierwszy wynik nie jest wybierany automatycznie.
+Punkt PRNG reprezentuje miejscowość, nie adres firmy. Promień1–200km nadal
+przecina wybrane województwo/powiaty i pomija niepewne lokalizacje inwestycji.
+Ręczne WGS84 pozostaje opcją zaawansowaną; podanie miejsca i współrzędnych
+jednocześnie daje422. Usunięcie miejsca zachowuje pozostałe filtry i promień.
+
+WWW czyta osobny lokalny katalog SQLite, wskazany przez `GUNB_WEB_PLACES_PATH`.
+Brak katalogu daje503 przy wyszukiwaniu/rozwiązywaniu wyboru, a brak trafień to
+pusta lista200. Ręczne współrzędne działają bez katalogu. Nie ma sieciowego
+geokodera w żądaniu klienta ani katalogu demonstracyjnego udającego dane realne.
+
+Źródło: [PRNG — Geoportal](https://www.geoportal.gov.pl/pl/dane/panstwowy-rejestr-nazw-geograficznych-prng/),
+[oficjalny WFS](https://mapy.geoportal.gov.pl/wss/service/PZGiK/PRNG/WFS/GeographicalNames).
+Importer obsługuje sprawdzony format **WFS2/GML3.2 M1_UrzedoweNazwyMiejscowosci**
+z `srsName="urn:ogc:def:crs:EPSG::4326"` i kolejnością **latitude longitude**.
+Domyślny eksport EPSG2180 jest odrzucany; należy zamówić eksport WGS84 z jawnym
+`srsName` w WFS. Inne schematy GML, SHP i XLSX nie są obsługiwane przez ten importer.
+Nie sklejaj stron XML ręcznie: odsyłacz `next`, niezgodna liczba rekordów,
+duplikaty ID, DTD, odwrócone osie i niekompletny eksport powodują błąd.
+
+Po pobraniu kompletnego eksportu dla zamierzonego obszaru uruchom offline:
+
+```powershell
+.venv/Scripts/python.exe -m core.places .\PRNG-WGS84.gml --output .\data\places\catalog.sqlite --source-date 2026-11-07
+$env:GUNB_WEB_PLACES_PATH = (Resolve-Path .\data\places\catalog.sqlite).Path
+```
+
+Datę przykładu zastąp datą swojego eksportu; to metadana wskazana przez operatora,
+nie gwarancja aktualności każdej nazwy. CLI nie pobiera danych i nie czyta konfiguracji
+silnika ani bazy klientów. Nowy katalog powstaje prywatnie i jest publikowany atomowo;
+wadliwy import zachowuje poprzedni plik. Nie wolno edytować opublikowanego SQLite
+w miejscu — aktualizuj przez importer. Nie nadpisuje on nieznanej bazy ani symlinka.
+Usługa WWW potrzebuje praw odczytu gotowego katalogu i dostępu do jego katalogu nadrzędnego.
+Wersja składa się z daty i SHA256 dokładnych bajtów źródła. Wyszukiwanie korzysta
+z indeksu znormalizowanej nazwy (polskie znaki), zwraca najwyżej20 rekordów.
+`place_id` i `place_version` są rozwiązywane po stronie serwera; nieaktualna wersja
+lub zniknięcie miejsca daje422 i wymaga ponownego wyboru, bez punktu zastępczego.
+
+Szkicv2 zawiera dodatkowo nazwę wyszukiwania, ID i wersję katalogu; nadal czytamy
+szkiceGPSv1. Nazwa bez wyboru nie uruchamia filtra miejscowości i wymaga korekty,
+zamiast cicho przeliczyć większy zakres. Dane katalogu nie zmieniają pamięci dostaw.
+Pełny import PRNG i wdrożenie pozostają oddzielną operacją; testy używają syntetycznych
+małych eksportów. Nie dodano zależności produkcyjnych.
+
 ## Testy
 
 UX-02: konfigurator zachowuje wybrane powiaty również przy zmianie województwa,

@@ -8,7 +8,8 @@
   <h1 id="configurator-heading">Sprawdź zakres<br>swojej paczki.</h1>
   <p class="intro">Wybierz obszar i branżę, żeby policzyć pasujące inwestycje w zaimportowanych danych. To podgląd zakresu — nie składa zamówienia i nie uruchamia płatności.</p>
   <div class="configurator-layout">
-  <form id="package-form" method="post" action="{{ url_for('order_configurator') }}#estimate-heading" data-estimate-url="{{ url_for('package_estimate') }}" data-native="{{ 'true' if request.method == 'POST' else 'false' }}" data-ready="{{ 'false' if error else 'true' }}">
+  <form id="package-form" method="post" action="{{ url_for('order_configurator') }}#estimate-heading" data-estimate-url="{{ url_for('package_estimate') }}" data-native="{{ 'true' if request.method == 'POST' else 'false' }}" data-ready="{{ 'false' if error or place_results is not none or place_notice else 'true' }}">
+    <button type="submit" name="place_action" value="auto" hidden aria-hidden="true" tabindex="-1"></button>
     <div id="filter-errors" role="alert"{% if not error %} hidden{% endif %}><p>{{ error or '' }}</p><ul>{% for key,message in field_errors.items() %}<li><a href="#{{ key }}">{{ message }}</a></li>{% endfor %}</ul></div>
     <p id="draft-status" class="field-help" role="status"></p>
     <fieldset>
@@ -41,8 +42,29 @@
       </div>
       {{ field_error('kategorie') }}
     </fieldset>
-    <details class="radius-options"{% if selection.lat or selection.lon or selection.promien_km or 'lat' in field_errors or 'lon' in field_errors or 'promien_km' in field_errors %} open{% endif %}>
-      <summary>Promień od bazy — opcjonalnie</summary>
+    <fieldset id="place-fields" data-search-url="{{ url_for('place_search') }}">
+      <legend>03 / Miejscowość i promień — opcjonalnie</legend>
+      <label for="place_query">Nazwa miejscowości</label>
+      <input id="place_query" name="place_query" type="search" maxlength="80" value="{{ selection.place_query }}" autocomplete="off" {{ field_state('place_query','place-help') }}>
+      {{ field_error('place_query') }}
+      <button class="button-secondary" type="submit" name="place_action" value="search" formnovalidate>Znajdź miejscowość</button>
+      <p id="place-status" role="status">{% if place_notice %}{{ place_notice }}{% elif place_results is not none %}{% if place_results %}Wybierz konkretną miejscowość z listy.{% else %}Brak miejscowości pasujących do nazwy i województwa.{% endif %}{% endif %}</p>
+      <label for="place_id">Miejscowość — wybierz z gminą i powiatem</label>
+      <select id="place_id" name="place_id" {{ field_state('place_id','place-help') }}>
+        <option value=""{% if not selection.place_id %} selected{% endif %}>Wybierz miejscowość po wyszukaniu</option>
+        {% if selection.place_id %}<option value="{{ selection.place_id }}" selected data-name="{{ selected_place.name if selected_place else selection.place_query }}" data-version="{{ selection.place_version or '' }}">{% if selected_place %}{{ selected_place.name }} — {{ selected_place.municipality }}, {{ selected_place.county }} (woj. {{ selected_place.region }}){% else %}Zachowany wybór {{ selection.place_id }} — wyszukaj ponownie, jeśli katalog się zmienił{% endif %}</option>{% endif %}
+        {% for place in place_results or () %}<option value="{{ place.id }}" data-name="{{ place.name }}" data-version="{{ place.source_version }}">{{ place.name }} — {{ place.municipality }}, {{ place.county }} (woj. {{ place.region }})</option>{% endfor %}
+      </select>
+      <input id="place_version" name="place_version" type="hidden" value="{{ selection.place_version or '' }}">
+      {{ field_error('place_id') }}
+      <button id="place-clear" class="button-secondary" type="submit" name="place_action" value="clear" formnovalidate>Usuń wybór miejscowości</button>
+      <p id="place-help" class="field-help">Punkt miejscowości z PRNG, nie adres firmy. Sama wpisana nazwa nie wybiera punktu. Przy wyborze miejscowości pozostaw ręczne współrzędne puste. Promień przecina wybrane województwo i powiaty; nie rozszerza ich.</p>
+      <label for="promien_km">Promień w kilometrach (1–200)</label>
+      <input id="promien_km" name="promien_km" type="{{ 'text' if 'promien_km' in field_errors or selection.promien_km is string else 'number' }}" min="1" max="200" step="any" value="{{ selection.promien_km if selection.promien_km is not none else '' }}" inputmode="decimal" {{ field_state('promien_km') }}>
+      {{ field_error('promien_km') }}
+    </fieldset>
+    <details class="radius-options"{% if selection.lat or selection.lon or 'lat' in field_errors or 'lon' in field_errors %} open{% endif %}>
+      <summary>Współrzędne WGS84 — opcja zaawansowana</summary>
       <div class="radius-fields">
         <label for="lat">Szerokość geograficzna (N, WGS84)</label>
         <input id="lat" name="lat" type="{{ 'text' if 'lat' in field_errors or selection.lat is string else 'number' }}" min="49" max="55.1" step="any" value="{{ selection.lat if selection.lat is not none else '' }}" inputmode="decimal" {{ field_state('lat') }}>
@@ -50,13 +72,10 @@
         <label for="lon">Długość geograficzna (E, WGS84)</label>
         <input id="lon" name="lon" type="{{ 'text' if 'lon' in field_errors or selection.lon is string else 'number' }}" min="14" max="24.5" step="any" value="{{ selection.lon if selection.lon is not none else '' }}" inputmode="decimal" {{ field_state('lon') }}>
         {{ field_error('lon') }}
-        <label for="promien_km">Promień w kilometrach (1–200)</label>
-        <input id="promien_km" name="promien_km" type="{{ 'text' if 'promien_km' in field_errors or selection.promien_km is string else 'number' }}" min="1" max="200" step="any" value="{{ selection.promien_km if selection.promien_km is not none else '' }}" inputmode="decimal" {{ field_state('promien_km') }}>
-        {{ field_error('promien_km') }}
         <p class="field-help">Podaj wszystkie trzy wartości albo pozostaw wszystkie puste. Promień zawęża wybrany obszar; pomija lokalizacje gminne i znane rozbieżności działek. Centroid działki nie wskazuje położenia budynku.</p>
       </div>
     </details>
-    <button class="button-link" type="submit">Policz inwestycje <span aria-hidden="true">↗</span></button>
+    <button class="button-link" type="submit" name="place_action" value="estimate">Policz inwestycje <span aria-hidden="true">↗</span></button>
     <p class="compact-estimate" id="estimate-mobile" role="status">{% if error %}{{ error }}{% elif estimate %}Liczba pasujących inwestycji: {{ estimate.count }}.{% else %}Wynik pojawi się po przeliczeniu.{% endif %}</p>
     <noscript><p class="field-help">Po naciśnięciu przycisku wynik pojawi się na tej stronie.</p></noscript>
   </form>
@@ -81,4 +100,4 @@
   </div>
 </section>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', path='/order-configurator.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='/place-picker.js') }}" defer></script><script src="{{ url_for('static', path='/order-configurator.js') }}" defer></script>{% endblock %}

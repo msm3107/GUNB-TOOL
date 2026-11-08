@@ -270,6 +270,8 @@ flowchart TD
   - Testy renderowania strony głównej, walidacja semantyki HTML5, brak błędów w konsoli i assetach.
 
 #### PR 7: Konfigurator Paczki B2B i Dynamiczny Estymator Leadów
+
+  - **UX-03 (doprecyzowanie):** opcjonalny wybór miejscowości korzysta z osobnego lokalnego katalogu PRNG, importowanego offline z jawnego WFS2/GML EPSG4326. Nie migruje bazy klientów. Katalog zawiera publiczne ID/nazwę/gminę/powiat/województwo/punkt oraz wersję daty+SHA256 źródła; indeksowana normalizacja nazw obsługuje polskie znaki. WWW czyta go tylko do odczytu. Miejscowość jest punktem orientacyjnym, nie adresem firmy; ID i wersję rozwiązuje serwer, bez sieciowego geokodera i punktu zastępczego. Jednoczesne miejsce i ręczny GPS jest błędem422. Promień nadal przecina obszar i zachowuje istniejące wykluczenia jakości lokalizacji. Katalog/szkic nie zmienia klasyfikacji, rewizji ani pamięci dostaw; sprzedaż pozostaje wyłączona.
 - **Gałąź:** `feat/app-order-configurator`
 - **Role:**
   - *Koordynator:* Definicja parametrów wyboru (województwa, powiaty, branże, promień km od bazy).

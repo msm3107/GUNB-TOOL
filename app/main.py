@@ -17,6 +17,7 @@ from core.checkout_store import CheckoutStore
 from core.customer_dashboard import CustomerDashboardStore
 from core.paid_packages import PaidPackagePreparer
 from core.payment_store import PaymentStore
+from core.places import PlaceCatalog
 from core.subscription_store import SubscriptionStore
 
 from .auth import AuthService
@@ -28,6 +29,7 @@ from .routes.auth import auth_router
 from .routes.checkout import checkout_router
 from .routes.dashboard import dashboard_router
 from .routes.orders import order_router
+from .routes.places import places_router
 from .routes.portal import portal_router
 from .routes.stripe_webhook import stripe_webhook_router
 from .security import SecurityHeadersMiddleware
@@ -83,7 +85,9 @@ def create_app(
     mimetypes.add_type("image/webp", ".webp")
     mimetypes.add_type("font/woff2", ".woff2")
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    api.include_router(order_router(Estimator(config.database_path), templates))
+    places = PlaceCatalog(config.places_path)
+    api.include_router(places_router(places))
+    api.include_router(order_router(Estimator(config.database_path), templates, places))
     api.include_router(auth_router(auth_service, subscriptions, templates))
     api.include_router(dashboard_router(
         CustomerDashboardStore(config.database_path), identity_resolver or auth_service.resolve,
@@ -100,7 +104,7 @@ def create_app(
         checkout_router(
             checkout_service
             or CheckoutService(CheckoutStore(config.database_path), config.checkout),
-            templates,
+            templates, places,
         )
     )
     api.include_router(
