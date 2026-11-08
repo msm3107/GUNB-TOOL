@@ -7,6 +7,7 @@ from html import escape
 
 import pytest
 
+from core.instance import instance_lock
 from core.places import PlaceCatalog, PlaceUnavailable, import_catalog, main
 
 DAY = date(2026, 11, 7)
@@ -146,3 +147,44 @@ def test_catalog_cli_without_engine_config(tmp_path):
     source.write_text(gml(), encoding="utf-8")
     assert main([str(source), "--output", str(output), "--source-date", str(DAY)]) == 0
     assert len(PlaceCatalog(output).search("lodz")) == 2
+
+
+def test_search_limit_and_region_use_bounded_indexes(catalog):
+    source, output, _ = catalog
+    source.write_text(
+        gml(
+            [(str(i), "Łódź", "Gmina", "Powiat", "2814011", "53 20") for i in range(30)]
+        ),
+        encoding="utf-8",
+    )
+    import_catalog(source, output, source_date=DAY)
+    assert len(PlaceCatalog(output).search("lodz", "28")) == 20
+    with sqlite3.connect(output) as conn:
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM places WHERE normalized_name>=? AND normalized_name<? AND region=? ORDER BY normalized_name,id LIMIT 20",
+            ("lo", "loz", "28"),
+        ).fetchall()
+        assert "idx_places_region_name" in str(plan)
+
+
+def test_symlink_destination_is_rejected(catalog, tmp_path):
+    source, output, _ = catalog
+    alias = tmp_path / "alias.sqlite"
+    try:
+        alias.symlink_to(output)
+    except OSError:
+        pytest.skip("Symlink privilege unavailable")
+    with pytest.raises(ValueError):
+        import_catalog(source, alias, source_date=DAY)
+    assert alias.is_symlink()
+
+
+def test_cli_handles_concurrent_publication_without_replacing_catalog(catalog):
+    source, output, _ = catalog
+    before = output.read_bytes()
+    with instance_lock(output.with_name(output.name + ".import.lock")):
+        with pytest.raises(SystemExit) as result:
+            main([str(source), "--output", str(output), "--source-date", str(DAY)])
+        assert result.value.code == 1
+    assert output.read_bytes() == before
+    assert not list(output.parent.glob(".prng-*.sqlite"))

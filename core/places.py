@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from .instance import instance_lock
+from .instance import AlreadyRunning, instance_lock
 from .teryt import VOIVODESHIPS
 from .text import normalize_text
 
@@ -281,7 +281,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         version = import_catalog(args.source, args.output, source_date=args.source_date)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, AlreadyRunning) as exc:
         parser.exit(1, str(exc) + "\n")
     print(version)
     return 0
