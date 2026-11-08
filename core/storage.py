@@ -529,6 +529,44 @@ _MIGRATIONS: tuple[Migration, ...] = (
     CREATE INDEX ix_auth_requests_ip ON auth_requests(ip_hash,created_at);
     CREATE INDEX ix_auth_requests_time ON auth_requests(created_at);
     """,                                                  # v22: jednorazowe logowanie i sesje
+    """CREATE TABLE package_artifacts (
+        delivery_id INTEGER NOT NULL REFERENCES b2b_deliveries(delivery_id) ON DELETE CASCADE,
+        format TEXT NOT NULL CHECK(format IN ('xlsx','csv')),
+        relative_name TEXT NOT NULL,
+        size INTEGER NOT NULL CHECK(size>0 AND size<=67108864),
+        sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+        PRIMARY KEY(delivery_id,format)
+    );
+    CREATE TRIGGER package_artifacts_immutable BEFORE UPDATE ON package_artifacts
+        BEGIN SELECT RAISE(ABORT,'immutable artifact'); END;
+    CREATE TABLE package_publications (
+        delivery_id INTEGER PRIMARY KEY REFERENCES b2b_deliveries(delivery_id),
+        published_at TEXT NOT NULL
+    );
+    CREATE TABLE download_grants (
+        token_hash TEXT PRIMARY KEY NOT NULL CHECK(length(token_hash)=64),
+        customer_id INTEGER NOT NULL REFERENCES b2b_customers(customer_id),
+        delivery_id INTEGER NOT NULL,
+        format TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL CHECK(expires_at=created_at+900),
+        FOREIGN KEY(delivery_id,format) REFERENCES package_artifacts(delivery_id,format)
+    );
+    CREATE INDEX ix_download_grants_customer_time ON download_grants(customer_id,created_at);
+    CREATE INDEX ix_download_grants_expiry ON download_grants(expires_at);
+    CREATE TABLE download_audit (
+        audit_id INTEGER PRIMARY KEY,
+        token_hash TEXT NOT NULL CHECK(length(token_hash)=64),
+        customer_id INTEGER REFERENCES b2b_customers(customer_id),
+        attempted_at INTEGER NOT NULL,
+        method TEXT NOT NULL CHECK(method IN ('GET','HEAD')),
+        outcome TEXT NOT NULL CHECK(outcome IN ('requested','head','denied','expired','unavailable','busy')),
+        ip_hash TEXT NOT NULL,
+        agent_hash TEXT NOT NULL
+    );
+    CREATE INDEX ix_download_audit_time ON download_audit(attempted_at);
+    """,                                                  # v23: manifest, granty i audyt pobrania
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

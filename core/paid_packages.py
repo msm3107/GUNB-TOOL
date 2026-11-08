@@ -17,6 +17,7 @@ from .checkout_store import CheckoutUnavailable
 from .delivery_memory import DeliveryClassifier
 from .export_package import write_csv, write_xlsx
 from .instance import AlreadyRunning, database_replacement_lock
+from .package_files import inspect_artifact
 from .package_selection import PackageFilters, PackageTooLarge, select_package
 from .payment_store import PaymentStore
 from .storage import LeadRepository
@@ -80,8 +81,16 @@ class PaidPackagePreparer:
                     writer(items, stream, trade_key=filters.branza, as_of=as_of)
                     stream.flush()
                     os.fsync(stream.fileno())
+            artifacts = tuple(
+                inspect_artifact(output, path.name, path.suffix[1:]) for path in paths
+            )
             if self.store.finish_package(
-                job, items, paths[0].name, paths[1].name, now=self._now()
+                job,
+                items,
+                paths[0].name,
+                paths[1].name,
+                now=self._now(),
+                artifacts=artifacts,
             ):
                 paths.clear()  # paths become visible through the DB only after both exports exist
                 return True

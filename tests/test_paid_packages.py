@@ -64,6 +64,18 @@ def test_paid_job_builds_real_files_once_without_acknowledging_delivery(
         book.close()
     assert (output / csv).read_bytes().startswith(b"\xef\xbb\xbf")
     assert len(list(output.iterdir())) == 2
+    import hashlib
+
+    with sqlite3.connect(store.path) as c:
+        rows = c.execute(
+            "SELECT format,relative_name,size,sha256 FROM package_artifacts ORDER BY format"
+        ).fetchall()
+        assert len(rows) == 2
+        for fmt, name, size, digest in rows:
+            content = (output / name).read_bytes()
+            assert name.endswith("." + fmt) and size == len(content)
+            assert digest == hashlib.sha256(content).hexdigest()
+        assert c.execute("SELECT count(*) FROM package_publications").fetchone() == (0,)
 
 
 def test_renderer_has_no_db_writer_or_replacement_lock_and_failure_can_retry(

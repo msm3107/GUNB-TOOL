@@ -49,6 +49,59 @@ storage:
 ENV = f"ENGINE_API_TOKEN={TOKEN}\n"
 
 
+def test_v22_download_manifest_upgrade_preserves_legacy_and_backup(tmp_path):
+    from tests.test_storage import legacy_database
+
+    path = tmp_path / "v22.sqlite"
+    conn = legacy_database(path, 22)
+    conn.execute(
+        "INSERT INTO b2b_customers(customer_id,email) VALUES(1,'legacy@example.test')"
+    )
+    conn.execute(
+        "INSERT INTO b2b_orders(order_id,customer_id,typ_pakietu,status_platnosci) VALUES(1,1,'jednorazowy','paid')"
+    )
+    conn.execute(
+        "INSERT INTO b2b_deliveries VALUES(1,1,'delta','2026-01-01','old.xlsx','old.csv')"
+    )
+    before = conn.execute("SELECT * FROM b2b_deliveries").fetchall()
+    conn.commit()
+    conn.close()
+    with LeadRepository(path) as upgraded:
+        assert (
+            upgraded.connection.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION
+        )
+        assert [
+            tuple(r)
+            for r in upgraded.connection.execute("SELECT * FROM b2b_deliveries")
+        ] == before
+        for table in (
+            "package_artifacts",
+            "package_publications",
+            "download_grants",
+            "download_audit",
+        ):
+            assert (
+                upgraded.connection.execute(f"SELECT count(*) FROM {table}").fetchone()[
+                    0
+                ]
+                == 0
+            )
+    (backup,) = (tmp_path / "backups").glob("*.sqlite")
+    with sqlite3.connect(backup) as saved:
+        assert saved.execute("PRAGMA user_version").fetchone() == (22,)
+        assert saved.execute("SELECT * FROM b2b_deliveries").fetchall() == before
+        assert (
+            saved.execute(
+                "SELECT name FROM sqlite_master WHERE name='package_artifacts'"
+            ).fetchone()
+            is None
+        )
+    with LeadRepository(path):
+        pass
+    assert len(list((tmp_path / "backups").glob("*.sqlite"))) == 1
+
+
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch):
     monkeypatch.setenv("ENGINE_API_TOKEN", TOKEN)
