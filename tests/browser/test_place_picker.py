@@ -1,3 +1,5 @@
+from urllib.parse import urlencode
+
 import pytest
 
 pytest.importorskip("playwright.sync_api")
@@ -7,6 +9,48 @@ from core.places import import_catalog
 from tests.test_places import DAY
 
 KEY = "zt:filter-draft:v1"
+
+
+@pytest.mark.parametrize("bad_lat", ["0x34", " "])
+def test_rejected_native_number_does_not_replace_valid_draft(page, app_server, bad_lat):
+    page.goto(app_server.url + "/zamowienie")
+    expect(page.locator("#estimate-result")).to_be_visible()
+    filters = {
+        "wojewodztwo": "28",
+        "branza": "materialy",
+        "powiaty": ["2814"],
+        "kategorie": ["komercyjna"],
+        "lat": 53,
+        "lon": 20,
+        "promien_km": 10,
+    }
+    page.evaluate(
+        "draft => sessionStorage.setItem('zt:filter-draft:v1', JSON.stringify(draft))",
+        {"version": 1, "filters": filters},
+    )
+    previous = page.evaluate("key => sessionStorage.getItem(key)", KEY)
+    response = page.request.post(
+        app_server.url + "/zamowienie",
+        data=urlencode({**filters, "lat": bad_lat}, doseq=True),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status == 422
+    page.route(
+        "**/zamowienie",
+        lambda route: route.fulfill(
+            status=422, body=response.text(), content_type="text/html"
+        ),
+        times=1,
+    )
+    page.goto(app_server.url + "/zamowienie")
+    expect(page.locator("#county-tools")).to_be_visible()
+    expect(page.locator("#filter-errors")).to_be_visible()
+    expect(page.locator("#lat")).to_have_value(bad_lat)
+    assert page.evaluate("key => sessionStorage.getItem(key)", KEY) == previous
+    with page.expect_request("**/api/estimate") as restored:
+        page.goto(app_server.url + "/zamowienie")
+    assert restored.value.post_data_json == filters
+    expect(page.locator("#estimate-result")).to_be_visible()
 
 
 @pytest.mark.parametrize("search_action", ["button", "enter"])

@@ -157,8 +157,8 @@
     return true;
   }
   const canStart = restore(); filterCounties(); scope(); document.getElementById("county-tools").hidden = false;
-  // Native POST is authoritative, including an explicit removal of the place.
-  if (form.dataset.native === "true") save();
+  // Save successful native actions, including clear; rejected input keeps the old draft.
+  if (form.dataset.native === "true" && summary.hidden) save();
   search.addEventListener("input", filterCounties);
   for (const id of ["county-clear", "county-whole"]) document.getElementById(id).addEventListener("click", () => {
     for (const input of counties()) input.checked = false;
