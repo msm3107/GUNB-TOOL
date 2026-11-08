@@ -22,8 +22,17 @@ class WebConfig:
     test_package_dir: Path | None = None
     auth: AuthSettings = field(default_factory=AuthSettings)
     places_path: Path | None = None
+    package_dir: Path | None = None
 
     def __post_init__(self) -> None:
+        if self.package_dir is not None:
+            static = Path(__file__).resolve().parent / "static"
+            if (
+                not isinstance(self.package_dir, Path)
+                or not self.package_dir.is_absolute()
+                or self.package_dir.resolve().is_relative_to(static)
+            ):
+                raise ValueError("package_dir wymaga prywatnego absolutnego katalogu poza static")
         if self.database_path is not None and not isinstance(self.database_path, Path):
             raise ValueError("database_path musi być ścieżką Path albo None")
         if self.places_path is not None and not isinstance(self.places_path, Path):
@@ -93,10 +102,12 @@ class WebConfig:
         raw_path = source.get("GUNB_WEB_DB_PATH", "").strip()
         raw_places = source.get("GUNB_WEB_PLACES_PATH", "").strip()
         raw_output = source.get("GUNB_WEB_TEST_PACKAGE_DIR", "").strip()
+        raw_packages = source.get("GUNB_WEB_PACKAGE_DIR", "").strip()
         return cls(
             cors_origins=origins,
             database_path=Path(raw_path).expanduser().absolute() if raw_path else None,
             places_path=Path(raw_places).expanduser().absolute() if raw_places else None,
+            package_dir=(Path(raw_packages).expanduser().absolute() if raw_packages else None),
             checkout=CheckoutSettings.from_env(source),
             webhook_secret=source.get("GUNB_WEB_STRIPE_WEBHOOK_SECRET", ""),
             test_package_dir=Path(raw_output).expanduser().absolute()

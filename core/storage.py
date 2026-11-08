@@ -548,6 +548,8 @@ _MIGRATIONS: tuple[Migration, ...] = (
         customer_id INTEGER NOT NULL REFERENCES b2b_customers(customer_id),
         delivery_id INTEGER NOT NULL,
         format TEXT NOT NULL,
+        relative_name TEXT NOT NULL,
+        size INTEGER NOT NULL,
         sha256 TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL CHECK(expires_at=created_at+900),

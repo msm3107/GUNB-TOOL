@@ -496,3 +496,26 @@ CI uruchamia testy na Pythonie 3.10–3.14.
 - app/ — fundament WWW i przyszły portal B2B, bez zależności silnika od frameworka WWW.
 - tests/ — testy silnika, migracji schematu, klasyfikatora dostaw, jakości danych i eksportu XLSX/CSV.
 - projectplan.md — bieżący plan etapów produktu.
+## Prywatne pobieranie paczek — etap 13
+
+`POST /panel/paczki/{delivery_id}/link` (pole `format=xlsx|csv`, sesja właściciela i Origin) wydaje link na15min. `GET/HEAD /pobierz/{token}` wymaga tej samej tożsamości klienta; link można ponawiać. Wygasły link prowadzi właściciela do formularza nowego linku bez sekretu w URL formularza. Bez sesji ekran otwiera logowanie w nowej karcie; po zalogowaniu należy wrócić i ponowić. Obce ID/tokeny dają404, brak lub uszkodzenie pliku503 z retry, limit429. GET/HEAD nie potwierdza doręczenia ani odbioru przez człowieka.
+
+Skonfiguruj `GUNB_WEB_PACKAGE_DIR` jako absolutny, prywatny katalog lokalny poza `app/static` (ten sam co katalog eksportera). Na POSIX katalog0700 i pliki0600, na Windows ACL wyłącznie dla konta aplikacji/operatora. WWW nie tworzy katalogu, nie migruje bazy i nie wykonuje backfillu. Istniejący proces migracji CLI/silnika podnosi v22→v23 z kopią sprzed DDL; przy odtwarzaniu użyj zgodnego starszego kodu i tej kopii. Nie cofaj samego `user_version` w działającej bazie.
+
+Manifesty i osobny stan publikacji: gotowy plik nie nadaje prawa pobrania. Panel udostępnia przyciski tylko dla własnych opłaconych dostaw z manifestem oraz historycznym `doreczono_utc` albo publikacją. Nowy preparer zapisuje oba manifesty atomowo z gotową dostawą, lecz nie publikuje; integracja publikacji/ledger rewizji jest etapem15. Zakończenie abonamentu nie odbiera opłaconego archiwum. Pamięć dostaw i historyczne daty pozostają bez zmian.
+
+Kontrolowany backfill pojedynczej istniejącej dostawy (najpierw sprawdź własność plików i katalog):
+
+```powershell
+python -m core.package_access --database C:/private/gunb.sqlite --root C:/private/packages --delivery-id 123
+```
+
+Operacja hashuje oba istniejące pliki poza DB/OS guardem i atomowo zapisuje manifesty; błąd nie zapisuje połowy zestawu. Nie regeneruje archiwum, nie publikuje, nie zmienia dat/rewizji; powtórzenie tego samego manifestu jest bezpieczne. Brak plików wymaga przywrócenia oryginalnych artefaktów, a nie eksportu z bieżącego `investments`.
+
+Pobieranie sprawdza SHA256/rozmiar i streamuje z tego samego uchwytu, bez ponownego otwarcia ścieżki. POSIX używa `openat/O_NOFOLLOW`, Windows uchwytów [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) z blokadą zapisu/usuwania i [kontroli reparse](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex) (dokumentacja sprawdzona2026-11-08). Symlinki/reparse w katalogu lub jego rodzicach, hardlinki i pliki nieregularne są odrzucane. Pliki są niezmienne: eksport tworzy nowe nazwy, operator nie edytuje ich w miejscu, szczególnie podczas pobierania.
+
+Limity na proces:4aktywne weryfikacje/streamy,64MiB/plik,64KiB/porcję; budżet weryfikacji5s sprawdzany pomiędzy odczytami nie jest przerwaniem zawieszonego wywołania systemu plików. Wydawanie linków:10/min/klient; dostępne linki nadal działają. Disconnect/anulowanie/błąd wysyłania zwalniają uchwyt i slot. Krótka kolizja blokady metadanych może dać503; retry zachowuje uprawnienia i plik.
+
+Audyt zapisuje hash tokenu, klienta, czas, metodę i rodzaj próby; adres bezpośredniego peer oraz UA są HMACowane kluczem procesu, bez ufania nagłówkom Forwarded. `requested` oznacza rozpoczętą próbę, `head` samą sondę. Retencja plików/grantów/audytu wymaga osobnej polityki operacyjnej przed uruchomieniem sprzedaży. Brak automatycznego kasowania w tym PR.
+
+Uvicorn access logger ma filtr redagujący także zakodowany prefiks i query tokenu. Przy proxy zastosuj analogiczną redakcję: przykład `docs/nginx-downloads.conf.example` usuwa token, query i Referer z logu oraz wyłącza buforowanie plików. Przykład nie został wdrożony; sprawdź konfigurację aktywnego serwera i każdego dodatkowego loggera przed udostępnieniem. Sprzedaż, Stripe live i wdrożenie pozostają wyłączone.

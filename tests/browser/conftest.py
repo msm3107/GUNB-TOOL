@@ -76,7 +76,8 @@ def app_server(tmp_path):
         uvicorn.Config(
             create_app(
                 WebConfig(
-                    database_path=path, places_path=places_path, auth=auth_settings
+                    database_path=path, places_path=places_path, auth=auth_settings,
+                    package_dir=tmp_path / "private",
                 ),
                 auth_service=auth,
             ),

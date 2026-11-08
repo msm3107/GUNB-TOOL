@@ -111,7 +111,7 @@ details[open] > summary { background: #f2efe4; }
 .footer-inner p { font-size: 0.8rem; margin: 0; }
 .footer-inner p span { font-size: 0.7rem; color: #cad3d8; }
 .site-footer a:focus-visible { outline-color: var(--yellow); }
-.demo-downloads { display: flex; flex-wrap: wrap; gap: .75rem; margin-block: 1.5rem; }
+.demo-downloads, .package-downloads { display: flex; flex-wrap: wrap; gap: .75rem; margin-block: 1.5rem; }
 .demo-downloads .button-link { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 @media (max-width: 1100px) {
   .container { width: calc(100% - 64px); }

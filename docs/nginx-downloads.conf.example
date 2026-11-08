@@ -1,0 +1,18 @@
+# Example only; NOT installed. Put map/log_format in nginx's http context.
+# $uri is normalized; omit query strings, Referer and the raw $request entirely.
+map $uri $gunb_safe_uri {
+    ~^/pobierz/ /pobierz/[REDACTED];
+    default $uri;
+}
+log_format gunb_private '$time_iso8601 "$request_method $gunb_safe_uri $server_protocol" $status $body_bytes_sent';
+
+# Loopback example. TLS, trusted forwarding and hardening belong to deployment.
+server {
+    listen 127.0.0.1:8080;
+    access_log /var/log/nginx/gunb-private.access.log gunb_private;
+    location / {
+        proxy_pass http://127.0.0.1:8091;
+        proxy_buffering off;
+        proxy_max_temp_file_size 0;
+    }
+}

@@ -143,7 +143,7 @@ def _private_open(root: Path, name: str, fmt: str) -> VerifiedFile:
 def _inspect(opened: VerifiedFile, name: str, fmt: str) -> Artifact:
     stream = opened.stream
     before = os.fstat(stream.fileno())
-    if not 0 < before.st_size <= MAX_ARTIFACT_SIZE:
+    if before.st_nlink != 1 or not 0 < before.st_size <= MAX_ARTIFACT_SIZE:
         raise ArtifactUnavailable()
     deadline, size, digest = time.monotonic() + 5, 0, hashlib.sha256()
     while chunk := stream.read(CHUNK_SIZE):
@@ -179,7 +179,9 @@ def open_verified(root: Path, artifact: Artifact) -> VerifiedFile:
         if _inspect(opened, artifact.relative_name, artifact.format) != artifact:
             raise ArtifactUnavailable()
         return opened
-    except (OSError, ValueError):
+    except BaseException as exc:
         if opened is not None:
             opened.close()
-        raise ArtifactUnavailable() from None
+        if isinstance(exc,(OSError,ValueError)):
+            raise ArtifactUnavailable() from None
+        raise
