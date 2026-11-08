@@ -430,6 +430,28 @@ zamiast cicho przeliczyć większy zakres. Dane katalogu nie zmieniają pamięci
 Pełny import PRNG i wdrożenie pozostają oddzielną operacją; testy używają syntetycznych
 małych eksportów. Nie dodano zależności produkcyjnych.
 
+## Fikcyjna próbka paczki (UX-04)
+
+`GET /przyklad` pokazuje trzy fikcyjne inwestycje; `GET /przyklad.xlsx` i
+`GET /przyklad.csv` pobierają te same trzy pozycje przez istniejące generatory.
+Pliki mają produkcyjne kolumny, XLSX trzy zakładki, CSV UTF-8 z BOM i przecinki.
+Każdy tytuł oraz nazwa pliku wskazuje fikcyjne dane. Nie zawierają kontaktów,
+rzeczywistych współrzędnych, działek ani linków mapowych. Nie są pełną bazą regionu:
+to po jednym wierszu dla wariantów Nowe/Zmiany/Pełna baza, z fikcyjną historią.
+
+Scenariusz jest stały (2026-11-01, dach); daty decyzji mieszczą się w istniejących
+oknach branżowych tej daty. „Nowe” oznacza sprawę nieznaną klientowi w scenariuszu,
+nie gwarantuje nowej daty wniosku. Podgląd używa tych samych modeli i helperów
+oceny co plik. Baza klientów, SQL, pamięć dostaw i konfiguracja użytkownika nie są
+odczytywane ani zmieniane. Dwie małe próbki są buforowane w pamięci procesu;
+HTTP używa `no-store`, statycznego attachment filename i obsługuje także HEAD.
+Niepowodzenie generowania zwraca bezpieczne500, nie częściowy plik; można ponowić.
+
+Wejście jest na landing page oraz przy wyniku konfiguratora. Drugie jawnie otwiera
+nową kartę, zachowując niezapisane ustawienia także bez JS i storage. Próbka nie
+uruchamia sprzedaży, logowania ani wysyłki marketingowej. Pobieranie własnych,
+autoryzowanych paczek klientów pozostaje osobnym etapem13.
+
 ## Testy
 
 UX-02: konfigurator zachowuje wybrane powiaty również przy zmianie województwa,

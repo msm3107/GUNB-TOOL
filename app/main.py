@@ -28,6 +28,7 @@ from .portal_service import PortalService
 from .routes.auth import auth_router
 from .routes.checkout import checkout_router
 from .routes.dashboard import dashboard_router
+from .routes.demo import demo_router
 from .routes.orders import order_router
 from .routes.places import places_router
 from .routes.portal import portal_router
@@ -86,6 +87,7 @@ def create_app(
     mimetypes.add_type("font/woff2", ".woff2")
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     places = PlaceCatalog(config.places_path)
+    api.include_router(demo_router(templates))
     api.include_router(places_router(places))
     api.include_router(order_router(Estimator(config.database_path), templates, places))
     api.include_router(auth_router(auth_service, subscriptions, templates))

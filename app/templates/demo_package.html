@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block body_class %}work-page{% endblock %}
+{% block content %}
+<section class="container page-section" aria-labelledby="demo-heading">
+  <p class="eyebrow">Próbka produktu / XLSX + CSV</p>
+  <h1 id="demo-heading">Przykładowa paczka.<br>Dane fikcyjne.</h1>
+  <p class="sample-notice">To trzy fikcyjne inwestycje, nie rzeczywiste wpisy z rejestru ani dane konkretnych inwestorów. Pliki zawierają te same przykłady co podgląd.</p>
+  <p>Scenariusz demonstracyjny z {{ sample_date.isoformat() }} dla firm zajmujących się dachami: po jednym przykładowym wierszu Nowe, Zmiany i Pełna baza. To ilustracja trzech wariantów, nie pełna baza wybranego regionu. Ustawienia konfiguratora nie zmieniają tej stałej próbki.</p>
+  <div class="demo-downloads">
+    <a class="button-link" href="{{ url_for('demo_xlsx') }}">Fikcyjny XLSX <span aria-hidden="true">↓</span></a>
+    <a class="button-link" href="{{ url_for('demo_csv') }}">Fikcyjny CSV <span aria-hidden="true">↓</span></a>
+  </div>
+  <p class="field-help">Pliki mają taki sam układ kolumn jak paczki inwestycji. XLSX zawiera trzy zakładki; CSV to jedna lista z polem Typ dostawy, kodowaniem UTF-8 z BOM i separatorem przecinkowym. Podgląd poniżej pokazuje skrót pól. Nie zamieszczamy kontaktów, współrzędnych, numerów działek ani linków mapowych.</p>
+  {% for row in rows %}{% set lead = row.item.investment %}
+  <details class="lead-example" open>
+    <summary><span class="example-type">{{ lead.nazwa_zamierzenia }} <span class="example-label">{{ lead.id_sprawy }} — fikcyjny scenariusz</span></span><span class="delivery-label">{{ row.label }}</span></summary>
+    <div class="details-body">
+      <dl class="sample-facts">
+        <div><dt>Status w scenariuszu</dt><dd>{{ lead.status_opis }}</dd></div>
+        <div><dt>Miejscowość i gmina</dt><dd>{{ lead.miejscowosc }}, gmina {{ lead.gmina }} — nazwy przykładowe</dd></div>
+        <div><dt>Dlaczego pasuje</dt><dd>{{ row.score.reasons|join('; ') }}</dd></div>
+        <div><dt>Szacunek branżowy</dt><dd>{{ row.timing }} To orientacyjny szacunek, nie potwierdzenie rozpoczęcia robót ani terminu zakupu.</dd></div>
+        <div><dt>Źródło</dt><dd>{{ lead.organ }}. Fikcyjny wpis w strukturze RWDZ; nie został pobrany z rejestru.</dd></div>
+        <div><dt>Jakość danych</dt><dd>{{ lead.data_quality_label or 'Brak zgłoszonej uwagi nie oznacza zweryfikowanej poprawności.' }} Brak punktu działki w próbce.</dd></div>
+        <div><dt>Daty w scenariuszu</dt><dd>Wniosek: {{ lead.data_wplywu }}. Decyzja: {{ lead.data_decyzji or 'brak' }}.</dd></div>
+      </dl>
+      {% if row.item.status_history %}<p class="field-help">Fikcyjna historia: {% for change in row.item.status_history %}{{ change.stary_status or 'brak' }} → {{ change.nowy_status }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>{% endif %}
+    </div>
+  </details>
+  {% endfor %}
+  <p class="field-help">Nowe oznacza sprawę dotąd nieznaną klientowi w danym scenariuszu. Zmiany ilustrują aktualizację znanej sprawy. Pełna baza może zawierać znane sprawy i pokazuje zapisaną historię. To stała próbka, a nie dostawa Twoich inwestycji.</p>
+  <p><a class="button-link" href="{{ url_for('order_configurator') }}">Sprawdź własny obszar <span aria-hidden="true">↗</span></a></p>
+  <p class="sales-note">Zamówienia i płatności online nie są jeszcze dostępne. Ceny i warunki pojawią się przed uruchomieniem sprzedaży.</p>
+</section>
+{% endblock %}
