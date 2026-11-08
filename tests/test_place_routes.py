@@ -172,3 +172,47 @@ def test_old_catalog_version_never_uses_cached_coordinates(place_app):
     import_catalog(app.source, app.catalog, source_date=DAY)
     response = app.client.post("/api/estimate", json=chosen(app))
     assert response.status_code == 422 and "place_id" in response.json()["field_errors"]
+
+
+def test_test_checkout_resolves_the_same_place_without_provider_io(place_app):
+    calls = []
+
+    class FakeCheckout:
+        settings = SimpleNamespace(test_mode=True, origin="https://example.test")
+
+        def start(self, **values):
+            calls.append(values)
+            return "https://checkout.stripe.com/c/pay/synthetic"
+
+    with TestClient(
+        create_app(
+            WebConfig(database_path=place_app.database, places_path=place_app.catalog),
+            checkout_service=FakeCheckout(),
+        )
+    ) as client:
+        body = {
+            "email": "person@example.test",
+            "kind": "paczka",
+            "request_token": "11111111-1111-4111-8111-111111111111",
+            "filters": chosen(place_app),
+        }
+        response = client.post(
+            "/zamowienie/checkout",
+            json=body,
+            headers={"Origin": "https://example.test"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert (calls[0]["filters"].lat, calls[0]["filters"].lon) == (53, 20)
+        assert calls[0]["filters"].promien_km == 10
+        body["filters"]["lat"] = 54
+        assert (
+            client.post(
+                "/zamowienie/checkout",
+                json=body,
+                headers={"Origin": "https://example.test"},
+                follow_redirects=False,
+            ).status_code
+            == 422
+        )
+        assert len(calls) == 1

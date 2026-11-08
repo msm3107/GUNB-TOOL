@@ -38,6 +38,7 @@ class EstimateInput(BaseModel):
     place_id: str | None = Field(default=None, max_length=100)
     place_version: str | None = Field(default=None, max_length=128)
     _search_places: bool = PrivateAttr(default=False)
+    _clear_place: bool = PrivateAttr(default=False)
 
     def filters(self, places: PlaceCatalog | None = None) -> PackageFilters:
         lat, lon = self.lat, self.lon
@@ -149,14 +150,14 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
             errors="strict",
         )
         action = parsed.pop("place_action", ["estimate"])
-        if action not in (["estimate"], ["search"]):
-            raise ValueError("Niepoprawna akcja formularza")
         selection = display_selection(
             {
                 key: items if key in ("powiaty", "kategorie") else items[0]
                 for key, items in parsed.items()
             }
         )
+        if action not in (["estimate"], ["search"], ["clear"]):
+            raise ValueError("Niepoprawna akcja formularza")
         values: dict[str, object] = {}
         number_errors = {}
         for name, items in parsed.items():
@@ -184,6 +185,7 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
         values.setdefault("kategorie", [])
         selected = EstimateInput.model_validate(values)
         selected._search_places = action == ["search"]
+        selected._clear_place = action == ["clear"]
         return selected
     except InputError:
         raise
@@ -219,6 +221,7 @@ def order_router(
         status=200,
         field_errors=None,
         place_results=None,
+        place_notice=None,
     ):
         selection = (
             selection
@@ -274,6 +277,7 @@ def order_router(
                 "field_errors": field_errors or {},
                 "place_results": place_results,
                 "selected_place": selected_place,
+                "place_notice": place_notice,
             },
         )
 
@@ -286,6 +290,14 @@ def order_router(
         selection = None
         try:
             selection = await read_input(request, native=True)
+            if selection._clear_place:
+                view = selection.model_dump()
+                view.update(place_query="", place_id=None, place_version=None)
+                return await page(
+                    request,
+                    selection=view,
+                    place_notice="Usunięto wybór miejscowości. Promień i pozostałe filtry zachowano.",
+                )
             if selection._search_places:
                 try:
                     results = await run_in_threadpool(

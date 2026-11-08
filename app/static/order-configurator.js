@@ -11,7 +11,7 @@
   const zero = document.getElementById("estimate-zero");
   const summary = document.getElementById("filter-errors");
   const draftStatus = document.getElementById("draft-status");
-  const allowedFields = ["wojewodztwo", "branza", "powiaty", "kategorie", "lat", "lon", "promien_km"];
+  const allowedFields = ["wojewodztwo", "branza", "powiaty", "kategorie", "lat", "lon", "promien_km", "place_query", "place_id"];
   let sequence = 0, controller, timer;
   let started = form.dataset.ready === "true";
   const counties = () => [...countyBox.querySelectorAll("input[name=powiaty]")];
@@ -50,6 +50,9 @@
     const value = { wojewodztwo: data.get("wojewodztwo"), branza: data.get("branza"),
       powiaty: data.getAll("powiaty"), kategorie: data.getAll("kategorie") };
     for (const key of ["lat", "lon", "promien_km"]) value[key] = data.get(key).trim() === "" ? null : Number(data.get(key));
+    if (["place_query", "place_id", "place_version"].some(k => data.get(k))) {
+      value.place_query = data.get("place_query"); value.place_id = data.get("place_id") || null; value.place_version = data.get("place_version") || null;
+    }
     return value;
   }
   function scope() {
@@ -58,7 +61,8 @@
     const coordinates = ['lat','lon','promien_km'].map(k => form.elements.namedItem(k).value || '—');
     document.getElementById("estimate-scope").textContent = "Zakres: " + region.selectedOptions[0].textContent +
       "; powiaty: " + (selected.join(", ") || "całe województwo") + "; branża: " + form.elements.branza.selectedOptions[0].textContent +
-      "; typy: " + categories.join(', ') + "; punkt N/E/promień km: " + coordinates.join('/');
+      "; typy: " + categories.join(', ') + "; punkt N/E/promień km: " + coordinates.join('/') +
+      "; miejscowość: " + (form.elements.place_id.value ? form.elements.place_id.selectedOptions[0].textContent : "nie wybrano");
   }
   function invalidate() {
     sequence += 1; controller?.abort(); clearTimeout(timer);
@@ -138,6 +142,15 @@
     }
     for (const input of counties()) input.checked = value.powiaty.includes(input.value);
     for (const input of form.querySelectorAll("input[name=kategorie]")) input.checked = value.kategorie.includes(input.value);
+    if (Object.hasOwn(value, "place_id")) {
+      form.elements.place_query.value = value.place_query;
+      const choice = form.elements.place_id;
+      if (value.place_id && ![...choice.options].some(n => n.value === value.place_id)) {
+        const option = new Option(value.place_query + " — zachowany wybór; wymaga weryfikacji katalogu", value.place_id);
+        option.dataset.name = value.place_query; option.dataset.version = value.place_version || ""; choice.append(option);
+      }
+      choice.value = value.place_id || ""; form.elements.place_version.value = value.place_version || "";
+    }
     for (const key of ["lat", "lon", "promien_km"]) form.elements.namedItem(key).value = value[key] ?? "";
     if (value.lat !== null || value.lon !== null || value.promien_km !== null) form.querySelector(".radius-options").open = true;
     draftStatus.textContent = "Przywrócono dokładny zakres szkicu. Sprawdź wynik i ewentualne błędy pól.";

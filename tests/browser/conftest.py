@@ -14,8 +14,10 @@ from app.config import WebConfig
 from app.main import create_app
 from core.auth_store import AuthStore
 from core.models import Investment
+from core.places import import_catalog
 from core.storage import LeadRepository
 from tests.test_auth_service import NOW, Sender, settings
+from tests.test_places import DAY, gml
 
 
 @pytest.fixture
@@ -26,6 +28,17 @@ def browser_context_args(browser_context_args):
 @pytest.fixture
 def app_server(tmp_path):
     path = tmp_path / "browser.sqlite"
+    place_source, places_path = tmp_path / "names.gml", tmp_path / "places.sqlite"
+    place_source.write_text(
+        gml(
+            [
+                ("2", "Łódź", "Gmina A", "Powiat A", "2814011", "53 20"),
+                ("3", "Łódź", "Gmina B", "Powiat B", "2801011", "53.5 20.5"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    place_version = import_catalog(place_source, places_path, source_date=DAY)
     with LeadRepository(path) as repo:
         repo.connection.execute(
             "INSERT INTO b2b_customers(email) VALUES('person@example.test')"
@@ -62,7 +75,10 @@ def app_server(tmp_path):
     server = uvicorn.Server(
         uvicorn.Config(
             create_app(
-                WebConfig(database_path=path, auth=auth_settings), auth_service=auth
+                WebConfig(
+                    database_path=path, places_path=places_path, auth=auth_settings
+                ),
+                auth_service=auth,
             ),
             log_level="error",
             access_log=False,
@@ -79,7 +95,13 @@ def app_server(tmp_path):
                 raise RuntimeError("Synthetic server did not start")
             time.sleep(0.01)
         yield SimpleNamespace(
-            url=url, sender=sender, path=path, delivery_done=delivery_done
+            url=url,
+            sender=sender,
+            path=path,
+            delivery_done=delivery_done,
+            places_path=places_path,
+            place_source=place_source,
+            place_version=place_version,
         )
     finally:
         server.should_exit = True

@@ -3,9 +3,15 @@
   const key = "zt:filter-draft:v1";
   const pending = "zt:filter-draft:logout";
   const fields = ["wojewodztwo", "branza", "powiaty", "kategorie", "lat", "lon", "promien_km"];
+  const placeFields = ["place_query", "place_id", "place_version"];
   const storage = (action) => { try { return action(sessionStorage); } catch { return undefined; } };
   function valid(value) {
-    return value && typeof value === "object" && Object.keys(value).length === fields.length &&
+    if (!value || typeof value !== "object") return false;
+    const extended = placeFields.some(k => Object.hasOwn(value, k));
+    const keys = extended ? fields.concat(placeFields) : fields;
+    return Object.keys(value).length === keys.length && keys.every(k => Object.hasOwn(value, k)) &&
+      (!extended || (typeof value.place_query === "string" && value.place_query.length <= 80 &&
+        ["place_id", "place_version"].every(k => value[k] === null || (typeof value[k] === "string" && value[k].length <= (k === "place_id" ? 100 : 128))))) &&
       fields.every(k => Object.hasOwn(value, k)) &&
       typeof value.wojewodztwo === "string" && /^\d{2}$/.test(value.wojewodztwo) &&
       typeof value.branza === "string" && value.branza.length <= 30 &&
@@ -20,13 +26,14 @@
       try {
         if (raw.length > 8192) throw new Error();
         const draft = JSON.parse(raw);
-        if (draft.version !== 1 || !valid(draft.filters)) throw new Error();
+        if (!valid(draft.filters) || ![1,2].includes(draft.version) ||
+            (draft.version === 2) !== Object.hasOwn(draft.filters, "place_id")) throw new Error();
         return { state: "ready", filters: draft.filters };
       } catch { return { state: "invalid" }; }
     },
     save(filters) {
       if (!valid(filters)) return false;
-      return storage(s => { s.setItem(key, JSON.stringify({ version: 1, filters })); return true; }) === true;
+      return storage(s => { s.setItem(key, JSON.stringify({ version: Object.hasOwn(filters, "place_id") ? 2 : 1, filters })); return true; }) === true;
     },
   });
   // Clear only after the server confirms an anonymous GET following logout.

@@ -17,11 +17,11 @@ from .stripe_service import CheckoutSettings
 class WebConfig:
     cors_origins: tuple[str, ...] = ()
     database_path: Path | None = None
-    places_path: Path | None = None
     checkout: CheckoutSettings = field(default_factory=CheckoutSettings)
     webhook_secret: str = field(default="", repr=False)
     test_package_dir: Path | None = None
     auth: AuthSettings = field(default_factory=AuthSettings)
+    places_path: Path | None = None
 
     def __post_init__(self) -> None:
         if self.database_path is not None and not isinstance(self.database_path, Path):

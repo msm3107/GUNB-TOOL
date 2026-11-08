@@ -8,7 +8,7 @@
   <h1 id="configurator-heading">Sprawdź zakres<br>swojej paczki.</h1>
   <p class="intro">Wybierz obszar i branżę, żeby policzyć pasujące inwestycje w zaimportowanych danych. To podgląd zakresu — nie składa zamówienia i nie uruchamia płatności.</p>
   <div class="configurator-layout">
-  <form id="package-form" method="post" action="{{ url_for('order_configurator') }}#estimate-heading" data-estimate-url="{{ url_for('package_estimate') }}" data-native="{{ 'true' if request.method == 'POST' else 'false' }}" data-ready="{{ 'false' if error or place_results is not none else 'true' }}">
+  <form id="package-form" method="post" action="{{ url_for('order_configurator') }}#estimate-heading" data-estimate-url="{{ url_for('package_estimate') }}" data-native="{{ 'true' if request.method == 'POST' else 'false' }}" data-ready="{{ 'false' if error or place_results is not none or place_notice else 'true' }}">
     <div id="filter-errors" role="alert"{% if not error %} hidden{% endif %}><p>{{ error or '' }}</p><ul>{% for key,message in field_errors.items() %}<li><a href="#{{ key }}">{{ message }}</a></li>{% endfor %}</ul></div>
     <p id="draft-status" class="field-help" role="status"></p>
     <fieldset>
@@ -47,7 +47,7 @@
       <input id="place_query" name="place_query" type="search" maxlength="80" value="{{ selection.place_query }}" autocomplete="off" {{ field_state('place_query','place-help') }}>
       {{ field_error('place_query') }}
       <button class="button-secondary" type="submit" name="place_action" value="search" formnovalidate>Znajdź miejscowość</button>
-      <p id="place-status" role="status">{% if place_results is not none %}{% if place_results %}Wybierz konkretną miejscowość z listy.{% else %}Brak miejscowości pasujących do nazwy i województwa.{% endif %}{% endif %}</p>
+      <p id="place-status" role="status">{% if place_notice %}{{ place_notice }}{% elif place_results is not none %}{% if place_results %}Wybierz konkretną miejscowość z listy.{% else %}Brak miejscowości pasujących do nazwy i województwa.{% endif %}{% endif %}</p>
       <label for="place_id">Miejscowość — wybierz z gminą i powiatem</label>
       <select id="place_id" name="place_id" {{ field_state('place_id','place-help') }}>
         <option value=""{% if not selection.place_id %} selected{% endif %}>Wybierz miejscowość po wyszukaniu</option>
@@ -56,7 +56,7 @@
       </select>
       <input id="place_version" name="place_version" type="hidden" value="{{ selection.place_version or '' }}">
       {{ field_error('place_id') }}
-      <button id="place-clear" class="button-secondary" type="button" hidden>Usuń wybór miejscowości</button>
+      <button id="place-clear" class="button-secondary" type="submit" name="place_action" value="clear" formnovalidate>Usuń wybór miejscowości</button>
       <p id="place-help" class="field-help">Punkt miejscowości z PRNG, nie adres firmy. Sama wpisana nazwa nie wybiera punktu. Przy wyborze miejscowości pozostaw ręczne współrzędne puste. Promień przecina wybrane województwo i powiaty; nie rozszerza ich.</p>
       <label for="promien_km">Promień w kilometrach (1–200)</label>
       <input id="promien_km" name="promien_km" type="{{ 'text' if 'promien_km' in field_errors or selection.promien_km is string else 'number' }}" min="1" max="200" step="any" value="{{ selection.promien_km if selection.promien_km is not none else '' }}" inputmode="decimal" {{ field_state('promien_km') }}>
