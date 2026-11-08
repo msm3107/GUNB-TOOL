@@ -9,6 +9,87 @@ from tests.test_places import DAY
 KEY = "zt:filter-draft:v1"
 
 
+@pytest.mark.parametrize("search_action", ["button", "enter"])
+def test_blocked_picker_falls_back_to_native_actions_without_filter_loss(
+    page, app_server, search_action
+):
+    blocked = []
+
+    def block_picker(route):
+        blocked.append(route.request.url)
+        route.abort()
+
+    page.route("**/static/place-picker.js", block_picker)
+    page.goto(app_server.url + "/zamowienie")
+    expect(page.locator("#estimate-result")).to_be_visible()
+    expect(page.locator("#county-tools")).to_be_visible()
+    assert blocked  # Only the picker is unavailable; estimation JS still runs.
+    page.select_option("#branza", "dach")
+    page.locator('input[name=powiaty][value="2814"]').check()
+    for category in page.locator("input[name=kategorie]").all():
+        category.uncheck()
+    page.locator('input[name=kategorie][value="komercyjna"]').check()
+    page.locator("#promien_km").fill("10")
+    page.locator("#place_query").fill("lodz")
+
+    def assert_scope():
+        expect(page.locator("#wojewodztwo")).to_have_value("28")
+        expect(page.locator("#branza")).to_have_value("dach")
+        assert page.locator("input[name=powiaty]:checked").evaluate_all(
+            "nodes => nodes.map(n => n.value)"
+        ) == ["2814"]
+        assert page.locator("input[name=kategorie]:checked").evaluate_all(
+            "nodes => nodes.map(n => n.value)"
+        ) == ["komercyjna"]
+        assert float(page.locator("#promien_km").input_value()) == 10
+        expect(page.locator("#lat")).to_have_value("")
+        expect(page.locator("#lon")).to_have_value("")
+
+    def native_post(response):
+        return response.request.method == "POST" and response.url.endswith(
+            "/zamowienie"
+        )
+
+    with page.expect_response(native_post, timeout=5000) as search:
+        if search_action == "button":
+            page.get_by_role("button", name="Znajdź miejscowość", exact=True).click()
+        else:
+            page.locator("#place_query").press("Enter")
+    assert search.value.status == 200
+    expect(page.locator("#place_id option")).to_have_count(3)
+    assert_scope()
+    page.select_option("#place_id", "2")
+    with page.expect_response("**/api/estimate") as calculation:
+        page.get_by_role("button", name="Policz inwestycje").click()
+    assert calculation.value.status == 200
+    filters = calculation.value.request.post_data_json
+    assert filters == {
+        "wojewodztwo": "28",
+        "branza": "dach",
+        "powiaty": ["2814"],
+        "kategorie": ["komercyjna"],
+        "lat": None,
+        "lon": None,
+        "promien_km": 10,
+        "place_query": "lodz",
+        "place_id": "2",
+        "place_version": app_server.place_version,
+    }
+    expect(page.locator("#estimate-result")).to_be_visible()
+    with page.expect_response(native_post, timeout=5000) as cleared:
+        page.get_by_role("button", name="Usuń wybór miejscowości", exact=True).click()
+    assert cleared.value.status == 200
+    expect(page.locator("#place_query")).to_have_value("")
+    expect(page.locator("#place_id")).to_have_value("")
+    expect(page.locator("#place_version")).to_have_value("")
+    assert_scope()
+    page.goto(app_server.url + "/zamowienie")
+    expect(page.locator("#place_query")).to_have_value("")
+    expect(page.locator("#place_id")).to_have_value("")
+    expect(page.locator("#place_version")).to_have_value("")
+    assert_scope()
+
+
 @pytest.mark.parametrize("javascript", [True, False])
 def test_enter_calculates_radius_and_searches_only_place_query(
     browser, app_server, javascript

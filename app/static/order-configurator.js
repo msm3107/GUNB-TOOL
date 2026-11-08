@@ -157,12 +157,22 @@
     return true;
   }
   const canStart = restore(); filterCounties(); scope(); document.getElementById("county-tools").hidden = false;
+  // Native POST is authoritative, including an explicit removal of the place.
+  if (form.dataset.native === "true") save();
   search.addEventListener("input", filterCounties);
   for (const id of ["county-clear", "county-whole"]) document.getElementById(id).addEventListener("click", () => {
     for (const input of counties()) input.checked = false;
     filterCounties(); invalidate(); errors(); save(); if (started) timer = setTimeout(estimate, 400);
   });
-  form.addEventListener("submit", event => { event.preventDefault(); estimate(true); });
+  form.addEventListener("submit", event => {
+    if (event.defaultPrevented) return;
+    const action = event.submitter;
+    const isEstimate = !action || action.id === "estimate-retry" ||
+      (action.name === "place_action" && (action.value === "estimate" ||
+        (action.value === "auto" && document.activeElement !== form.elements.place_query)));
+    if (!isEstimate) { invalidate(); return; }
+    event.preventDefault(); estimate(true);
+  });
   form.addEventListener("input", event => {
     if (event.target === search) return;
     filterCounties(); invalidate(); errors(); save(); if (started) timer = setTimeout(estimate, 400);
