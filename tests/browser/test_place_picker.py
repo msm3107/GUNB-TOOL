@@ -9,6 +9,58 @@ from tests.test_places import DAY
 KEY = "zt:filter-draft:v1"
 
 
+@pytest.mark.parametrize("javascript", [True, False])
+def test_enter_calculates_radius_and_searches_only_place_query(
+    browser, app_server, javascript
+):
+    with browser.new_context(java_script_enabled=javascript) as context:
+        page = context.new_page()
+        page.goto(app_server.url + "/zamowienie")
+        page.locator(".radius-options summary").click()
+        page.locator("#lat").fill("53")
+        page.locator("#lon").fill("20")
+        page.locator("#promien_km").fill("10")
+        with page.expect_response(
+            lambda r: (
+                r.request.method == "POST"
+                and r.url.endswith("/api/estimate" if javascript else "/zamowienie")
+            ),
+            timeout=5000,
+        ) as calculation:
+            page.locator("#promien_km").press("Enter")
+        assert calculation.value.status == 200
+        expect(page.locator("#estimate-result")).to_be_visible()
+        expect(page.locator("#place-status")).not_to_contain_text("Wpisz od 2")
+        if not page.locator(".radius-options").evaluate("n => n.open"):
+            page.locator(".radius-options summary").click()
+        page.locator("#lat").fill("")
+        page.locator("#lon").fill("")
+        page.locator("#place_query").fill("lodz")
+        with page.expect_response(
+            lambda r: (
+                "/api/places?" in r.url
+                if javascript
+                else r.request.method == "POST" and r.url.endswith("/zamowienie")
+            ),
+            timeout=5000,
+        ) as search:
+            page.locator("#place_query").press("Enter")
+        assert search.value.status == 200
+        expect(page.locator("#place_id option")).to_have_count(3)
+        page.select_option("#place_id", "2")
+        with page.expect_response(
+            lambda r: (
+                r.request.method == "POST"
+                and r.url.endswith("/api/estimate" if javascript else "/zamowienie")
+            ),
+            timeout=5000,
+        ) as selected:
+            page.locator("#promien_km").press("Enter")
+        assert selected.value.status == 200
+        expect(page.locator("#place_id")).to_have_value("2")
+        expect(page.locator("#estimate-result")).to_be_visible()
+
+
 def choose(page, server):
     page.goto(server.url + "/zamowienie")
     expect(page.locator("#estimate-result")).to_be_visible()

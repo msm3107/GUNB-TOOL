@@ -156,7 +156,7 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
                 for key, items in parsed.items()
             }
         )
-        if action not in (["estimate"], ["search"], ["clear"]):
+        if action not in (["estimate"], ["search"], ["clear"], ["auto"]):
             raise ValueError("Niepoprawna akcja formularza")
         values: dict[str, object] = {}
         number_errors = {}
@@ -184,7 +184,15 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
             )
         values.setdefault("kategorie", [])
         selected = EstimateInput.model_validate(values)
-        selected._search_places = action == ["search"]
+        # Native implicit Enter estimates an existing point/GPS; a pending name
+        # without either point must be searched before it can be estimated.
+        selected._search_places = action == ["search"] or (
+            action == ["auto"]
+            and bool(selected.place_query.strip())
+            and not selected.place_id
+            and selected.lat is None
+            and selected.lon is None
+        )
         selected._clear_place = action == ["clear"]
         return selected
     except InputError:

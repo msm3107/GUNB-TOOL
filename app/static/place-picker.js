@@ -37,7 +37,9 @@
     status.textContent = "Usunięto wybór miejscowości. Promień i pozostałe filtry zachowano."; changed();
   });
   form.addEventListener("submit", async event => {
-    if (event.submitter?.name !== "place_action") return;
+    const action = event.submitter;
+    if (action?.name !== "place_action" ||
+        !(action.value === "search" || (action.value === "auto" && document.activeElement === query))) return;
     event.preventDefault(); event.stopImmediatePropagation();
     const current = cancel(); reset(); changed();
     if (query.value.trim().length < 2 || query.value.trim().length > 80) {

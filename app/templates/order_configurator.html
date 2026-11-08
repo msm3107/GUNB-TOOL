@@ -9,6 +9,7 @@
   <p class="intro">Wybierz obszar i branżę, żeby policzyć pasujące inwestycje w zaimportowanych danych. To podgląd zakresu — nie składa zamówienia i nie uruchamia płatności.</p>
   <div class="configurator-layout">
   <form id="package-form" method="post" action="{{ url_for('order_configurator') }}#estimate-heading" data-estimate-url="{{ url_for('package_estimate') }}" data-native="{{ 'true' if request.method == 'POST' else 'false' }}" data-ready="{{ 'false' if error or place_results is not none or place_notice else 'true' }}">
+    <button type="submit" name="place_action" value="auto" hidden aria-hidden="true" tabindex="-1"></button>
     <div id="filter-errors" role="alert"{% if not error %} hidden{% endif %}><p>{{ error or '' }}</p><ul>{% for key,message in field_errors.items() %}<li><a href="#{{ key }}">{{ message }}</a></li>{% endfor %}</ul></div>
     <p id="draft-status" class="field-help" role="status"></p>
     <fieldset>
@@ -74,7 +75,7 @@
         <p class="field-help">Podaj wszystkie trzy wartości albo pozostaw wszystkie puste. Promień zawęża wybrany obszar; pomija lokalizacje gminne i znane rozbieżności działek. Centroid działki nie wskazuje położenia budynku.</p>
       </div>
     </details>
-    <button class="button-link" type="submit">Policz inwestycje <span aria-hidden="true">↗</span></button>
+    <button class="button-link" type="submit" name="place_action" value="estimate">Policz inwestycje <span aria-hidden="true">↗</span></button>
     <p class="compact-estimate" id="estimate-mobile" role="status">{% if error %}{{ error }}{% elif estimate %}Liczba pasujących inwestycji: {{ estimate.count }}.{% else %}Wynik pojawi się po przeliczeniu.{% endif %}</p>
     <noscript><p class="field-help">Po naciśnięciu przycisku wynik pojawi się na tej stronie.</p></noscript>
   </form>
