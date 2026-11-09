@@ -27,6 +27,60 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
+class _Verification:
+    """Worker owns its result and slot until the request explicitly takes them.
+
+    Direct asyncio cancellation can abandon a running threadpool await. Keep
+    cleanup in the worker too, and retain its slot until the file is closed.
+    """
+
+    def __init__(self, root, artifact, release):
+        self.root, self.artifact, self.release = root, artifact, release
+        self._lock = threading.Lock()
+        self._started = self._finished = self._abandoned = self._released = False
+        self._opened = None
+
+    def _dispose(self, opened):
+        # Caller holds _lock. Closing read-only handles performs no network IO.
+        try:
+            if opened is not None:
+                opened.close()
+        finally:
+            if not self._released:
+                self._released = True
+                self.release()
+
+    def run(self):
+        with self._lock:
+            if self._abandoned:
+                return
+            self._started = True
+        opened = None
+        try:
+            opened = open_verified(self.root, self.artifact)
+        finally:
+            with self._lock:
+                self._finished = True
+                if self._abandoned:
+                    self._dispose(opened)
+                else:
+                    self._opened = opened
+
+    def take(self):
+        with self._lock:
+            if self._abandoned or not self._finished or self._opened is None:
+                raise ArtifactUnavailable()
+            opened, self._opened = self._opened, None
+            return opened
+
+    def abandon(self):
+        with self._lock:
+            self._abandoned = True
+            if not self._started or self._finished:
+                self._dispose(self._opened)
+                self._opened = None
+
+
 class ArtifactResponse(StreamingResponse):
     def __init__(self, opened, release, **kwargs):
         self.opened, self.release = opened, release
@@ -208,6 +262,7 @@ def downloads_router(store, root, identity, auth, templates):
     async def download(request: Request, token: str):
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         opened, acquired, transferred = None, False, False
+        verification = None
         owner = None
         try:
             owner = await principal(request)
@@ -245,7 +300,10 @@ def downloads_router(store, root, identity, auth, templates):
             acquired = True
             if root is None:
                 raise ArtifactUnavailable()
-            opened = await run_in_threadpool(open_verified, root, grant.artifact)
+            verification = _Verification(root, grant.artifact, slots.release)
+            await run_in_threadpool(verification.run)
+            opened = verification.take()
+            verification = None  # request now owns both the handle and its slot
             await audit(
                 request,
                 token_hash,
@@ -294,6 +352,9 @@ def downloads_router(store, root, identity, auth, templates):
                 request, 503, "Pobieranie jest chwilowo niedostępne. Spróbuj ponownie."
             )
         finally:
+            if verification is not None:
+                acquired = False  # worker releases after closing its abandoned result
+                verification.abandon()
             if not transferred:
                 try:
                     if opened is not None:

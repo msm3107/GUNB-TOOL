@@ -644,9 +644,101 @@ def test_windows_real_junction_is_rejected_without_symlink_privilege(package, tm
     _, root = package
     alias = tmp_path / "junction"
     result = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(alias), str(root)], capture_output=True, check=False
+        ["cmd", "/c", "mklink", "/J", str(alias), str(root)],
+        capture_output=True,
+        check=False,
     )
     if result.returncode:
         pytest.skip("OS does not permit synthetic junctions")
     with pytest.raises(ArtifactUnavailable):
         inspect_artifact(alias, "sample.csv", "csv")
+
+
+def test_cancellation_during_verification_closes_worker_result(
+    download_http, monkeypatch
+):
+    import asyncio
+    import threading
+    import time
+
+    from app.routes import downloads
+
+    h = download_http
+    url = issue(h).headers["location"]
+    original = downloads.open_verified
+    opened = []
+    entered, finish, returned = threading.Event(), threading.Event(), threading.Event()
+    returned_workers = []
+
+    def blocked(*args):
+        result = original(*args)
+        opened.append(result)
+        entered.set()
+        assert finish.wait(5), "Synthetic verification was not released"
+        returned_workers.append(True)
+        if len(returned_workers) == 4:
+            returned.set()
+        return result
+
+    monkeypatch.setattr(downloads, "open_verified", blocked)
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "method": "GET",
+        "scheme": "https",
+        "path": url,
+        "raw_path": url.encode(),
+        "query_string": b"",
+        "headers": [(b"cookie", b"owner=1")],
+        "client": ("127.0.0.1", 1234),
+        "server": ("example.test", 443),
+        "root_path": "",
+        "http_version": "1.1",
+    }
+
+    async def run():
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            raise AssertionError("Cancelled verification must not start a response")
+
+        tasks = []
+        try:
+            for _ in range(4):
+                entered.clear()
+                task = asyncio.create_task(h.client.app(dict(scope), receive, send))
+                tasks.append(task)
+                assert await asyncio.to_thread(entered.wait, 5)
+                task.cancel()
+                (result,) = await asyncio.gather(task, return_exceptions=True)
+                assert isinstance(result, asyncio.CancelledError)
+            statuses = []
+
+            async def busy_send(message):
+                if message["type"] == "http.response.start":
+                    statuses.append(message["status"])
+
+            await asyncio.wait_for(h.client.app(dict(scope), receive, busy_send), 1)
+            assert statuses == [429]  # cancelled workers still own their four slots
+            finish.set()
+            assert await asyncio.to_thread(returned.wait, 5)
+            deadline = time.monotonic() + 1
+            while (
+                not all(value.stream.closed for value in opened)
+                and time.monotonic() < deadline
+            ):
+                await asyncio.sleep(0.01)
+            assert len(opened) == 4 and all(value.stream.closed for value in opened)
+        finally:
+            finish.set()
+            await asyncio.to_thread(returned.wait, 5)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for value in opened:
+                value.close()
+
+    asyncio.run(run())
+    monkeypatch.setattr(downloads, "open_verified", original)
+    assert h.client.get(url).status_code == 200
