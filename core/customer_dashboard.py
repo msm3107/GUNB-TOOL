@@ -36,6 +36,8 @@ class DashboardDelivery:
     new_count: int
     change_count: int
     full_count: int
+    formats: tuple[str, ...] = ()
+    published_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -168,12 +170,18 @@ class CustomerDashboardStore(CheckoutStore):
         # Limit deliveries BEFORE joining their immutable items, never aggregate other tenants.
         deliveries = conn.execute(
             """WITH page AS MATERIALIZED (
-                SELECT d.delivery_id,d.order_id,d.doreczono_utc FROM b2b_orders o
+                SELECT d.delivery_id,d.order_id,d.doreczono_utc,o.status_platnosci,pub.published_at FROM b2b_orders o
                 JOIN b2b_deliveries d USING(order_id)
+                LEFT JOIN package_publications pub USING(delivery_id)
                 WHERE o.customer_id=? AND d.delivery_id<=? ORDER BY d.delivery_id DESC LIMIT ?)
             SELECT p.*,COALESCE(SUM(i.kategoria_dostawy='new'),0) AS new_count,
                 COALESCE(SUM(i.kategoria_dostawy='change'),0) AS change_count,
-                COALESCE(SUM(i.kategoria_dostawy='full'),0) AS full_count
+                COALESCE(SUM(i.kategoria_dostawy='full'),0) AS full_count,
+                CASE WHEN p.status_platnosci='paid' AND (p.doreczono_utc IS NOT NULL OR p.published_at IS NOT NULL)
+                THEN (SELECT group_concat(a.format,',') FROM package_artifacts a
+                    JOIN b2b_deliveries original USING(delivery_id)
+                    WHERE a.delivery_id=p.delivery_id AND a.relative_name=CASE a.format WHEN 'xlsx' THEN original.plik_xlsx ELSE original.plik_csv END)
+                END AS formats
             FROM page p LEFT JOIN b2b_delivery_items i USING(delivery_id)
             GROUP BY p.delivery_id ORDER BY p.delivery_id DESC""",
             (
@@ -236,6 +244,8 @@ class CustomerDashboardStore(CheckoutStore):
                     r["new_count"],
                     r["change_count"],
                     r["full_count"],
+                    tuple(r["formats"].split(',')) if r["formats"] else (),
+                    r["published_at"],
                 )
                 for r in deliveries[:PAGE_SIZE]
             ),

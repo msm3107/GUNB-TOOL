@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from .checkout_store import CheckoutConflict, CheckoutStore
 from .delivery_memory import ClassifiedDeliveryItem
+from .package_access import record_artifacts, validate_artifacts
+from .package_files import Artifact
 
 
 @dataclass(frozen=True)
@@ -93,13 +95,20 @@ class PaymentStore(CheckoutStore):
                 if p.mode == "subscription":
                     if not p.stripe_customer_id or not p.subscription_id:
                         raise CheckoutConflict
-                    link = conn.execute("SELECT stripe_customer_id,subscription_id FROM checkout_billing_links WHERE order_id=?",
-                                        (row["order_id"],)).fetchone()
-                    if link and tuple(link) != (p.stripe_customer_id,p.subscription_id):
+                    link = conn.execute(
+                        "SELECT stripe_customer_id,subscription_id FROM checkout_billing_links WHERE order_id=?",
+                        (row["order_id"],),
+                    ).fetchone()
+                    if link and tuple(link) != (
+                        p.stripe_customer_id,
+                        p.subscription_id,
+                    ):
                         raise CheckoutConflict
                     if link is None:
-                        conn.execute("INSERT INTO checkout_billing_links VALUES(?,?,?)",
-                                     (row["order_id"],p.stripe_customer_id,p.subscription_id))
+                        conn.execute(
+                            "INSERT INTO checkout_billing_links VALUES(?,?,?)",
+                            (row["order_id"], p.stripe_customer_id, p.subscription_id),
+                        )
                 order_id = row["order_id"]
                 new_job = job is None
                 outcome = "paid" if new_job else "duplicate"
@@ -192,7 +201,11 @@ class PaymentStore(CheckoutStore):
         csv: str,
         *,
         now: datetime,
+        artifacts: tuple[Artifact, ...] = (),
     ) -> bool:
+        if artifacts:
+            validate_artifacts(artifacts)
+
         def finish(conn):
             current = conn.execute(
                 """SELECT 1 FROM paid_package_jobs j JOIN b2b_orders o USING(order_id)
@@ -215,6 +228,8 @@ class PaymentStore(CheckoutStore):
                 VALUES(?,'delta',?,?)""",
                 (job.order_id, xlsx, csv),
             ).lastrowid
+            if artifacts:
+                record_artifacts(conn, delivery_id, artifacts)
             conn.executemany(
                 "INSERT INTO b2b_delivery_items VALUES(?,?,?,?)",
                 (

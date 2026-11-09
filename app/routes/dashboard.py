@@ -102,6 +102,7 @@ def dashboard_router(
     templates,
     *,
     now=None,
+    downloads_enabled=False,
 ):
     router = APIRouter()
     clock = now or (lambda: datetime.now(timezone.utc))
@@ -160,6 +161,7 @@ def dashboard_router(
                 "page_link": page_link,
                 "paged": order_cursor is not None or delivery_cursor is not None,
                 "portal_enabled": subscriptions.settings.test_mode,
+                "downloads_enabled": downloads_enabled,
             },
             status_code=status,
             headers={

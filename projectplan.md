@@ -357,11 +357,15 @@ flowchart TD
 - **Gałąź:** `feat/app-secure-downloads`
 - **Role:**
   - *Koordynator:* Zasada braku publicznych ścieżek do plików na dysku.
-  - *Workhorse:* Trasa `GET /pobierz/{token}`, walidacja podpisanego tokenu w bazie, streaming pliku jako attachment (`Content-Disposition`).
-  - *Reviewer:* Sprawdzenie podatności Path Traversal, weryfikacja logowania każdego pobrania (IP, czas, token).
+  - *Workhorse:* Sesja właściciela i `POST /panel/paczki/{delivery_id}/link` wydaje podpisany, losowy token ważny15min; GET/HEAD `/pobierz/{token}` weryfikuje powiązanie klient/format/manifest i streamuje attachment z tego samego otwartego uchwytu.
+  - *Reviewer:* Traversal, symlink/reparse/hardlink i podmiana pliku, izolacja klientów, TTL/retry, disconnect/limity oraz audyt prób bez surowych tokenów/IP/UA.
 - **Zakres zmian:**
   - Moduł `app/routes/downloads.py`.
   - Tabela `download_audit` rejestrująca pobrania plików.
+  - Migracja v23: niezmienny manifest `package_artifacts(delivery_id,format,relative_name,size,sha256)`, granty z hashem tokenu i osobna tabela `package_publications`; kopia v22 przed DDL, stare dostawy pozostają bez zmian.
+  - Fizyczne przygotowanie, udostępnienie w panelu, przyjęcie e-maila i próba pobrania są odrębne. Dostęp wymaga opłaconego własnego zamówienia i historycznego `doreczono_utc` albo wpisu publikacji. Etap13 nie publikuje przygotowanych paczek; integracja publikacji i pamięci rewizji w etapie15. Stare `doreczono_utc` pozostaje podstawą deduplikacji.
+  - Pobranie/HEAD nigdy nie zmienia pamięci ani dat doręczenia; token można ponawiać do TTL. Audyt oznacza próbę, nie potwierdzenie odbioru przez człowieka. Opłacone, wcześniej udostępnione archiwum pozostaje dostępne po końcu abonamentu, w granicach retencji plików.
+  - Nowe pliki dostają manifest podczas generowania, stare przez jawny offline backfill jednej dostawy. Hash/IO poza blokadą podmiany i transakcją; prywatny katalog poza static. Limity:64MiB/plik, budżet weryfikacji5s sprawdzany między porcjami i4aktywne uchwyty na proces. Zerwany stream zwalnia zasoby.
 - **Kryteria akceptacji:**
   - Testy pobierania z poprawnym tokenem, tokenem obcym oraz tokenem wygasłym.
 

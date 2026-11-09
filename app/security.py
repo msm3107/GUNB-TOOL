@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from urllib.parse import unquote
+
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -15,6 +18,35 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
+
+
+class DownloadLogRedaction(logging.Filter):
+    """Uvicorn access records carry the raw request target in positional args."""
+
+    def __init__(self):
+        super().__init__("gunb.download-redaction")
+
+    def filter(self, record):
+        def redact(value):
+            return (
+                "/pobierz/[REDACTED]"
+                if isinstance(value, str) and "/pobierz/" in unquote(value)
+                else value
+            )
+
+        if isinstance(record.msg, str) and "/pobierz/" in unquote(record.msg):
+            record.msg, record.args = "Download request /pobierz/[REDACTED]", ()
+        elif isinstance(record.args, tuple):
+            record.args = tuple(redact(value) for value in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {key: redact(value) for key, value in record.args.items()}
+        return True
+
+
+def redact_download_access_logs():
+    logger = logging.getLogger("uvicorn.access")
+    if not any(f.name == "gunb.download-redaction" for f in logger.filters):
+        logger.addFilter(DownloadLogRedaction())
 
 
 class SecurityHeadersMiddleware:
@@ -38,7 +70,7 @@ class SecurityHeadersMiddleware:
                     headers["Content-Security-Policy"] = SECURITY_HEADERS["Content-Security-Policy"].replace(
                         "form-action 'self';", "form-action 'self' https://billing.stripe.com;"
                     )
-                if scope.get("path") in {
+                if scope.get("path", "").startswith("/panel/paczki/") or scope.get("path") in {
                     "/logowanie",
                     "/auth/verify",
                     "/auth/magic-link",

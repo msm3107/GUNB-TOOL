@@ -194,7 +194,7 @@ def test_v22_migration_preserves_customers_and_rolls_back(tmp_path, monkeypatch)
     )
     c.commit()
     c.close()
-    steps = storage._MIGRATIONS
+    steps = storage._MIGRATIONS[:22]  # exercise v21->v22 failure, not a later step
     monkeypatch.setattr(
         storage,
         "_MIGRATIONS",

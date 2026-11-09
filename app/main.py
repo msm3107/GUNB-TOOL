@@ -15,6 +15,7 @@ from starlette.types import ASGIApp
 from core.auth_store import AuthStore
 from core.checkout_store import CheckoutStore
 from core.customer_dashboard import CustomerDashboardStore
+from core.package_access import PackageAccessStore
 from core.paid_packages import PaidPackagePreparer
 from core.payment_store import PaymentStore
 from core.places import PlaceCatalog
@@ -29,11 +30,12 @@ from .routes.auth import auth_router
 from .routes.checkout import checkout_router
 from .routes.dashboard import dashboard_router
 from .routes.demo import demo_router
+from .routes.downloads import downloads_router
 from .routes.orders import order_router
 from .routes.places import places_router
 from .routes.portal import portal_router
 from .routes.stripe_webhook import stripe_webhook_router
-from .security import SecurityHeadersMiddleware
+from .security import SecurityHeadersMiddleware, redact_download_access_logs
 from .stripe_service import CheckoutService
 from .stripe_webhook_service import StripeWebhookService
 from .subscription_service import SubscriptionService
@@ -66,6 +68,7 @@ def create_app(
     HTTP liveness deliberately does not inspect engine configuration, locks or SQLite.
     """
     config = WebConfig.from_env() if config is None else config
+    redact_download_access_logs()
     auth_service = auth_service or AuthService(
         AuthStore(config.database_path), config.auth
     )
@@ -88,12 +91,19 @@ def create_app(
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     places = PlaceCatalog(config.places_path)
     api.include_router(demo_router(templates))
+    api.include_router(
+        downloads_router(
+            PackageAccessStore(config.database_path), config.package_dir,
+            identity_resolver or auth_service.resolve, auth_service, templates,
+        )
+    )
     api.include_router(places_router(places))
     api.include_router(order_router(Estimator(config.database_path), templates, places))
     api.include_router(auth_router(auth_service, subscriptions, templates))
     api.include_router(dashboard_router(
         CustomerDashboardStore(config.database_path), identity_resolver or auth_service.resolve,
         auth_service, subscriptions, templates,
+        downloads_enabled=config.package_dir is not None and auth_service.settings.enabled,
     ))
     api.include_router(
         portal_router(

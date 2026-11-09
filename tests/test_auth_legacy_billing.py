@@ -17,7 +17,7 @@ from app.subscription_service import SubscriptionService
 from core.auth_store import AuthStore
 from core.instance import database_replacement_lock
 from core.payment_store import PaidCheckout, PaymentStore
-from core.storage import LeadRepository
+from core.storage import SCHEMA_VERSION, LeadRepository
 from core.subscription_store import SubscriptionNotice, SubscriptionStore
 from tests.test_auth_billing import UUID, login
 from tests.test_auth_service import Sender
@@ -114,7 +114,7 @@ def legacy(tmp_path):
     c.commit()
     c.close()
     with LeadRepository(path) as repo:
-        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == 22
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert (
             repo.connection.execute(
                 "SELECT count(*) FROM checkout_billing_links"

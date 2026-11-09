@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block body_class %}work-page{% endblock %}
+{% block meta %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block content %}
+<section class="container page-section" aria-labelledby="download-heading">
+  <p class="eyebrow">Twoja paczka</p><h1 id="download-heading">Pobieranie pliku</h1>
+  <p role="status">{{ message }}</p>
+  {% if login %}<p><a class="button-link" href="/logowanie" target="_blank" rel="noopener">Zaloguj się (nowa karta)</a></p>{% endif %}
+  {% if grant %}<form method="post" action="/panel/paczki/{{ grant.delivery_id }}/link"><input type="hidden" name="format" value="{{ grant.artifact.format }}"><button class="button-link" type="submit">Nowy link {{ grant.artifact.format|upper }}</button></form>{% endif %}
+  <p><a href="">Spróbuj ponownie</a> · <a href="/panel#packages-heading">Wróć do swoich paczek</a></p>
+  <p class="field-help">Link wymaga zalogowania na konto właściciela. Próba pobrania nie potwierdza odbioru pliku przez człowieka.</p>
+</section>
+{% endblock %}

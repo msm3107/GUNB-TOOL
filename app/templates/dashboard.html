@@ -20,12 +20,12 @@
         <p class="field-help">Liczby pochodzą z zapisanej paczki. Przygotowanie paczki i jej doręczenie to osobne etapy.</p>
         {% for delivery in dashboard.deliveries %}
         <article class="dashboard-card">
-          <div class="dashboard-row"><h3>Paczka #{{ delivery.delivery_id }} · zamówienie #{{ delivery.order_id }}</h3><span class="dashboard-badge">{{ 'Doręczona' if delivery.delivered_at else 'Przygotowana · jeszcze niedoręczona' }}</span></div>
+          <div class="dashboard-row"><h3>Paczka #{{ delivery.delivery_id }} · zamówienie #{{ delivery.order_id }}</h3><span class="dashboard-badge">{{ 'Doręczona' if delivery.delivered_at else ('Udostępniona w panelu' if delivery.published_at else 'Przygotowana · jeszcze niedoręczona') }}</span></div>
           <dl class="dashboard-counts"><div><dt>Nowe</dt><dd>{{ delivery.new_count }}</dd></div><div><dt>Zmiany</dt><dd>{{ delivery.change_count }}</dd></div><div><dt>Pełna baza</dt><dd>{{ delivery.full_count }}</dd></div></dl>
           {% if delivery.delivered_at %}<p class="field-help">Doręczono: {{ delivery.delivered_at }}</p>{% endif %}
+          {% if downloads_enabled and delivery.formats %}<div class="package-downloads">{% for format in delivery.formats %}<form method="post" action="/panel/paczki/{{ delivery.delivery_id }}/link"><input type="hidden" name="format" value="{{ format }}"><button class="button-link" type="submit">Pobierz {{ format|upper }}</button></form>{% endfor %}</div><p class="field-help">Link ważny 15 minut wymaga konta właściciela; można ponowić pobranie. Próba pobrania nie potwierdza odbioru pliku.</p>{% else %}<p class="field-help">Pobieranie tej paczki nie jest obecnie dostępne.</p>{% endif %}
         </article>
         {% else %}<div class="dashboard-card"><h3>Tu pojawią się Twoje paczki.</h3><p>Nie zapisano jeszcze paczek dla tego konta.</p></div>{% endfor %}
-        <p class="field-help">Pobieranie plików z panelu będzie dostępne po uruchomieniu bezpiecznych linków.</p>
         {% if dashboard.deliveries_next %}<a class="dashboard-more" href="{{ page_link('deliveries_before', dashboard.deliveries_next) }}#packages-heading">Starsze paczki →</a>{% endif %}
       </section>
       <section class="dashboard-section" aria-labelledby="orders-heading"><p class="eyebrow">Historia konta</p><h2 id="orders-heading">Zamówienia</h2>
