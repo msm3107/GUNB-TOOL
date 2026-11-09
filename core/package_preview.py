@@ -29,6 +29,7 @@ class PreviewUnavailable(RuntimeError):
 class PreviewRow:
     case_id: str
     category: str
+
     values: dict[str, str]
     google_maps: str | None
     geoportal: str | None
@@ -44,6 +45,7 @@ class PreviewPage:
     page: int
     pages: int
     category: str
+    artifact_sha256: str
 
 
 def map_links(values: dict[str, str]) -> tuple[str | None, str | None]:
@@ -137,6 +139,8 @@ class PackagePreview:
                 raise PreviewUnavailable
             identities = {}
             for raw_id, kind in items:
+                if not raw_id.strip() or len(raw_id)>512 or not raw_id.isprintable() or kind not in CATEGORIES:
+                    raise PreviewUnavailable
                 key = (_protect_csv_value(raw_id), kind)
                 if key in identities:
                     raise PreviewUnavailable
@@ -202,9 +206,13 @@ class PackagePreview:
                     if case_id is not None and selected is None:
                         raise PackageNotFound
                     return PreviewPage(
-                        tuple(rows), selected, counts, total, page, pages, category
+                        tuple(rows), selected, counts, total, page, pages, category, artifact.sha256
                     )
         except (ArtifactUnavailable, csv.Error, UnicodeError):
             raise PreviewUnavailable from None
         finally:
             self._slots.release()
+
+    def history(self,customer_id:int,case_id:str):
+        return self.store._read(lambda c: tuple(dict(r) for r in c.execute(
+            "SELECT issue_id,typ,opis,zgloszono_utc FROM issue_reports WHERE customer_id=? AND id_sprawy=? ORDER BY issue_id DESC LIMIT 4",(customer_id,case_id))))

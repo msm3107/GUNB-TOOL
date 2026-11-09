@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block body_class %}work-page{% endblock %}
+{% block navigation %}{% with account_navigation=true %}{% include "components/navbar.html" %}{% endwith %}{% endblock %}
+{% block meta %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block content %}
+<section class="container page-section configurator" aria-labelledby="package-heading">
+  <p class="eyebrow">Twoje zapisane inwestycje</p><h1 id="package-heading">Paczka #{{ delivery_id }}</h1>
+  <p><a href="/panel#packages-heading">Wróć do swoich paczek</a></p>
+  {% if message %}<p class="dashboard-notice" role="status">{{ message }}</p>{% endif %}
+  {% if login %}<p><a href="/logowanie" target="_blank" rel="noopener">Zaloguj się (nowa karta)</a></p>{% endif %}
+  {% if package %}
+  <p class="field-help">Zapisany stan paczki. Późniejsze aktualizacje rejestru i zgłoszenia nie zmieniają tego archiwum. Szacunek branżowy nie potwierdza rozpoczęcia robót ani terminu zakupu.</p>
+  <dl class="dashboard-counts">{% for kind,count in package.counts.items() %}<div><dt>{{ category_labels[kind] }}</dt><dd>{{ count }}</dd></div>{% endfor %}</dl>
+  <form method="get" action="/panel/paczki/{{ delivery_id }}"><label for="package-category">Typ pozycji</label><select id="package-category" name="category">{% for key,label in category_labels.items() %}<option value="{{ key }}"{% if key == selected_category %} selected{% endif %}>{{ label }}</option>{% endfor %}</select><button class="button-secondary" type="submit">Pokaż pozycje</button></form>
+  <p>Strona {{ package.page }} z {{ package.pages }} · {{ package.total }} pozycji w tym widoku.</p>
+  {% for row in package.rows %}<article class="package-row"><h2>{{ row.values['Nazwa zamierzenia'] }}</h2><p><strong>{{ category_labels[row.category] }}</strong> · {{ row.case_id }}</p><dl class="sample-facts">
+    <div><dt>Miejscowość i gmina</dt><dd>{{ row.values['Miejscowość'] or 'Brak w paczce' }} · {{ row.values['Gmina'] or 'Brak gminy' }}</dd></div>
+    <div><dt>Status</dt><dd>{{ row.values['Opis statusu'] or row.values['Status'] or 'Brak w paczce' }}</dd></div>
+    <div><dt>Daty</dt><dd>Wniosek: {{ row.values['Data wpływu'] or 'brak' }} · decyzja: {{ row.values['Data decyzji'] or 'brak' }} · aktualizacja: {{ row.values['Data aktualizacji'] or 'brak' }}</dd></div>
+    <div><dt>Dlaczego pasuje</dt><dd>{{ row.values['Uzasadnienie'] or 'Brak uzasadnienia w paczce' }}</dd></div>
+    <div><dt>Szacunek branżowy</dt><dd>{{ row.values['Kiedy dzwonić'] or 'Brak szacunku w paczce' }}</dd></div>
+    <div><dt>Źródło</dt><dd>{{ row.values['Organ'] or 'Brak organu w paczce' }}</dd></div>
+    <div><dt>Jakość danych</dt><dd>{{ row.values['Jakość danych'] or 'Brak zgłoszonej uwagi w zapisanej paczce nie potwierdza poprawności danych.' }} Dokładność lokalizacji: {{ row.values['Precyzja geokodowania'] or 'brak w paczce' }}.</dd></div>
+  </dl>
+  {% if row.truncated %}<p class="field-help">Długie pola skrócono w podglądzie. Pełna treść pozostaje w plikach paczki.</p>{% endif %}
+  {% if row.google_maps %}<a href="{{ row.google_maps }}" target="_blank" rel="noopener noreferrer">Google Maps · zapisany punkt</a>{% endif %}
+  {% if row.geoportal %}<a href="{{ row.geoportal }}" target="_blank" rel="noopener noreferrer">Geoportal · zapisany link</a>{% endif %}
+  <p><a class="dashboard-more" href="{{ case_link(row.case_id) }}">Zgłoś uwagę przy tej inwestycji →</a></p></article>{% else %}<p>W tej paczce nie ma pozycji wybranego typu.</p>{% endfor %}
+  <nav class="package-pagination" aria-label="Strony paczki">{% if package.page > 1 %}<a href="{{ page_link(package.page-1) }}">← Poprzednia strona</a>{% endif %}{% if package.page < package.pages %}<a href="{{ page_link(package.page+1) }}">Następna strona →</a>{% endif %}</nav>
+  {% endif %}
+  {% if issue_values.get('case_id') %}
+  {% include "components/issue_form.html" %}
+  {% if package and package.selected %}<section class="dashboard-card"><h2>Twoje zgłoszenia dla tej sprawy</h2>{% if history is none %}<p>Historia jest chwilowo niedostępna. Spróbuj ponownie.</p>{% else %}{% for issue in history %}<article><h3>{{ issue_types.get(issue.typ,'Uwaga') }}</h3><p>Przyjęto do weryfikacji · {{ issue.zgloszono_utc }}</p><p>{{ issue.opis }}</p></article>{% else %}<p>Nie przyjęto jeszcze Twoich zgłoszeń dla tej sprawy.</p>{% endfor %}{% endif %}<p class="field-help">Historia potwierdza przyjęcie uwagi, nie rozstrzygnięcie jej poprawności.</p></section>{% endif %}
+  {% endif %}
+</section>
+{% endblock %}

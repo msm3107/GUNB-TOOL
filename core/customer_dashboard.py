@@ -265,11 +265,14 @@ class CustomerDashboardStore(CheckoutStore):
         description: str,
         *,
         now: datetime,
+        delivery_id: int | None = None,
+        artifact_sha256: str | None = None,
     ):
         def report(conn):
             try:
                 return IssueTracker(_ReportTransaction(conn, now)).report_issue(
-                    customer_id, case_id, kind, description
+                    customer_id, case_id, kind, description,
+                    delivery_id=delivery_id, artifact_sha256=artifact_sha256,
                 )
             except IssueNotAllowed:
                 # Its savepoint already rolled back; keep PermissionError out of

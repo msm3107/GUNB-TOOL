@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -98,7 +99,12 @@ class IssueTracker:
         id_sprawy: str,
         issue_type: IssueType | str,
         description: str = "",
+        *,
+        delivery_id: int | None = None,
+        artifact_sha256: str | None = None,
     ) -> IssueReport:
+        if delivery_id is not None and (type(delivery_id) is not int or not 0<delivery_id<2**63 or not isinstance(artifact_sha256,str) or re.fullmatch('[0-9a-f]{64}',artifact_sha256) is None):
+            raise ValueError("Niepoprawny kontekst dostawy")
         if type(customer_id) is not int or not 0 < customer_id < 2**63:
             raise ValueError("Niepoprawny identyfikator klienta")
         if not isinstance(id_sprawy, str) or not id_sprawy.strip() or len(id_sprawy) > 512:
@@ -120,8 +126,13 @@ class IssueTracker:
                 "JOIN b2b_deliveries AS delivery ON delivery.order_id = orders.order_id "
                 "JOIN b2b_delivery_items AS item ON item.delivery_id = delivery.delivery_id "
                 "WHERE orders.customer_id = ? AND item.id_sprawy = ? "
-                "AND delivery.doreczono_utc IS NOT NULL LIMIT 1",
-                (customer_id, id_sprawy),
+                "AND (delivery.doreczono_utc IS NOT NULL OR (orders.status_platnosci='paid' AND EXISTS ("
+                "SELECT 1 FROM package_publications p WHERE p.delivery_id=delivery.delivery_id))) "
+                + ("AND delivery.delivery_id=? AND orders.status_platnosci='paid' AND EXISTS ("
+                   "SELECT 1 FROM package_artifacts a WHERE a.delivery_id=delivery.delivery_id AND a.format='csv' "
+                   "AND a.sha256=? AND a.relative_name=delivery.plik_csv) " if delivery_id is not None else "")
+                + "LIMIT 1",
+                (customer_id,id_sprawy,delivery_id,artifact_sha256) if delivery_id is not None else (customer_id,id_sprawy),
             ).fetchone()
             if allowed is None:
                 raise IssueNotAllowed("Sprawa nie została doręczona temu klientowi")

@@ -63,7 +63,8 @@ def _date(epoch):
         return "Niepotwierdzony"
 
 
-async def _issue_input(request):
+async def _issue_input(request, *, contextual=False):
+    fields = {"case_id","issue_type","description"} | ({"page","category"} if contextual else set())
     raw = bytearray()
     async for chunk in request.stream():
         if len(raw) + len(chunk) > 24576:
@@ -79,15 +80,11 @@ async def _issue_input(request):
             raw.decode("utf-8"),
             keep_blank_values=True,
             strict_parsing=True,
-            max_num_fields=3,
+            max_num_fields=len(fields),
             errors="strict",
         )
         values = dict(pairs)
-        if len(pairs) != len(values) or set(values) != {
-            "case_id",
-            "issue_type",
-            "description",
-        }:
+        if len(pairs) != len(values) or set(values) != fields:
             raise ValueError
         return values
     except (ValueError, UnicodeError):

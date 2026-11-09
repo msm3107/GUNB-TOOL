@@ -2,6 +2,7 @@
 # $uri is normalized; omit query strings, Referer and the raw $request entirely.
 map $uri $gunb_safe_uri {
     ~^/pobierz/ /pobierz/[REDACTED];
+    ~^/panel/paczki/ /panel/paczki/[PRIVATE];
     default $uri;
 }
 log_format gunb_private '$time_iso8601 "$request_method $gunb_safe_uri $server_protocol" $status $body_bytes_sent';
