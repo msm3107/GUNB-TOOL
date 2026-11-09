@@ -3,7 +3,7 @@
 {% block navigation %}{% with account_navigation=true %}{% include "components/navbar.html" %}{% endwith %}{% endblock %}
 {% block meta %}<meta name="robots" content="noindex, nofollow">{% endblock %}
 {% block content %}
-<section class="container page-section configurator" aria-labelledby="package-heading">
+<section class="container page-section dashboard configurator" aria-labelledby="package-heading">
   <p class="eyebrow">Twoje zapisane inwestycje</p><h1 id="package-heading">Paczka #{{ delivery_id }}</h1>
   <p><a href="/panel#packages-heading">Wróć do swoich paczek</a></p>
   {% if message %}<p class="dashboard-notice" role="status">{{ message }}</p>{% endif %}
