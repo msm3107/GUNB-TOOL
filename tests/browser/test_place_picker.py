@@ -123,6 +123,8 @@ def test_blocked_picker_falls_back_to_native_actions_without_filter_loss(
     with page.expect_response(native_post, timeout=5000) as cleared:
         page.get_by_role("button", name="Usuń wybór miejscowości", exact=True).click()
     assert cleared.value.status == 200
+    # Native HTML is ready before deferred JS persists the cleared draft.
+    expect(page.locator("#county-tools")).to_be_visible()
     expect(page.locator("#place_query")).to_have_value("")
     expect(page.locator("#place_id")).to_have_value("")
     expect(page.locator("#place_version")).to_have_value("")
