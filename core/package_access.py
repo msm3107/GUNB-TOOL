@@ -81,6 +81,16 @@ def record_artifacts(conn, delivery_id: int, artifacts: tuple[Artifact, ...]):
 
 
 class PackageAccessStore(CheckoutStore):
+    def preview_metadata(self, customer_id: int, delivery_id: int):
+        """One authorization snapshot; only immutable case identities, not live data."""
+        def find(conn):
+            row = conn.execute("SELECT a.* " + _OWNED + " AND a.delivery_id=? AND a.format='csv'",(customer_id,delivery_id)).fetchone()
+            if row is None:
+                raise PackageNotFound
+            items = conn.execute("SELECT id_sprawy,kategoria_dostawy FROM b2b_delivery_items WHERE delivery_id=? ORDER BY id_sprawy LIMIT 10001",(delivery_id,)).fetchall()
+            return Artifact('csv',row['relative_name'],row['size'],row['sha256']), tuple((r['id_sprawy'],r['kategoria_dostawy']) for r in items)
+        return self._read(find)
+
     def artifact_for(
         self, customer_id: int, delivery_id: int, fmt: str
     ) -> DownloadGrant:
