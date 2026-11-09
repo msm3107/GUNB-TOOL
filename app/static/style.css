@@ -240,3 +240,7 @@ details[open] > summary { background: #f2efe4; }
 .configurator button.button-secondary { background: transparent; border: 1px solid #87938f; color: var(--navy); border-radius: 4px; min-height: 44px; padding: .5rem .9rem; margin-top: 0; font-size: .875rem; font-weight: 650; }
 .configurator button.button-secondary:hover { background: #eff0e8; }
 @media (max-width: 360px) { .navbar .brand { font-size: 1.0625rem; } .navigation-actions { gap: .5rem; } }
+.package-pagination { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; margin-block: 1rem; }
+.package-filter { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-block: 1rem; }
+.package-filter select { min-height: 44px; max-width: 100%; min-width: 0; font: inherit; }
+.package-row { overflow-wrap: anywhere; }

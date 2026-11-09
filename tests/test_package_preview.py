@@ -236,6 +236,142 @@ def test_private_case_context_is_not_written_to_access_log(preview_http, caplog)
     assert "PRIVATE-CASE" not in caplog.text and "[PRIVATE]" in caplog.text
 
 
+def test_more_than_10000_items_is_rejected_before_file_io(archive, monkeypatch):
+    import core.package_preview as module
+
+    with sqlite3.connect(archive.path) as c:
+        c.executemany(
+            "INSERT INTO investments(id_sprawy,zrodlo,status,utworzono,zmieniono,status_zmieniony,ostatnio_widziany) VALUES(?,'pozwolenia','wniosek','x','x','x','x')",
+            ((f"OVER/{i}",) for i in range(10001)),
+        )
+        c.execute(
+            "INSERT INTO b2b_delivery_items SELECT 1,id_sprawy,'revision','new' FROM investments WHERE id_sprawy LIKE 'OVER/%'"
+        )
+
+    def forbidden(*args):
+        raise AssertionError("Oversized ledger must fail before file IO")
+
+    monkeypatch.setattr(module, "open_verified", forbidden)
+    with pytest.raises(PreviewUnavailable):
+        archive.service.read(1, 1)
+
+
+def test_preview_and_download_share_four_slots_even_after_cancel(
+    preview_http, monkeypatch
+):
+    import asyncio
+    import threading
+
+    import core.package_preview as module
+
+    h = preview_http
+    entered, finish, done = threading.Event(), threading.Event(), threading.Event()
+    opened, finished = [], []
+    real_open, real_read = module.open_verified, PackagePreview.read
+
+    def blocked(*args):
+        value = real_open(*args)
+        opened.append(value)
+        entered.set()
+        assert finish.wait(5)
+        return value
+
+    def tracked(self, *args, **kwargs):
+        try:
+            return real_read(self, *args, **kwargs)
+        finally:
+            finished.append(True)
+            if len(finished) == 4:
+                done.set()
+
+    monkeypatch.setattr(module, "open_verified", blocked)
+    monkeypatch.setattr(PackagePreview, "read", tracked)
+    grant = h.client.post(
+        "/panel/paczki/1/link",
+        data={"format": "csv"},
+        headers={"Origin": h.origin},
+        follow_redirects=False,
+    )
+    assert grant.status_code == 303
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "method": "GET",
+        "scheme": "https",
+        "path": "/panel/paczki/1",
+        "raw_path": b"/panel/paczki/1",
+        "query_string": b"",
+        "headers": [(b"cookie", b"owner=1")],
+        "client": ("127.0.0.1", 1234),
+        "server": ("example.test", 443),
+        "root_path": "",
+        "http_version": "1.1",
+    }
+
+    async def run():
+        async def receive():
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            raise AssertionError("Cancelled preview must not send a response")
+
+        tasks = []
+        try:
+            for _ in range(4):
+                entered.clear()
+                task = asyncio.create_task(h.client.app(dict(scope), receive, send))
+                tasks.append(task)
+                assert await asyncio.to_thread(entered.wait, 5)
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            assert h.client.get(grant.headers["location"]).status_code == 429
+        finally:
+            finish.set()
+            await asyncio.to_thread(done.wait, 5)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for value in opened:
+                value.close()
+
+    asyncio.run(run())
+    assert all(value.stream.closed for value in opened)
+    assert h.client.get(grant.headers["location"]).status_code == 200
+
+
+def test_disk_error_during_csv_parse_retains_form_and_closes_handle(
+    preview_http, monkeypatch
+):
+    import core.package_preview as module
+    from tests.test_customer_dashboard import _IssueForm
+
+    h = preview_http
+    original_reader, original_open = module.csv.reader, module.open_verified
+    opened = []
+
+    def fail_reader(*args, **kwargs):
+        reader = original_reader(*args, **kwargs)
+        yield next(reader)
+        raise OSError("SYNTHETIC-DISK-DETAIL")
+
+    def capture(*args):
+        value = original_open(*args)
+        opened.append(value)
+        return value
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module.csv, "reader", fail_reader)
+        patch.setattr(module, "open_verified", capture)
+        failed = post_issue(h)
+        assert failed.status_code == 503
+        assert "SYNTHETIC-DISK-DETAIL" not in failed.text
+        assert (
+            _IssueForm(failed.text, "/panel/paczki/1/uwagi").values == issue_payload()
+        )
+        assert opened and all(value.stream.closed for value in opened)
+    assert post_issue(h).status_code == 303
+
+
 def test_maps_are_existing_validated_snapshot_links(archive):
     a = archive
     content = rows(a)
@@ -366,7 +502,15 @@ def test_owner_get_is_private_paginated_and_selected_row_is_escaped(preview_http
     assert (
         response.status_code == 200 and response.headers["cache-control"] == "no-store"
     )
-    assert response.text.count('class="package-row"') == 50
+    from tests.test_landing_page import PageParser
+
+    assert (
+        sum(
+            "package-row" in attrs.get("class", "").split()
+            for tag, attrs in PageParser(response.text).elements
+        )
+        == 50
+    )
     assert "<img src=x" not in response.text and "&lt;img" in response.text
     assert 'action="/panel/paczki/1/uwagi"' in response.text
     from tests.test_customer_dashboard import _IssueForm

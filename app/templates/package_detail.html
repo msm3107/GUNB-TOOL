@@ -9,11 +9,13 @@
   {% if message %}<p class="dashboard-notice" role="status">{{ message }}</p>{% endif %}
   {% if login %}<p><a href="/logowanie" target="_blank" rel="noopener">Zaloguj się (nowa karta)</a></p>{% endif %}
   {% if package %}
-  <p class="field-help">Zapisany stan paczki. Późniejsze aktualizacje rejestru i zgłoszenia nie zmieniają tego archiwum. Szacunek branżowy nie potwierdza rozpoczęcia robót ani terminu zakupu.</p>
+  <form method="post" action="/panel/paczki/{{ delivery_id }}/link"><input type="hidden" name="format" value="csv"><button class="button-secondary" type="submit">Pobierz CSV tej paczki</button></form>
+  <p class="field-help">Zapisany stan paczki. Późniejsze aktualizacje rejestru i zgłoszenia nie zmieniają tego archiwum. Szacunek branżowy dotyczy chwili przygotowania paczki; nie potwierdza rozpoczęcia robót ani terminu zakupu.</p>
   <dl class="dashboard-counts">{% for kind,count in package.counts.items() %}<div><dt>{{ category_labels[kind] }}</dt><dd>{{ count }}</dd></div>{% endfor %}</dl>
-  <form method="get" action="/panel/paczki/{{ delivery_id }}"><label for="package-category">Typ pozycji</label><select id="package-category" name="category">{% for key,label in category_labels.items() %}<option value="{{ key }}"{% if key == selected_category %} selected{% endif %}>{{ label }}</option>{% endfor %}</select><button class="button-secondary" type="submit">Pokaż pozycje</button></form>
+  <form class="package-filter" method="get" action="/panel/paczki/{{ delivery_id }}"><label for="package-category">Typ pozycji</label><select id="package-category" name="category">{% for key,label in category_labels.items() %}<option value="{{ key }}"{% if key == selected_category %} selected{% endif %}>{{ label }}</option>{% endfor %}</select><button class="button-secondary" type="submit">Pokaż pozycje</button></form>
   <p>Strona {{ package.page }} z {{ package.pages }} · {{ package.total }} pozycji w tym widoku.</p>
-  {% for row in package.rows %}<article class="package-row"><h2>{{ row.values['Nazwa zamierzenia'] }}</h2><p><strong>{{ category_labels[row.category] }}</strong> · {{ row.case_id }}</p><dl class="sample-facts">
+  <nav class="package-pagination" aria-label="Strony paczki nad listą">{% if package.page > 1 %}<a href="{{ page_link(package.page-1) }}">← Poprzednia strona</a>{% endif %}{% if package.page < package.pages %}<a href="{{ page_link(package.page+1) }}">Następna strona →</a>{% endif %}</nav>
+  {% for row in package.rows %}<details class="package-row lead-example"{% if package.selected and package.selected.case_id == row.case_id %} open{% endif %}><summary><span class="example-type">{{ row.values['Nazwa zamierzenia'] }}<span class="example-label">{{ row.case_id }}</span></span><span class="delivery-label">{{ category_labels[row.category] }}</span></summary><div class="details-body"><dl class="sample-facts">
     <div><dt>Miejscowość i gmina</dt><dd>{{ row.values['Miejscowość'] or 'Brak w paczce' }} · {{ row.values['Gmina'] or 'Brak gminy' }}</dd></div>
     <div><dt>Status</dt><dd>{{ row.values['Opis statusu'] or row.values['Status'] or 'Brak w paczce' }}</dd></div>
     <div><dt>Daty</dt><dd>Wniosek: {{ row.values['Data wpływu'] or 'brak' }} · decyzja: {{ row.values['Data decyzji'] or 'brak' }} · aktualizacja: {{ row.values['Data aktualizacji'] or 'brak' }}</dd></div>
@@ -25,7 +27,7 @@
   {% if row.truncated %}<p class="field-help">Długie pola skrócono w podglądzie. Pełna treść pozostaje w plikach paczki.</p>{% endif %}
   {% if row.google_maps %}<a href="{{ row.google_maps }}" target="_blank" rel="noopener noreferrer">Google Maps · zapisany punkt</a>{% endif %}
   {% if row.geoportal %}<a href="{{ row.geoportal }}" target="_blank" rel="noopener noreferrer">Geoportal · zapisany link</a>{% endif %}
-  <p><a class="dashboard-more" href="{{ case_link(row.case_id) }}">Zgłoś uwagę przy tej inwestycji →</a></p></article>{% else %}<p>W tej paczce nie ma pozycji wybranego typu.</p>{% endfor %}
+  <p><a class="dashboard-more" href="{{ case_link(row.case_id) }}">Zgłoś uwagę przy tej inwestycji →</a></p></div></details>{% else %}<p>W tej paczce nie ma pozycji wybranego typu.</p>{% endfor %}
   <nav class="package-pagination" aria-label="Strony paczki">{% if package.page > 1 %}<a href="{{ page_link(package.page-1) }}">← Poprzednia strona</a>{% endif %}{% if package.page < package.pages %}<a href="{{ page_link(package.page+1) }}">Następna strona →</a>{% endif %}</nav>
   {% endif %}
   {% if issue_values.get('case_id') %}

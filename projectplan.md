@@ -369,6 +369,12 @@ flowchart TD
 - **Kryteria akceptacji:**
   - Testy pobierania z poprawnym tokenem, tokenem obcym oraz tokenem wygasłym.
 
+#### UX-05: Podgląd własnej paczki i zgłoszenie przy inwestycji
+- `GET /panel/paczki/{delivery_id}` czyta CSV z manifestu etapu13, poza transakcją i blokadą podmiany. Wymaga tych samych praw właściciel/paid/doręczenie lub publikacja; nie dołącza aktualnego `investments` do archiwum.
+- Paginacja po50, filtr Nowe/Zmiany/Pełna baza, maks.10000pozycji; ścisły nagłówek i zgodność tożsamości/kategorii/liczby z niezmiennym ledgerem. Kolizja identyfikatorów po zabezpieczeniu CSV lub uszkodzenie daje503, bez częściowej listy i odtwarzania archiwum z bieżących danych.
+- Kontekstowy POST uwagi ponownie wiąże klienta, konkretną dostawę, płatność, uprawnienie i digest CSV w krótkiej transakcji; odczyt pliku kończy się przed zapisem. Historyczne ręczne doręczenia zachowują dotychczasowy formularz. Odczyt uprawnień do istniejących publikacji nie tworzy publikacji — ich integracja pozostaje etapem15.
+- Błędy503/429 zachowują escapowane pola i page/category/case niezależnie od udanego ponownego snapshotu. Historia pokazuje własne przyjęte uwagi, datę i treść, bez deklaracji rozstrzygnięcia. Brak nowego schematu, zależności i zmian pamięci dostaw.
+
 #### PR 14: E-mailowe Powiadomienia o Gotowych Paczkach i Zmianach
 - **Gałąź:** `feat/core-delivery-notifications`
 - **Role:**

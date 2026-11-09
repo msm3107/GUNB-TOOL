@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -92,16 +93,18 @@ def create_app(
     mimetypes.add_type("font/woff2", ".woff2")
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     places = PlaceCatalog(config.places_path)
+    artifact_slots = threading.BoundedSemaphore(4)
     api.include_router(demo_router(templates))
     api.include_router(
         downloads_router(
             PackageAccessStore(config.database_path), config.package_dir,
             identity_resolver or auth_service.resolve, auth_service, templates,
+            slots=artifact_slots,
         )
     )
     api.include_router(places_router(places))
     api.include_router(packages_router(
-        PackagePreview(PackageAccessStore(config.database_path),config.package_dir),
+        PackagePreview(PackageAccessStore(config.database_path),config.package_dir,slots=artifact_slots),
         CustomerDashboardStore(config.database_path),identity_resolver or auth_service.resolve,auth_service,templates,
     ))
     api.include_router(order_router(Estimator(config.database_path), templates, places))

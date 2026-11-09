@@ -14,7 +14,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 from .export_package import EXPORT_COLUMNS, _protect_csv_value
 from .package_access import DownloadBusy, PackageAccessStore, PackageNotFound
-from .package_files import ArtifactUnavailable, open_verified
+from .package_files import open_verified
 
 PAGE_SIZE = 50
 MAX_ROWS = 10000
@@ -29,7 +29,6 @@ class PreviewUnavailable(RuntimeError):
 class PreviewRow:
     case_id: str
     category: str
-
     values: dict[str, str]
     google_maps: str | None
     geoportal: str | None
@@ -104,9 +103,9 @@ def map_links(values: dict[str, str]) -> tuple[str | None, str | None]:
 
 
 class PackagePreview:
-    def __init__(self, store: PackageAccessStore, root: Path | None):
+    def __init__(self, store: PackageAccessStore, root: Path | None, *, slots=None):
         self.store, self.root = store, root
-        self._slots = threading.BoundedSemaphore(4)
+        self._slots = slots if slots is not None else threading.BoundedSemaphore(4)
 
     def read(
         self,
@@ -139,7 +138,12 @@ class PackagePreview:
                 raise PreviewUnavailable
             identities = {}
             for raw_id, kind in items:
-                if not raw_id.strip() or len(raw_id)>512 or not raw_id.isprintable() or kind not in CATEGORIES:
+                if (
+                    not raw_id.strip()
+                    or len(raw_id) > 512
+                    or not raw_id.isprintable()
+                    or kind not in CATEGORIES
+                ):
                     raise PreviewUnavailable
                 key = (_protect_csv_value(raw_id), kind)
                 if key in identities:
@@ -206,13 +210,27 @@ class PackagePreview:
                     if case_id is not None and selected is None:
                         raise PackageNotFound
                     return PreviewPage(
-                        tuple(rows), selected, counts, total, page, pages, category, artifact.sha256
+                        tuple(rows),
+                        selected,
+                        counts,
+                        total,
+                        page,
+                        pages,
+                        category,
+                        artifact.sha256,
                     )
-        except (ArtifactUnavailable, csv.Error, UnicodeError):
+        except (OSError, csv.Error, UnicodeError):
             raise PreviewUnavailable from None
         finally:
             self._slots.release()
 
-    def history(self,customer_id:int,case_id:str):
-        return self.store._read(lambda c: tuple(dict(r) for r in c.execute(
-            "SELECT issue_id,typ,opis,zgloszono_utc FROM issue_reports WHERE customer_id=? AND id_sprawy=? ORDER BY issue_id DESC LIMIT 4",(customer_id,case_id))))
+    def history(self, customer_id: int, case_id: str):
+        return self.store._read(
+            lambda c: tuple(
+                dict(r)
+                for r in c.execute(
+                    "SELECT issue_id,typ,opis,zgloszono_utc FROM issue_reports WHERE customer_id=? AND id_sprawy=? ORDER BY issue_id DESC LIMIT 4",
+                    (customer_id, case_id),
+                )
+            )
+        )
