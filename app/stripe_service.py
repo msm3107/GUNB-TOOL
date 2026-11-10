@@ -123,10 +123,13 @@ class CheckoutService:
             raise CheckoutUnavailable
         if type(customer_id) is not int or not 1 <= customer_id < 2**63:
             raise ValueError("Invalid customer")
-        return self.start(email=self.store.owner_email(customer_id), kind=kind, filters=filters,
-                          request_token=request_token, owner_id=customer_id)
+        email, stripe_customer = self.store.owner_identity(customer_id)
+        if stripe_customer is not None and not re.fullmatch(r"cus_[A-Za-z0-9]+", stripe_customer):
+            raise CheckoutConflict
+        return self.start(email=email, kind=kind, filters=filters,
+                          request_token=request_token, owner_id=customer_id, stripe_customer=stripe_customer)
 
-    def start(self, *, email: str, kind: str, filters: PackageFilters, request_token: str, owner_id: int | None = None) -> str:
+    def start(self, *, email: str, kind: str, filters: PackageFilters, request_token: str, owner_id: int | None = None, stripe_customer: str | None = None) -> str:
         if not self.settings.test_mode:
             raise CheckoutUnavailable
         email = email.strip().lower()
@@ -162,6 +165,7 @@ class CheckoutService:
             offer_snapshot = asdict(offer)
             if owner_id is not None:
                 offer_snapshot["authenticated_customer_id"] = owner_id
+                offer_snapshot["authenticated_stripe_customer_id"] = stripe_customer
             # Provider idempotency is scoped to an account. A key/account
             # change must not recreate an ambiguous attempt in a new account.
             credential_hash = hashlib.sha256(self.settings.secret_key.encode()).hexdigest()
@@ -189,7 +193,11 @@ class CheckoutService:
                       "payment_method_types": ["card"], "success_url": attempt.origin + "/zamowienie/sukces",
                       "cancel_url": attempt.origin + "/zamowienie", "expires_at": attempt.expires_at,
                       "subscription_data" if mode == "subscription" else "payment_intent_data": {"metadata": metadata}}
-            if mode == "payment":
+            existing_customer = frozen_offer.get("authenticated_stripe_customer_id") if owner_id is not None else None
+            if existing_customer:
+                params.pop("customer_email")
+                params["customer"] = existing_customer
+            elif mode == "payment":
                 params["customer_creation"] = "always"
             try:
                 session = self._sessions.create(params, {"idempotency_key": "zt-checkout-" + key_hash})

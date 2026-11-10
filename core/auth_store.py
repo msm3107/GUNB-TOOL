@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .checkout_store import CheckoutConflict, CheckoutStore
+from .checkout_store import CheckoutConflict, CheckoutStore, is_owned_checkout
 from .subscription_store import SubscriptionNotice
 
 
@@ -199,11 +199,18 @@ class AuthStore(CheckoutStore):
     def claim_billing(
         self,
         customer_id: int,
-        key_hash: str,
+        key_hash: str | None,
         *,
         recovered: RecoveredBilling | None = None,
+        order_id: int | None = None,
     ) -> SubscriptionNotice:
         def claim(conn):
+            lookup = key_hash
+            if order_id is not None:
+                owned = conn.execute("SELECT key_hash FROM checkout_attempts WHERE order_id=? AND customer_id=?", (order_id, customer_id)).fetchone()
+                if owned is None:
+                    raise CheckoutConflict
+                lookup = owned[0]
             row = conn.execute(
                 """SELECT a.key_hash,a.order_id,a.customer_id,a.email,a.filters_json,a.offer_json,
                     a.created_at,a.expires_at,a.session_id AS attempt_session_id,j.session_id AS paid_session_id,
@@ -215,9 +222,11 @@ class AuthStore(CheckoutStore):
                 WHERE a.key_hash=? AND o.customer_id=? AND a.customer_id=o.customer_id
                   AND a.email=c.email COLLATE NOCASE AND o.status_platnosci='paid' AND a.kind='abonament'
                   AND o.typ_pakietu=a.kind AND o.filtry_json=a.filters_json """,
-                (key_hash, customer_id),
+                (lookup, customer_id),
             ).fetchone()
             if row is None:
+                raise CheckoutConflict
+            if order_id is not None and not is_owned_checkout(row["offer_json"], customer_id):
                 raise CheckoutConflict
             stripe_customer_id, subscription_id = (
                 row["stripe_customer_id"],

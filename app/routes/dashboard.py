@@ -9,6 +9,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.auth import AuthService
 from app.identity import AuthenticatedCustomer, IdentityResolver
+from app.navigation import login_url
 from app.routes.auth import AuthInputError, _input
 from app.stripe_service import CheckoutBusy
 from core.checkout_store import CheckoutConflict, CheckoutUnavailable
@@ -104,7 +105,7 @@ def dashboard_router(
     router = APIRouter()
     clock = now or (lambda: datetime.now(timezone.utc))
 
-    async def render(request, principal=None, *, status=200, message="", values=None):
+    async def render(request, principal=None, *, status=200, message="", values=None, billing_retry=None):
         snapshot = None
         order_cursor = delivery_cursor = None
         if principal is not None:
@@ -148,6 +149,7 @@ def dashboard_router(
             name="dashboard.html",
             context={
                 "page_title": "Panel klienta",
+                "billing_retry": billing_retry,
                 "dashboard": snapshot,
                 "authenticated": principal is not None,
                 "message": message,
@@ -182,8 +184,12 @@ def dashboard_router(
                 message="Panel jest chwilowo niedostępny. Spróbuj ponownie.",
             )
         if owner is None:
+            try:
+                cursors = {name: str(value) for name in ("orders_before", "deliveries_before") if (value := _cursor(request, name)) is not None}
+            except ValueError:
+                return await render(request, status=422, message="Niepoprawny numer strony.")
             return RedirectResponse(
-                "/logowanie", status_code=303, headers={"Cache-Control": "no-store"}
+                login_url("/panel?" + urlencode(cursors)) if cursors else "/logowanie", status_code=303, headers={"Cache-Control": "no-store"}
             )
         notice = {
             "portal-error": "Portal rozliczeń jest chwilowo niedostępny lub nie potwierdzono powiązania. Spróbuj później albo potwierdź rozliczenia poniżej.",
@@ -191,6 +197,33 @@ def dashboard_router(
             "billing": "Powiązano rozliczenia i uzgodniono bieżący stan.",
         }.get(request.query_params.get("notice"), "")
         return await render(request, owner, message=notice)
+
+    @router.post("/panel/rozliczenia/{order_id}", include_in_schema=False)
+    async def reconcile_order(request: Request, order_id: int):
+        if not auth.settings.enabled or not subscriptions.settings.test_mode:
+            return await render(request, status=503, message="Obsługa rozliczeń jest niedostępna.")
+        if request.headers.get("origin") != auth.settings.origin:
+            return await render(request, status=403, message="Niepoprawne pochodzenie formularza.")
+        async for chunk in request.stream():
+            if chunk:
+                return await render(request, status=400, message="Formularz nie wymaga dodatkowych danych.")
+        owner = None
+        try:
+            if not 1 <= order_id < 2**63:
+                raise ValueError
+            owner = await principal(request)
+            if owner is None:
+                return RedirectResponse("/logowanie", status_code=303, headers={"Cache-Control": "no-store"})
+            await run_in_threadpool(auth.bind_order, owner, order_id, subscriptions)
+        except CheckoutConflict:
+            return await render(request, owner, status=403, message="Nie potwierdzono uprawnień do tego rozliczenia. Starsze zamówienia wymagają odzyskania dostępu.")
+        except CheckoutBusy:
+            return await render(request, owner, status=429, message="Zbyt wiele prób. Ponów to samo rozliczenie później.", billing_retry=order_id if owner else None)
+        except CheckoutUnavailable:
+            return await render(request, owner, status=503, message="Nie udało się potwierdzić statusu. Możesz bezpiecznie ponowić to samo rozliczenie.", billing_retry=order_id if owner else None)
+        except ValueError:
+            return await render(request, owner, status=422, message="Niepoprawny numer zamówienia.")
+        return RedirectResponse("/panel?notice=billing", status_code=303, headers={"Cache-Control": "no-store"})
 
     @router.post("/panel/uwagi", include_in_schema=False)
     @router.post("/panel/rozliczenia", include_in_schema=False)

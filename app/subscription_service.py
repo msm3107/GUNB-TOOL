@@ -10,7 +10,7 @@ from uuid import uuid4
 import stripe
 
 from core.auth_store import BillingRecovery, RecoveredBilling
-from core.checkout_store import CheckoutConflict, CheckoutUnavailable
+from core.checkout_store import CheckoutConflict, CheckoutUnavailable, is_owned_checkout
 from core.subscription_store import (
     SubscriptionNotice,
     SubscriptionState,
@@ -97,6 +97,13 @@ class SubscriptionService:
             session = self._checkout_sessions.retrieve(session_id)
             offer = json.loads(attempt.offer_json)
             metadata = session["metadata"]
+            expected_customer = offer.get("authenticated_stripe_customer_id")
+            email = session.get("customer_email")
+            identity_matches = isinstance(email, str) and email.lower() == attempt.email.lower()
+            if expected_customer is not None:
+                # Existing-customer Checkout does not need customer_email.
+                # Only the immutable, server-owned proof permits this path.
+                identity_matches = is_owned_checkout(attempt.offer_json, attempt.customer_id) and session.get("customer") == _id(expected_customer, r"cus_[A-Za-z0-9]+")
             if (
                 session["id"] != session_id
                 or session["object"] != "checkout.session"
@@ -110,8 +117,7 @@ class SubscriptionService:
                 or not 1 <= offer["amount_grosze"] <= 100_000_000
                 or session["amount_total"] != offer["amount_grosze"]
                 or offer["interval"] not in ("month", "year")
-                or not isinstance(session.get("customer_email"), str)
-                or session["customer_email"].lower() != attempt.email.lower()
+                or not identity_matches
                 or session["client_reference_id"] != str(attempt.order_id)
                 or metadata["order_id"] != str(attempt.order_id)
                 or metadata["customer_id"] != str(attempt.customer_id)

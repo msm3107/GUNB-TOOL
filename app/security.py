@@ -76,14 +76,14 @@ class SecurityHeadersMiddleware:
                         "form-action 'self';", "form-action 'self' https://checkout.stripe.com;"
                     )
                     headers["Referrer-Policy"] = "same-origin"
-                if scope.get("path") in {"/panel", "/panel/uwagi", "/panel/rozliczenia"}:
+                if scope.get("path") in {"/panel", "/panel/uwagi", "/panel/rozliczenia"} or scope.get("path", "").startswith("/panel/rozliczenia/"):
                     # Chromium checks form-action against the POST's redirects.
                     # Only this page's native Portal form needs the exact host
                     # already enforced by PortalService; no wildcard or script relaxation.
                     headers["Content-Security-Policy"] = SECURITY_HEADERS["Content-Security-Policy"].replace(
                         "form-action 'self';", "form-action 'self' https://billing.stripe.com;"
                     )
-                if scope.get("path", "").startswith("/panel/paczki/") or scope.get("path") in {
+                if scope.get("path", "").startswith(("/panel/paczki/", "/panel/rozliczenia/")) or scope.get("path") in {
                     "/logowanie",
                     "/auth/verify",
                     "/auth/magic-link",

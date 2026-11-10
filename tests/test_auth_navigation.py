@@ -103,6 +103,12 @@ def test_expired_package_redirect_preserves_context(http):
     assert response.headers["location"] == "/logowanie?" + urlencode({"next": TARGET})
 
 
+def test_expired_dashboard_page_keeps_cursor_without_success_notice(http):
+    client, _, _ = http
+    response = client.get("/panel?orders_before=10&notice=billing", follow_redirects=False)
+    assert response.headers["location"] == "/logowanie?" + urlencode({"next": "/panel?orders_before=10"})
+
+
 def test_database_failure_keeps_destination_and_does_not_consume_link(http):
     from core.instance import database_replacement_lock
     client, service, sender = http

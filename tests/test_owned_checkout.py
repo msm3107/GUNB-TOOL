@@ -150,13 +150,27 @@ def test_account_changed_between_lookup_and_reserve_never_calls_provider(owned_h
     client, service, fake, _, sender = owned_http
     login(client, sender)
     data = prepare(client)
-    original = service.store.owner_email
+    original = service.store.owner_identity
     def changed(customer_id):
         email = original(customer_id)
         with sqlite3.connect(service.store.path) as conn:
             conn.execute("UPDATE b2b_customers SET email='changed@example.test' WHERE customer_id=?", (customer_id,))
         return email
-    monkeypatch.setattr(service.store, "owner_email", changed)
+    monkeypatch.setattr(service.store, "owner_identity", changed)
     assert client.post("/zamowienie/checkout", data=data).status_code == 409
     assert not fake.calls
+
+
+@pytest.mark.parametrize("kind", ["jednorazowy", "abonament"])
+def test_existing_verified_provider_customer_is_reused(owned_http, kind):
+    client, service, fake, _, sender = owned_http
+    with sqlite3.connect(service.store.path) as conn:
+        conn.execute("UPDATE b2b_customers SET stripe_customer_id='cus_trusted' WHERE customer_id=1")
+    login(client, sender)
+    data = prepare(client)
+    data["kind"] = kind
+    assert client.post("/zamowienie/checkout", data=data, follow_redirects=False).status_code == 303
+    params = fake.calls[0][0]
+    assert params["customer"] == "cus_trusted"
+    assert "customer_email" not in params and "customer_creation" not in params
 

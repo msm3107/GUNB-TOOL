@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -18,6 +19,14 @@ class CheckoutUnavailable(RuntimeError):
 
 class CheckoutConflict(ValueError):
     pass
+
+
+def is_owned_checkout(offer_json: str, customer_id: int) -> bool:
+    try:
+        marker = json.loads(offer_json).get("authenticated_customer_id")
+        return type(marker) is int and marker == customer_id
+    except (ValueError, TypeError, AttributeError, RecursionError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -63,12 +72,12 @@ class CheckoutStore:
         except (OSError, sqlite3.Error, AlreadyRunning):
             raise CheckoutUnavailable from None
 
-    def owner_email(self, customer_id: int) -> str:
+    def owner_identity(self, customer_id: int) -> tuple[str, str | None]:
         def read(conn):
-            row = conn.execute("SELECT email FROM b2b_customers WHERE customer_id=?", (customer_id,)).fetchone()
+            row = conn.execute("SELECT email,stripe_customer_id FROM b2b_customers WHERE customer_id=?", (customer_id,)).fetchone()
             if row is None:
                 raise CheckoutConflict
-            return row[0]
+            return row[0], row[1]
         return self._write(read)
 
     def reserve(self, *, key_hash: str, fingerprint: str, email: str, filters_json: str,
@@ -78,11 +87,14 @@ class CheckoutStore:
         stamp = int(now.timestamp())
 
         def reserve(conn):
+            row = conn.execute("SELECT * FROM checkout_attempts WHERE key_hash=?", (key_hash,)).fetchone()
             if owner_id is not None:
-                owner = conn.execute("SELECT email FROM b2b_customers WHERE customer_id=?", (owner_id,)).fetchone()
+                owner = conn.execute("SELECT email,stripe_customer_id FROM b2b_customers WHERE customer_id=?", (owner_id,)).fetchone()
                 if owner is None or owner[0].lower() != email:
                     raise CheckoutConflict
-            row = conn.execute("SELECT * FROM checkout_attempts WHERE key_hash=?", (key_hash,)).fetchone()
+                frozen = json.loads(row["offer_json"] if row else offer_json)
+                if not isinstance(frozen, dict) or frozen.get("authenticated_stripe_customer_id") != owner[1]:
+                    raise CheckoutConflict
             if row:
                 pending = conn.execute("SELECT status_platnosci FROM b2b_orders WHERE order_id=?", (row["order_id"],)).fetchone()[0]
                 if (row["fingerprint"] != fingerprint or stamp >= row["expires_at"] or pending != "pending"

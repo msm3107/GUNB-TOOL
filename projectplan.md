@@ -342,6 +342,8 @@ flowchart TD
   - Testy weryfikujące wygasanie tokenu, odporność na manipulację podpisem i poprawne tworzenie sesji.
 
 #### PR 12: Panel Klienta B2B (`/panel`)
+UX-06 doprecyzowuje ścieżkę konta: powrót po Magic Link jest ograniczony do własnego panelu/paczki i związany z tokenem. Nowe zamówienia z uwierzytelnionej sesji otrzymują serwerowy znacznik właściciela w istniejącej migawce oferty; konto i korelacja są sprawdzane ponownie w transakcji. Natywny formularz utrzymuje ten sam ukryty UUID po nieznanym wyniku, a uzgodnienie nowego opłaconego abonamentu nie wymaga przepisywania dowodu. Starsze anonimowe próby zachowują oddzielne odzyskiwanie z oryginalnym UUID i weryfikacją istniejącej Session. Brak migracji i zmian filtracji/pamięci dostaw; ścisłe dopasowanie, niezmienny ledger oraz jawna jakość pozostają bez zmian. To nadal wyłącznie test, bez uruchomienia sprzedaży lub płatności live.
+
 - **Gałąź:** `feat/app-customer-dashboard`
 - **Role:**
   - *Koordynator:* Architektura informacji panelu handlowca (ergonomia i prostota).

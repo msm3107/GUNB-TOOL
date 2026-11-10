@@ -15,6 +15,7 @@ from app.stripe_service import CheckoutBusy, CheckoutService
 from core.checkout_store import CheckoutConflict, CheckoutUnavailable
 from core.customer_dashboard import _scope
 from core.places import PlaceCatalog
+from core.ranking import CATEGORY_PLURALS
 
 from .orders import BODY_LIMIT, EstimateInput, InputError, read_input
 
@@ -69,6 +70,7 @@ def checkout_router(service: CheckoutService, templates, places: PlaceCatalog | 
         return templates.TemplateResponse(request=request, name="checkout_summary.html", context={
             "page_title": "Testowe zamówienie", "selection": selection, "filters_json": filters_json,
             "scope": _scope(filters_json), "message": message, "login": login,
+            "category_labels": CATEGORY_PLURALS,
             "offers": {"jednorazowy": service.settings.package_offer, "abonament": service.settings.subscription_offer},
         }, status_code=status, headers={"Cache-Control": "no-store", **({"Retry-After": "60"} if status in (429, 503) else {})})
 

@@ -109,7 +109,7 @@ class MagicMail:
     recipient: str = field(repr=False)
     token: str = field(repr=False)
     token_hash: str
-    return_to: str = "/panel"
+    return_to: str = field(default="/panel", repr=False)
 
 
 def digest(value: str) -> str:
@@ -267,6 +267,16 @@ class AuthService:
         token = UUID(request_token)
         if token.version != 4 or str(token) != request_token:
             raise ValueError("Invalid order capability")
+        self._bind_billing(principal, subscriptions, key_hash=digest(request_token))
+
+    def bind_order(self, principal: AuthenticatedCustomer, order_id: int, subscriptions) -> None:
+        if not self.settings.enabled or not subscriptions.settings.test_mode:
+            raise CheckoutUnavailable
+        if type(order_id) is not int or not 1 <= order_id < 2**63:
+            raise ValueError("Invalid order")
+        self._bind_billing(principal, subscriptions, order_id=order_id)
+
+    def _bind_billing(self, principal, subscriptions, *, key_hash=None, order_id=None):
         if not self._billing_slots.acquire(blocking=False):
             raise CheckoutBusy
         try:
@@ -279,13 +289,17 @@ class AuthService:
                 self._billing_recent.append(stamp)
             try:
                 notice = self.store.claim_billing(
-                    principal.customer_id, digest(request_token)
+                    principal.customer_id, key_hash, order_id=order_id
                 )
             except BillingLinkMissing as missing:
                 restored = subscriptions.recover_checkout(missing.attempt)
                 notice = self.store.claim_billing(
-                    principal.customer_id, digest(request_token), recovered=restored
+                    principal.customer_id, key_hash, recovered=restored, order_id=order_id
                 )
             subscriptions.reconcile(notice)
+            if order_id is not None:
+                # Access reads also check payment/ownership; do not report a
+                # successful account reconciliation after either was revoked.
+                self.store.claim_billing(principal.customer_id, None, order_id=order_id)
         finally:
             self._billing_slots.release()
