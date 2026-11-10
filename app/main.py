@@ -107,7 +107,7 @@ def create_app(
         PackagePreview(PackageAccessStore(config.database_path),config.package_dir,slots=artifact_slots),
         CustomerDashboardStore(config.database_path),identity_resolver or auth_service.resolve,auth_service,templates,
     ))
-    api.include_router(order_router(Estimator(config.database_path), templates, places))
+    api.include_router(order_router(Estimator(config.database_path), templates, places, checkout_enabled=config.checkout.test_mode and config.auth.enabled))
     api.include_router(auth_router(auth_service, subscriptions, templates))
     api.include_router(dashboard_router(
         CustomerDashboardStore(config.database_path), identity_resolver or auth_service.resolve,
@@ -125,7 +125,7 @@ def create_app(
         checkout_router(
             checkout_service
             or CheckoutService(CheckoutStore(config.database_path), config.checkout),
-            templates, places,
+            templates, places, auth_service,
         )
     )
     api.include_router(

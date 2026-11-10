@@ -118,7 +118,15 @@ class CheckoutService:
             self._sessions = stripe.StripeClient(settings.secret_key, stripe_version="2024-06-20", max_network_retries=0,
                 http_client=stripe.RequestsClient(timeout=5)).checkout.sessions
 
-    def start(self, *, email: str, kind: str, filters: PackageFilters, request_token: str) -> str:
+    def start_owned(self, *, customer_id: int, kind: str, filters: PackageFilters, request_token: str) -> str:
+        if not self.settings.test_mode:
+            raise CheckoutUnavailable
+        if type(customer_id) is not int or not 1 <= customer_id < 2**63:
+            raise ValueError("Invalid customer")
+        return self.start(email=self.store.owner_email(customer_id), kind=kind, filters=filters,
+                          request_token=request_token, owner_id=customer_id)
+
+    def start(self, *, email: str, kind: str, filters: PackageFilters, request_token: str, owner_id: int | None = None) -> str:
         if not self.settings.test_mode:
             raise CheckoutUnavailable
         email = email.strip().lower()
@@ -147,17 +155,20 @@ class CheckoutService:
             selected["powiaty"] = sorted(selected["powiaty"])
             selected["kategorie"] = sorted(selected["kategorie"])
             filters_json = _json(selected)
-            fingerprint = hashlib.sha256(_json([email, kind, selected]).encode()).hexdigest()
+            identity = [email, kind, selected] + ([owner_id] if owner_id is not None else [])
+            fingerprint = hashlib.sha256(_json(identity).encode()).hexdigest()
             key_hash = hashlib.sha256(request_token.encode()).hexdigest()
             offer = self.settings.package_offer if kind == "jednorazowy" else self.settings.subscription_offer
             offer_snapshot = asdict(offer)
+            if owner_id is not None:
+                offer_snapshot["authenticated_customer_id"] = owner_id
             # Provider idempotency is scoped to an account. A key/account
             # change must not recreate an ambiguous attempt in a new account.
             credential_hash = hashlib.sha256(self.settings.secret_key.encode()).hexdigest()
             offer_snapshot["credential_hash"] = credential_hash
             now = self._now()
             attempt = self.store.reserve(key_hash=key_hash, fingerprint=fingerprint, email=email, filters_json=filters_json,
-                kind=kind, offer_json=_json(offer_snapshot), origin=self.settings.origin, now=now)
+                kind=kind, offer_json=_json(offer_snapshot), origin=self.settings.origin, now=now, owner_id=owner_id)
             if attempt.url:
                 return _session_url({"id": attempt.session_id, "livemode": False, "url": attempt.url})
             # Retrying later could present a new Session after provider key

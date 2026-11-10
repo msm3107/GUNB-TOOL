@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block body_class %}work-page{% endblock %}
+{% block content %}
+<section class="container page-section configurator dashboard" aria-labelledby="checkout-heading">
+  <p class="eyebrow">Środowisko testowe · sprzedaż wyłączona</p><h1 id="checkout-heading">Sprawdź testowe zamówienie.</h1>
+  <p>To próba działania płatności. Kwoty są demonstracyjne i nie stanowią oferty handlowej.</p>
+  {% if message %}<p role="status" class="dashboard-notice">{{ message }}</p>{% endif %}
+  {% if login %}<p><a href="/logowanie" target="_blank" rel="noopener">Zaloguj się (nowa karta)</a>. Po zalogowaniu wróć do tego formularza.</p>{% endif %}
+  {% if selection %}
+  <p><strong>Twój zakres:</strong> {{ scope }}</p>
+  <p class="field-help">Typy: {{ selection.filters.kategorie|join(', ') }}. Ostateczny zapis obejmuje wskazane filtry, a nie gwarantowaną liczbę przyszłych inwestycji.</p>
+  <form method="post" action="/zamowienie/checkout">
+    <input type="hidden" name="request_token" value="{{ selection.request_token }}"><input type="hidden" name="filters" value="{{ filters_json }}">
+    <label for="checkout-kind">Rodzaj testowej paczki</label><select id="checkout-kind" name="kind">
+      {% for key,offer in offers.items() %}<option value="{{ key }}"{% if selection.kind == key %} selected{% endif %}>{{ 'Paczka jednorazowa' if key == 'jednorazowy' else 'Abonament' }} · {{ offer.amount_grosze//100 }},{{ '%02d'|format(offer.amount_grosze%100) }} zł testowo{% if offer.interval %} / {{ 'miesiąc' if offer.interval == 'month' else 'rok' }}{% endif %}</option>{% endfor %}
+    </select>
+    <p class="field-help">Próba jest przypisana do zalogowanego konta. Po nieznanym wyniku ponawiaj ten formularz; zachowuje tę samą próbę bez przepisywania identyfikatorów.</p>
+    <button class="button-link" type="submit">{{ 'Ponów tę samą próbę' if message else 'Przejdź do płatności testowej' }}</button>
+  </form>
+  {% endif %}
+  <p><a href="/panel">Sprawdź swoje zamówienia</a> · <a href="/zamowienie">Wróć do konfiguratora</a></p>
+  <p class="field-help">Powrót z płatności nie potwierdza jej przyjęcia ani przygotowania lub doręczenia paczki.</p>
+</section>
+{% endblock %}

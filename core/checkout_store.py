@@ -63,21 +63,37 @@ class CheckoutStore:
         except (OSError, sqlite3.Error, AlreadyRunning):
             raise CheckoutUnavailable from None
 
+    def owner_email(self, customer_id: int) -> str:
+        def read(conn):
+            row = conn.execute("SELECT email FROM b2b_customers WHERE customer_id=?", (customer_id,)).fetchone()
+            if row is None:
+                raise CheckoutConflict
+            return row[0]
+        return self._write(read)
+
     def reserve(self, *, key_hash: str, fingerprint: str, email: str, filters_json: str,
-                kind: str, offer_json: str, origin: str, now: datetime) -> CheckoutAttempt:
+                kind: str, offer_json: str, origin: str, now: datetime, owner_id: int | None = None) -> CheckoutAttempt:
         if not re.fullmatch("[0-9a-f]{64}", key_hash) or not re.fullmatch("[0-9a-f]{64}", fingerprint):
             raise ValueError("Invalid checkout digest")
         stamp = int(now.timestamp())
 
         def reserve(conn):
+            if owner_id is not None:
+                owner = conn.execute("SELECT email FROM b2b_customers WHERE customer_id=?", (owner_id,)).fetchone()
+                if owner is None or owner[0].lower() != email:
+                    raise CheckoutConflict
             row = conn.execute("SELECT * FROM checkout_attempts WHERE key_hash=?", (key_hash,)).fetchone()
             if row:
                 pending = conn.execute("SELECT status_platnosci FROM b2b_orders WHERE order_id=?", (row["order_id"],)).fetchone()[0]
-                if row["fingerprint"] != fingerprint or stamp >= row["expires_at"] or pending != "pending":
+                if (row["fingerprint"] != fingerprint or stamp >= row["expires_at"] or pending != "pending"
+                        or (owner_id is not None and row["customer_id"] != owner_id)):
                     raise CheckoutConflict
                 return CheckoutAttempt(**dict(row))
-            conn.execute("INSERT INTO b2b_customers(email) VALUES(?) ON CONFLICT(email) DO NOTHING", (email,))
-            customer_id = conn.execute("SELECT customer_id FROM b2b_customers WHERE email=?", (email,)).fetchone()[0]
+            if owner_id is None:
+                conn.execute("INSERT INTO b2b_customers(email) VALUES(?) ON CONFLICT(email) DO NOTHING", (email,))
+                customer_id = conn.execute("SELECT customer_id FROM b2b_customers WHERE email=?", (email,)).fetchone()[0]
+            else:
+                customer_id = owner_id
             order_id = conn.execute("INSERT INTO b2b_orders(customer_id,filtry_json,typ_pakietu) VALUES(?,?,?)",
                                     (customer_id, filters_json, kind)).lastrowid
             conn.execute("""INSERT INTO checkout_attempts

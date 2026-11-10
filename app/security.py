@@ -69,6 +69,13 @@ class SecurityHeadersMiddleware:
                 headers = MutableHeaders(scope=message)
                 for name, value in SECURITY_HEADERS.items():
                     headers[name] = value
+                if scope.get("path") == "/zamowienie":
+                    headers["Referrer-Policy"] = "same-origin"
+                if scope.get("path") in {"/zamowienie/podsumowanie", "/zamowienie/checkout"}:
+                    headers["Content-Security-Policy"] = SECURITY_HEADERS["Content-Security-Policy"].replace(
+                        "form-action 'self';", "form-action 'self' https://checkout.stripe.com;"
+                    )
+                    headers["Referrer-Policy"] = "same-origin"
                 if scope.get("path") in {"/panel", "/panel/uwagi", "/panel/rozliczenia"}:
                     # Chromium checks form-action against the POST's redirects.
                     # Only this page's native Portal form needs the exact host
