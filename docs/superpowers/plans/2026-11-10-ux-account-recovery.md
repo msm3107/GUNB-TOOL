@@ -43,4 +43,3 @@ Expected: tests/test_owned_checkout.py i tests/test_checkout_routes.py/test_stri
 - [ ] RED: paid owned order bez UUID -> zweryfikowany billing, legacy/obcy/pending odrzucone, changed proof po IO, retry bez nowych płatności/paczek; browser JSon/off i powrót do paczki.
 - [ ] Implementacja i pełny unit/browser/Ruff/ASCII/diff-check; heurystyka trzech person; independent wholePR review, poprawki/regresje i CI dokładnego HEAD; PR z audit.
 Expected: wskazane w spec auth/billing/legacy/checkout/service plus cały unit/browser PASS; bez merge/deploy.
-

@@ -41,7 +41,7 @@ def prepare(client, **changes):
     assert result.status_code == 200
     fields = Fields(result.text).values
     assert UUID(fields["request_token"]).version == 4
-    return {"kind": "abonament", "request_token": fields["request_token"], "filters": fields["filters"]}
+    return {"kind": "abonament", "request_token": fields["request_token"], "filters": fields["filters"], "offer_version": fields["offer_version"]}
 
 
 def test_native_timeout_retry_and_double_submit_keep_one_order(owned_http):
@@ -157,7 +157,7 @@ def test_account_changed_between_lookup_and_reserve_never_calls_provider(owned_h
             conn.execute("UPDATE b2b_customers SET email='changed@example.test' WHERE customer_id=?", (customer_id,))
         return email
     monkeypatch.setattr(service.store, "owner_identity", changed)
-    assert client.post("/zamowienie/checkout", data=data).status_code == 409
+    assert client.post("/zamowienie/checkout", data=data).status_code == 401
     assert not fake.calls
 
 
@@ -174,3 +174,70 @@ def test_existing_verified_provider_customer_is_reused(owned_http, kind):
     assert params["customer"] == "cus_trusted"
     assert "customer_email" not in params and "customer_creation" not in params
 
+
+@pytest.mark.parametrize("mutation", ["UPDATE b2b_customers SET email='newowner@example.test' WHERE customer_id=1", "DELETE FROM auth_sessions"])
+def test_session_changed_after_auth_before_identity_lookup_cannot_reserve(owned_http, monkeypatch, mutation):
+    client, service, fake, _, sender = owned_http
+    login(client, sender)
+    data = prepare(client)
+    original = service.store.owner_identity
+    def changed(customer_id):
+        with sqlite3.connect(service.store.path) as conn:
+            conn.execute(mutation)
+        return original(customer_id)
+    monkeypatch.setattr(service.store, "owner_identity", changed)
+    assert client.post("/zamowienie/checkout", data=data, follow_redirects=False).status_code == 401
+    assert not fake.calls
+    with sqlite3.connect(service.store.path) as conn:
+        assert conn.execute("SELECT count(*) FROM b2b_orders").fetchone()[0] == 0
+
+
+def test_retry_displays_frozen_offer_after_configuration_change(owned_http):
+    from dataclasses import replace
+
+    from app.stripe_service import CheckoutOffer
+    client, service, fake, _, sender = owned_http
+    login(client, sender)
+    data = prepare(client)
+    fake.error = stripe.APIConnectionError("timeout")
+    assert client.post("/zamowienie/checkout", data=data).status_code == 503
+    service.settings = replace(service.settings, subscription_offer=CheckoutOffer(99999, "year"))
+    retry = client.post("/zamowienie/checkout", data=data)
+    assert retry.status_code == 503
+    assert "234,56" in retry.text and "miesiąc" in retry.text
+    assert "999,99" not in retry.text
+    assert fake.calls[0][1] == fake.calls[1][1]
+    assert fake.calls[-1][0]["line_items"][0]["price_data"]["unit_amount"] == 23456
+
+
+def test_changed_offer_before_first_submit_requires_new_confirmation(owned_http):
+    from dataclasses import replace
+
+    from app.stripe_service import CheckoutOffer
+    client, service, fake, _, sender = owned_http
+    login(client, sender)
+    data = prepare(client)
+    service.settings = replace(service.settings, subscription_offer=CheckoutOffer(99999, "year"))
+    assert client.post("/zamowienie/checkout", data=data, follow_redirects=False).status_code == 409
+    assert not fake.calls
+    with sqlite3.connect(service.store.path) as conn:
+        assert conn.execute("SELECT count(*) FROM b2b_orders").fetchone()[0] == 0
+
+
+def test_failed_frozen_offer_read_never_falls_back_to_current_price(owned_http, monkeypatch):
+    from dataclasses import replace
+
+    from app.stripe_service import CheckoutOffer
+    from core.checkout_store import CheckoutUnavailable
+    client, service, fake, _, sender = owned_http
+    login(client, sender)
+    data = prepare(client)
+    fake.error = stripe.APIConnectionError("timeout")
+    assert client.post("/zamowienie/checkout", data=data).status_code == 503
+    service.settings = replace(service.settings, subscription_offer=CheckoutOffer(99999, "year"))
+    monkeypatch.setattr(service.store, "read_owned_offer", lambda *a, **k: (_ for _ in ()).throw(CheckoutUnavailable()))
+    failed = client.post("/zamowienie/checkout", data=data)
+    assert failed.status_code == 503
+    assert "999,99" not in failed.text and "234,56" not in failed.text
+    assert Fields(failed.text).values["request_token"] == data["request_token"]
+    assert "Kwota i okres nie są teraz potwierdzone" in failed.text

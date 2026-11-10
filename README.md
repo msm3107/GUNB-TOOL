@@ -531,6 +531,8 @@ Starsze próby bez znacznika pozostają w osobnej ścieżce „Starsze zamówien
 
 Powracający klient używa istniejącego, wcześniej potwierdzonego Stripe customer: zamrażamy ID w serwerowej ofercie i przekazujemy `customer` zamiast tworzenia kolejnego konta przez `customer_email` ([kontrakt Stripe API](https://docs.stripe.com/api/checkout/sessions/create)). Rezerwacja ponownie porównuje aktualne powiązanie; zmiana konta podczas retry daje konflikt wymagający wyjaśnienia. Przy odzyskiwaniu takiej Session brak `customer_email` jest dopuszczalny wyłącznie dla znacznika uwierzytelnionego właściciela i identycznego zamrożonego customer ID, z pozostałymi kontrolami płatności i metadanych bez zmian. Starsze anonimowe próby nadal wymagają dotychczasowego dowodu emaila.
 
+HTTP przekazuje do rezerwacji również hash zweryfikowanej sesji. W transakcji sprawdzane są jej istnienie, TTL, właściciel i zgodność zweryfikowanego emaila z aktualnym kontem; zmiana emaila lub odwołanie sesji po wstępnej autoryzacji nie tworzy zamówienia ani wywołania dostawcy. Natywny formularz ma dodatkowo ukryty `offer_version` — znacznik wersji cen/okresów, nie dowód uprawnień. Zmiana konfiguracji przed pierwszą rezerwacją daje409 i wymaga nowego potwierdzenia. Przy retry cena, okres i wariant pochodzą wyłącznie z własnego zapisanego `offer_json`; nie zastępujemy ich nową konfiguracją. Niedostępny odczyt zachowuje token/filtry/wariant i nie pokazuje niepotwierdzonej kwoty. Programistyczny JSON może opcjonalnie przekazać `offer_version`; natywny POST wymaga wszystkich czterech pól.
+
 
 ## Podgląd własnej paczki — UX-05
 

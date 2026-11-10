@@ -12,9 +12,12 @@
   <p class="field-help">Wybrane powiaty (kody): {{ selection.filters.powiaty|join(', ') if selection.filters.powiaty else 'całe województwo' }}.{% if selection.filters.place_id %} Wpisana nazwa miejscowości: {{ selection.filters.place_query }}; punkt zostanie ponownie sprawdzony w katalogu.{% elif selection.filters.lat is not none %} Punkt N/E: {{ selection.filters.lat }} / {{ selection.filters.lon }}.{% endif %}{% if selection.filters.promien_km is not none %} Promień: {{ selection.filters.promien_km }} km.{% endif %}</p>
   <form method="post" action="/zamowienie/checkout">
     <input type="hidden" name="request_token" value="{{ selection.request_token }}"><input type="hidden" name="filters" value="{{ filters_json }}">
+    <input type="hidden" name="offer_version" value="{{ selection.offer_version or '' }}">
+    {% if offers %}
     <label for="checkout-kind">Rodzaj testowej paczki</label><select id="checkout-kind" name="kind">
       {% for key,offer in offers.items() %}<option value="{{ key }}"{% if selection.kind == key %} selected{% endif %}>{{ 'Paczka jednorazowa' if key == 'jednorazowy' else 'Abonament' }} · {{ offer.amount_grosze//100 }},{{ '%02d'|format(offer.amount_grosze%100) }} zł testowo{% if offer.interval %} / {{ 'miesiąc' if offer.interval == 'month' else 'rok' }}{% endif %}</option>{% endfor %}
     </select>
+    {% else %}<input type="hidden" name="kind" value="{{ selection.kind }}"><p>Rodzaj zapisany w formularzu: {{ 'Abonament' if selection.kind == 'abonament' else 'Paczka jednorazowa' }}. Kwota i okres nie są teraz potwierdzone; zostaną sprawdzone przy ponowieniu tej samej próby.</p>{% endif %}
     <p class="field-help">Próba jest przypisana do zalogowanego konta. Po nieznanym wyniku ponawiaj ten formularz; zachowuje tę samą próbę bez przepisywania identyfikatorów.</p>
     <button class="button-link" type="submit">{{ 'Ponów tę samą próbę' if message else 'Przejdź do płatności testowej' }}</button>
   </form>

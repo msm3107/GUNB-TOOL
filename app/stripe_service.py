@@ -118,7 +118,26 @@ class CheckoutService:
             self._sessions = stripe.StripeClient(settings.secret_key, stripe_version="2024-06-20", max_network_retries=0,
                 http_client=stripe.RequestsClient(timeout=5)).checkout.sessions
 
-    def start_owned(self, *, customer_id: int, kind: str, filters: PackageFilters, request_token: str) -> str:
+    def offer_version(self, settings=None) -> str:
+        config = settings or self.settings
+        return hashlib.sha256(_json([asdict(config.package_offer), asdict(config.subscription_offer)]).encode()).hexdigest()
+
+    def quote(self):
+        config = self.settings
+        return self.offer_version(config), {"jednorazowy": config.package_offer, "abonament": config.subscription_offer}
+
+    def retry_offer(self, customer_id, request_token, session_hash):
+        row = self.store.read_owned_offer(customer_id, hashlib.sha256(request_token.encode()).hexdigest(), session_hash=session_hash, now=self._now())
+        if row is None:
+            return None
+        kind, raw = row
+        try:
+            offer = json.loads(raw)
+            return {kind: CheckoutOffer(offer["amount_grosze"], offer["interval"])}
+        except (ValueError, TypeError, KeyError):
+            raise CheckoutUnavailable from None
+
+    def start_owned(self, *, customer_id: int, kind: str, filters: PackageFilters, request_token: str, session_hash: str | None = None, expected_offer_version: str | None = None) -> str:
         if not self.settings.test_mode:
             raise CheckoutUnavailable
         if type(customer_id) is not int or not 1 <= customer_id < 2**63:
@@ -127,10 +146,12 @@ class CheckoutService:
         if stripe_customer is not None and not re.fullmatch(r"cus_[A-Za-z0-9]+", stripe_customer):
             raise CheckoutConflict
         return self.start(email=email, kind=kind, filters=filters,
-                          request_token=request_token, owner_id=customer_id, stripe_customer=stripe_customer)
+                          request_token=request_token, owner_id=customer_id, stripe_customer=stripe_customer,
+                          session_hash=session_hash, expected_offer_version=expected_offer_version)
 
-    def start(self, *, email: str, kind: str, filters: PackageFilters, request_token: str, owner_id: int | None = None, stripe_customer: str | None = None) -> str:
-        if not self.settings.test_mode:
+    def start(self, *, email: str, kind: str, filters: PackageFilters, request_token: str, owner_id: int | None = None, stripe_customer: str | None = None, session_hash: str | None = None, expected_offer_version: str | None = None) -> str:
+        config = self.settings
+        if not config.test_mode:
             raise CheckoutUnavailable
         email = email.strip().lower()
         if (not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", email)
@@ -161,18 +182,20 @@ class CheckoutService:
             identity = [email, kind, selected] + ([owner_id] if owner_id is not None else [])
             fingerprint = hashlib.sha256(_json(identity).encode()).hexdigest()
             key_hash = hashlib.sha256(request_token.encode()).hexdigest()
-            offer = self.settings.package_offer if kind == "jednorazowy" else self.settings.subscription_offer
+            offer = config.package_offer if kind == "jednorazowy" else config.subscription_offer
             offer_snapshot = asdict(offer)
             if owner_id is not None:
                 offer_snapshot["authenticated_customer_id"] = owner_id
                 offer_snapshot["authenticated_stripe_customer_id"] = stripe_customer
             # Provider idempotency is scoped to an account. A key/account
             # change must not recreate an ambiguous attempt in a new account.
-            credential_hash = hashlib.sha256(self.settings.secret_key.encode()).hexdigest()
+            credential_hash = hashlib.sha256(config.secret_key.encode()).hexdigest()
             offer_snapshot["credential_hash"] = credential_hash
             now = self._now()
             attempt = self.store.reserve(key_hash=key_hash, fingerprint=fingerprint, email=email, filters_json=filters_json,
-                kind=kind, offer_json=_json(offer_snapshot), origin=self.settings.origin, now=now, owner_id=owner_id)
+                kind=kind, offer_json=_json(offer_snapshot), origin=config.origin, now=now, owner_id=owner_id,
+                session_hash=session_hash, expected_offer_version=expected_offer_version,
+                current_offer_version=self.offer_version(config) if expected_offer_version is not None else None)
             if attempt.url:
                 return _session_url({"id": attempt.session_id, "livemode": False, "url": attempt.url})
             # Retrying later could present a new Session after provider key

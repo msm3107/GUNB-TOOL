@@ -137,4 +137,3 @@ def test_existing_customer_checkout_recovery_uses_trusted_id_not_missing_email(o
     service = SubscriptionService(store, settings(), subscriptions=api, checkout_sessions=Sessions(), now=lambda: NOW)
     auth.bind_order(AuthenticatedCustomer(1), 1, service)
     assert store.has_subscription_access(1, now=NOW)
-

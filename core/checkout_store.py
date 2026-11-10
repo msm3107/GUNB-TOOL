@@ -21,6 +21,10 @@ class CheckoutConflict(ValueError):
     pass
 
 
+class CheckoutUnauthorized(CheckoutConflict):
+    pass
+
+
 def is_owned_checkout(offer_json: str, customer_id: int) -> bool:
     try:
         marker = json.loads(offer_json).get("authenticated_customer_id")
@@ -49,6 +53,30 @@ class CheckoutAttempt:
 class CheckoutStore:
     def __init__(self, path: Path | None):
         self.path = path
+
+    @staticmethod
+    def _check_session(conn, owner_id, session_hash, stamp):
+        if session_hash is not None and conn.execute(
+            """SELECT 1 FROM auth_sessions s JOIN b2b_customers c USING(customer_id)
+            WHERE session_hash=? AND s.customer_id=? AND expires_at>?
+            AND s.verified_email=c.email COLLATE NOCASE""", (session_hash, owner_id, stamp)
+        ).fetchone() is None:
+            raise CheckoutUnauthorized
+
+    def read_owned_offer(self, customer_id, key_hash, *, session_hash, now):
+        def read(conn):
+            self._check_session(conn, customer_id, session_hash, int(now.timestamp()))
+            row = conn.execute("""SELECT a.customer_id,o.customer_id AS owner,a.kind,a.offer_json,a.email,c.email AS current_email
+                FROM checkout_attempts a JOIN b2b_orders o USING(order_id)
+                JOIN b2b_customers c ON c.customer_id=o.customer_id WHERE a.key_hash=?""", (key_hash,)).fetchone()
+            if row is None:
+                return None
+            if (row["customer_id"] != customer_id or row["owner"] != customer_id
+                    or row["email"].lower() != row["current_email"].lower()
+                    or not is_owned_checkout(row["offer_json"], customer_id)):
+                raise CheckoutConflict
+            return row["kind"], row["offer_json"]
+        return self._write(read)
 
     def _write(self, action):
         if self.path is None:
@@ -81,13 +109,17 @@ class CheckoutStore:
         return self._write(read)
 
     def reserve(self, *, key_hash: str, fingerprint: str, email: str, filters_json: str,
-                kind: str, offer_json: str, origin: str, now: datetime, owner_id: int | None = None) -> CheckoutAttempt:
+                kind: str, offer_json: str, origin: str, now: datetime, owner_id: int | None = None,
+                session_hash: str | None = None, expected_offer_version: str | None = None, current_offer_version: str | None = None) -> CheckoutAttempt:
         if not re.fullmatch("[0-9a-f]{64}", key_hash) or not re.fullmatch("[0-9a-f]{64}", fingerprint):
             raise ValueError("Invalid checkout digest")
         stamp = int(now.timestamp())
 
         def reserve(conn):
+            self._check_session(conn, owner_id, session_hash, stamp)
             row = conn.execute("SELECT * FROM checkout_attempts WHERE key_hash=?", (key_hash,)).fetchone()
+            if row is None and expected_offer_version is not None and expected_offer_version != current_offer_version:
+                raise CheckoutConflict
             if owner_id is not None:
                 owner = conn.execute("SELECT email,stripe_customer_id FROM b2b_customers WHERE customer_id=?", (owner_id,)).fetchone()
                 if owner is None or owner[0].lower() != email:

@@ -29,4 +29,3 @@ def safe_return_path(value: str = "/panel") -> str:
 
 def login_url(destination: str) -> str:
     return "/logowanie?" + urlencode({"next": safe_return_path(destination)})
-

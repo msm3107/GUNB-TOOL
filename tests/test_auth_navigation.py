@@ -135,4 +135,3 @@ def test_return_context_does_not_leak_through_access_logs():
     record = logging.LogRecord("uvicorn.access", logging.INFO, "", 1, "%s", ("/logowanie?next=%2Fpanel%2Fpaczki%2F7%3Fcase_id%3DPRIVATECASE",), None)
     DownloadLogRedaction().filter(record)
     assert "PRIVATECASE" not in record.getMessage()
-
