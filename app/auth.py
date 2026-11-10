@@ -12,6 +12,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import Request
@@ -22,6 +23,7 @@ from core.email_sender import SMTPSettings, normalize_address
 from core.smtp_process import SupervisedSMTP
 
 from .identity import AuthenticatedCustomer
+from .navigation import safe_return_path
 from .stripe_service import CheckoutBusy, _valid_origin
 
 log = logging.getLogger(__name__)
@@ -107,10 +109,16 @@ class MagicMail:
     recipient: str = field(repr=False)
     token: str = field(repr=False)
     token_hash: str
+    return_to: str = "/panel"
 
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def magic_digest(token: str, return_to: str) -> str:
+    # Preserve existing /panel links, bind every other destination to its row.
+    return digest(token if return_to == "/panel" else "zt-return:" + return_to + "\n" + token)
 
 
 def valid_browser(value) -> bool:
@@ -142,7 +150,8 @@ class AuthService:
             "__Host-zt_magic_browser" if self.secure else "zt_magic_browser"
         )
 
-    def prepare(self, email: str, browser: str, peer: str) -> MagicMail | None:
+    def prepare(self, email: str, browser: str, peer: str, *, return_to: str = "/panel") -> MagicMail | None:
+        return_to = safe_return_path(return_to)
         if not self.settings.enabled:
             raise CheckoutUnavailable
         if not valid_browser(browser):
@@ -172,13 +181,13 @@ class AuthService:
 
             issued = self.store.issue_link(
                 email=email,
-                token_hash=digest(token),
+                token_hash=magic_digest(token, return_to),
                 browser_hash=digest(browser),
                 address_hash=keyed("address", email),
                 ip_hash=keyed("peer", peer),
                 now=now,
             )
-            return MagicMail(email, token, digest(token)) if issued else None
+            return MagicMail(email, token, magic_digest(token, return_to), return_to) if issued else None
         finally:
             self._request_slots.release()
 
@@ -192,7 +201,9 @@ class AuthService:
                     "Zlecono logowanie do Żółtej Tablicy. Otwórz link w tej samej przeglądarce, w której go zamówiono, "
                     "i wybierz Potwierdź logowanie. Link jest jednorazowy i ważny 15 minut.\n\n"
                     + self.settings.origin
-                    + "/auth/verify#"
+                    + "/auth/verify"
+                    + ("?" + urlencode({"next": mail.return_to}) if mail.return_to != "/panel" else "")
+                    + "#"
                     + mail.token
                     + "\n\nJeśli nie zlecano logowania, zignoruj wiadomość. Nie przekazuj linku innym osobom.",
                     idempotency_key="zt-login-" + mail.token_hash,
@@ -211,7 +222,8 @@ class AuthService:
         except CheckoutUnavailable:
             log.warning("Auth mail receipt could not be persisted")
 
-    def verify(self, token: str, browser: str, old_session: str | None = None) -> str:
+    def verify(self, token: str, browser: str, old_session: str | None = None, *, return_to: str = "/panel") -> str:
+        return_to = safe_return_path(return_to)
         if not self.settings.enabled:
             raise CheckoutUnavailable
         now = self._now()
@@ -224,7 +236,7 @@ class AuthService:
             else None
         )
         self.store.consume_link(
-            token_hash=digest(token),
+            token_hash=magic_digest(token, return_to),
             browser_hash=digest(browser),
             session_hash=digest(session),
             old_session_hash=old_hash,

@@ -8,6 +8,7 @@ from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.identity import AuthenticatedCustomer
+from app.navigation import login_url
 from app.routes.auth import AuthInputError
 from app.routes.dashboard import ISSUE_TYPES, _issue_input
 from core.checkout_store import CheckoutUnavailable
@@ -155,7 +156,7 @@ def packages_router(preview, issues, identity, auth, templates):
             owner = await principal(request)
             if owner is None:
                 return RedirectResponse(
-                    "/logowanie", status_code=303, headers={"Cache-Control": "no-store"}
+                    login_url(request.url.path + ("?" + request.url.query if request.url.query else "")), status_code=303, headers={"Cache-Control": "no-store"}
                 )
             if not 1 <= delivery_id < 2**63:
                 raise PackageNotFound
