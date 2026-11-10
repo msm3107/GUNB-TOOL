@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -16,6 +17,7 @@ from core.auth_store import AuthStore
 from core.checkout_store import CheckoutStore
 from core.customer_dashboard import CustomerDashboardStore
 from core.package_access import PackageAccessStore
+from core.package_preview import PackagePreview
 from core.paid_packages import PaidPackagePreparer
 from core.payment_store import PaymentStore
 from core.places import PlaceCatalog
@@ -32,6 +34,7 @@ from .routes.dashboard import dashboard_router
 from .routes.demo import demo_router
 from .routes.downloads import downloads_router
 from .routes.orders import order_router
+from .routes.packages import packages_router
 from .routes.places import places_router
 from .routes.portal import portal_router
 from .routes.stripe_webhook import stripe_webhook_router
@@ -90,14 +93,20 @@ def create_app(
     mimetypes.add_type("font/woff2", ".woff2")
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     places = PlaceCatalog(config.places_path)
+    artifact_slots = threading.BoundedSemaphore(4)
     api.include_router(demo_router(templates))
     api.include_router(
         downloads_router(
             PackageAccessStore(config.database_path), config.package_dir,
             identity_resolver or auth_service.resolve, auth_service, templates,
+            slots=artifact_slots,
         )
     )
     api.include_router(places_router(places))
+    api.include_router(packages_router(
+        PackagePreview(PackageAccessStore(config.database_path),config.package_dir,slots=artifact_slots),
+        CustomerDashboardStore(config.database_path),identity_resolver or auth_service.resolve,auth_service,templates,
+    ))
     api.include_router(order_router(Estimator(config.database_path), templates, places))
     api.include_router(auth_router(auth_service, subscriptions, templates))
     api.include_router(dashboard_router(

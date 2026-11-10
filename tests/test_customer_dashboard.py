@@ -24,9 +24,10 @@ from tests.test_issue_tracker import deliver_case
 class _IssueForm(HTMLParser):
     """Read the retry payload from rendered HTML, including decoded entities."""
 
-    def __init__(self, html):
+    def __init__(self, html, action="/panel/uwagi"):
         super().__init__()
         self.values = {}
+        self.action = action
         self.active = False
         self.textarea = self.select = None
         self.feed(html)
@@ -34,7 +35,7 @@ class _IssueForm(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "form":
-            self.active = attrs.get("action") == "/panel/uwagi"
+            self.active = attrs.get("action") == self.action
         if not self.active:
             return
         if tag == "input":

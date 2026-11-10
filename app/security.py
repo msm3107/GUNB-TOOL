@@ -27,15 +27,21 @@ class DownloadLogRedaction(logging.Filter):
         super().__init__("gunb.download-redaction")
 
     def filter(self, record):
-        def redact(value):
-            return (
-                "/pobierz/[REDACTED]"
-                if isinstance(value, str) and "/pobierz/" in unquote(value)
-                else value
-            )
+        def private_target(value):
+            if isinstance(value,str):
+                decoded=unquote(value)
+                if '/pobierz/' in decoded:
+                    return '/pobierz/[REDACTED]'
+                if '/panel/paczki/' in decoded:
+                    return '/panel/paczki/[PRIVATE]'
+            return None
 
-        if isinstance(record.msg, str) and "/pobierz/" in unquote(record.msg):
-            record.msg, record.args = "Download request /pobierz/[REDACTED]", ()
+        def redact(value):
+            return private_target(value) or value
+
+        target=private_target(record.msg)
+        if target:
+            record.msg, record.args = 'Private request '+target, ()
         elif isinstance(record.args, tuple):
             record.args = tuple(redact(value) for value in record.args)
         elif isinstance(record.args, dict):

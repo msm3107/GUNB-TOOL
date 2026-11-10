@@ -101,7 +101,7 @@ class ArtifactResponse(StreamingResponse):
                 self.release()
 
 
-def downloads_router(store, root, identity, auth, templates):
+def downloads_router(store, root, identity, auth, templates, *, slots=None):
     router = APIRouter()
     key = (
         bytes.fromhex(auth.settings.secret_key)
@@ -109,7 +109,7 @@ def downloads_router(store, root, identity, auth, templates):
         else secrets.token_bytes(32)
     )
     peer_key = secrets.token_bytes(32)
-    slots = threading.BoundedSemaphore(4)
+    slots = slots if slots is not None else threading.BoundedSemaphore(4)
 
     def sign(value):
         return hmac.new(
