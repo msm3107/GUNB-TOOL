@@ -135,3 +135,25 @@ def test_return_context_does_not_leak_through_access_logs():
     record = logging.LogRecord("uvicorn.access", logging.INFO, "", 1, "%s", ("/logowanie?next=%2Fpanel%2Fpaczki%2F7%3Fcase_id%3DPRIVATECASE",), None)
     DownloadLogRedaction().filter(record)
     assert "PRIVATECASE" not in record.getMessage()
+
+
+@pytest.mark.parametrize("target", ["/panel", "/panel?", "/panel/paczki/7"])
+def test_login_without_query_works_with_python310_strict_parser(http, monkeypatch, target):
+    from app import navigation
+
+    client, _, sender = http
+    parser = navigation.parse_qsl
+
+    def python310_parser(query, **options):
+        # CPython 3.10 urllib.parse rejects an empty query in strict mode.
+        # https://github.com/python/cpython/blob/3.10/Lib/urllib/parse.py#L729
+        if not query and options.get("strict_parsing"):
+            raise ValueError("bad query field: ''")
+        return parser(query, **options)
+
+    monkeypatch.setattr(navigation, "parse_qsl", python310_parser)
+    response = client.get("/logowanie", params={"next": target})
+    assert response.status_code == 200
+    assert Fields(response.text).values["next"] == target.rstrip("?")
+    sent = client.post("/auth/magic-link", data={"email": "person@example.test", "next": target}, headers={"Origin": ORIGIN})
+    assert sent.status_code == 202 and len(sender.messages) == 1

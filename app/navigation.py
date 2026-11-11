@@ -12,6 +12,8 @@ def safe_return_path(value: str = "/panel") -> str:
     match = re.fullmatch(r"/panel(?:/paczki/([1-9][0-9]{0,18}))?", parts.path)
     if not match or (match[1] and int(match[1]) >= 2**63) or re.search(r"%(?![0-9a-fA-F]{2})", parts.query):
         raise ValueError("Invalid destination")
+    if not parts.query:
+        return parts.path
     pairs = parse_qsl(parts.query, keep_blank_values=True, strict_parsing=True, errors="strict", max_num_fields=4)
     values = dict(pairs)
     allowed = {"page", "category", "case_id", "notice"} if match[1] else {"orders_before", "deliveries_before"}
