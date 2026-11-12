@@ -84,6 +84,7 @@ def app_server(tmp_path, request):
         from app.subscription_service import SubscriptionService
         from core.checkout_store import CheckoutStore
         from core.subscription_store import SubscriptionNotice, SubscriptionStore
+        from tests.test_stripe_service import Customers
         from tests.test_stripe_service import settings as checkout_settings
         from tests.test_subscription_service import Subscriptions, snapshot
         checkout_config = replace(checkout_settings(), origin=url)
@@ -99,7 +100,12 @@ def app_server(tmp_path, request):
                     raise stripe.APIConnectionError("synthetic timeout")
                 return {"id": "cs_test_native", "livemode": False, "url": "https://checkout.stripe.com/test-owned"}
         checkout_api = NativeSessions()
-        checkout_service = CheckoutService(CheckoutStore(path), checkout_config, sessions=checkout_api, now=lambda: NOW)
+        class NativeCustomers(Customers):
+            def create(self, params, options):
+                value = super().create(params, options)
+                value["id"] = "cus_native"
+                return value
+        checkout_service = CheckoutService(CheckoutStore(path), checkout_config, sessions=checkout_api, customers=NativeCustomers(path), now=lambda: NOW)
         class NativeSubscriptions:
             def retrieve(self, subscription_id):
                 metadata = checkout_api.calls[-1][0]["metadata"]

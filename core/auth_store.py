@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .checkout_store import CheckoutConflict, CheckoutStore, is_owned_checkout
 from .subscription_store import SubscriptionNotice
@@ -203,8 +203,11 @@ class AuthStore(CheckoutStore):
         *,
         recovered: RecoveredBilling | None = None,
         order_id: int | None = None,
+        session_hash: str | None = None,
+        now: datetime | None = None,
     ) -> SubscriptionNotice:
         def claim(conn):
+            self._check_session(conn, customer_id, session_hash, int((now or datetime.now(timezone.utc)).timestamp()))
             lookup = key_hash
             if order_id is not None:
                 owned = conn.execute("SELECT key_hash FROM checkout_attempts WHERE order_id=? AND customer_id=?", (order_id, customer_id)).fetchone()

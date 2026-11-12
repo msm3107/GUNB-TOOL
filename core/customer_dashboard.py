@@ -112,6 +112,7 @@ class CustomerDashboardStore(CheckoutStore):
         now: datetime,
         orders_before: int | None = None,
         deliveries_before: int | None = None,
+        session_hash: str | None = None,
     ) -> DashboardSnapshot:
         for value in (customer_id, orders_before, deliveries_before):
             if value is not None and (type(value) is not int or not 1 <= value < 2**63):
@@ -141,6 +142,7 @@ class CustomerDashboardStore(CheckoutStore):
                         or conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal"
                     ):
                         raise CheckoutUnavailable
+                    self._check_session(conn, customer_id, session_hash, int(now.timestamp()))
                     return self._snapshot(
                         conn, customer_id, now, orders_before, deliveries_before
                     )

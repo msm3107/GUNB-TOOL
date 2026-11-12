@@ -14,7 +14,11 @@ from app.navigation import safe_return_path
 from app.stripe_service import CheckoutBusy
 from app.subscription_service import SubscriptionService
 from core.auth_store import AuthRejected
-from core.checkout_store import CheckoutConflict, CheckoutUnavailable
+from core.checkout_store import (
+    CheckoutConflict,
+    CheckoutUnauthorized,
+    CheckoutUnavailable,
+)
 
 GENERIC = "Jeśli możemy zalogować ten adres, wyślemy link. Sprawdź także spam."
 
@@ -293,6 +297,8 @@ def auth_router(
             )
         except AuthInputError as exc:
             return error(request, exc.code)
+        except CheckoutUnauthorized:
+            return error(request, 401)
         except CheckoutConflict:
             return error(request, 409)
         except ValueError:

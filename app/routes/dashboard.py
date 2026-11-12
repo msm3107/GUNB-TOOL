@@ -12,7 +12,11 @@ from app.identity import AuthenticatedCustomer, IdentityResolver
 from app.navigation import login_url
 from app.routes.auth import AuthInputError, _input
 from app.stripe_service import CheckoutBusy
-from core.checkout_store import CheckoutConflict, CheckoutUnavailable
+from core.checkout_store import (
+    CheckoutConflict,
+    CheckoutUnauthorized,
+    CheckoutUnavailable,
+)
 from core.customer_dashboard import CustomerDashboardStore
 from core.issue_tracker import IssueNotAllowed, IssueRateLimitExceeded
 
@@ -103,7 +107,7 @@ def dashboard_router(
     downloads_enabled=False,
 ):
     router = APIRouter()
-    clock = now or (lambda: datetime.now(timezone.utc))
+    clock = now or auth._now
 
     async def render(request, principal=None, *, status=200, message="", values=None, billing_retry=None):
         snapshot = None
@@ -120,7 +124,11 @@ def dashboard_router(
                     now=clock(),
                     orders_before=order_cursor,
                     deliveries_before=delivery_cursor,
+                    session_hash=principal.session_hash,
                 )
+            except CheckoutUnauthorized:
+                principal, billing_retry = None, None
+                status, message = 401, "Sesja wygasła lub została odwołana. Zaloguj się ponownie."
             except ValueError:
                 status, message = (
                     422,
@@ -215,6 +223,8 @@ def dashboard_router(
             if owner is None:
                 return RedirectResponse("/logowanie", status_code=303, headers={"Cache-Control": "no-store"})
             await run_in_threadpool(auth.bind_order, owner, order_id, subscriptions)
+        except CheckoutUnauthorized:
+            return await render(request, status=401, message="Sesja wygasła lub została odwołana. Zaloguj się ponownie.")
         except CheckoutConflict:
             return await render(request, owner, status=403, message="Nie potwierdzono uprawnień do tego rozliczenia. Starsze zamówienia wymagają odzyskania dostępu.")
         except CheckoutBusy:
@@ -277,6 +287,8 @@ def dashboard_router(
                 status=exc.code,
                 message="Niepoprawny lub zbyt duży formularz.",
             )
+        except CheckoutUnauthorized:
+            return await render(request, status=401, message="Sesja wygasła lub została odwołana. Zaloguj się ponownie.", values=values)
         except (IssueNotAllowed, CheckoutConflict):
             return await render(
                 request,

@@ -97,11 +97,12 @@ def _customer_status(conn, customer_id: int, stamp: int):
 
 class SubscriptionStore(CheckoutStore):
     def claim_event(
-        self, notice: SubscriptionNotice, *, event_id: str, now: datetime
+        self, notice: SubscriptionNotice, *, event_id: str, now: datetime, session_hash: str | None = None
     ) -> RefreshTicket | None:
         stamp = int(now.timestamp())
 
         def claim(conn):
+            self._check_session(conn, int(notice.customer_id), session_hash, stamp)
             if conn.execute(
                 "SELECT 1 FROM stripe_events WHERE event_id=?", (event_id,)
             ).fetchone():
@@ -191,12 +192,13 @@ class SubscriptionStore(CheckoutStore):
         )
 
     def finish_refresh(
-        self, ticket: RefreshTicket, state: SubscriptionState, *, now: datetime
+        self, ticket: RefreshTicket, state: SubscriptionState, *, now: datetime, session_hash: str | None = None
     ) -> None:
         stamp = int(now.timestamp())
         n = ticket.notice
 
         def finish(conn):
+            self._check_session(conn, int(n.customer_id), session_hash, stamp)
             if conn.execute(
                 "SELECT 1 FROM stripe_events WHERE event_id=?", (ticket.event_id,)
             ).fetchone():

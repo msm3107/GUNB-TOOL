@@ -1,7 +1,7 @@
 """Trusted server identity seam; stage11 supplies authentication. No HTTP fallback."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import Request
 
@@ -9,6 +9,7 @@ from fastapi import Request
 @dataclass(frozen=True)
 class AuthenticatedCustomer:
     customer_id: int
+    session_hash: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if type(self.customer_id) is not int or not 1 <= self.customer_id < 2**63:

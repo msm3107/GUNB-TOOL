@@ -252,7 +252,7 @@ class AuthService:
         if not self._codec.valid(token, "session", now):
             return None
         customer = self.store.session_customer(digest(token), now=now)
-        return AuthenticatedCustomer(customer) if customer is not None else None
+        return AuthenticatedCustomer(customer, digest(token)) if customer is not None else None
 
     def logout(self, request: Request) -> None:
         token = request.cookies.get(self.session_cookie)
@@ -289,17 +289,19 @@ class AuthService:
                 self._billing_recent.append(stamp)
             try:
                 notice = self.store.claim_billing(
-                    principal.customer_id, key_hash, order_id=order_id
+                    principal.customer_id, key_hash, order_id=order_id,
+                    session_hash=principal.session_hash, now=self._now(),
                 )
             except BillingLinkMissing as missing:
                 restored = subscriptions.recover_checkout(missing.attempt)
                 notice = self.store.claim_billing(
-                    principal.customer_id, key_hash, recovered=restored, order_id=order_id
+                    principal.customer_id, key_hash, recovered=restored, order_id=order_id,
+                    session_hash=principal.session_hash, now=self._now(),
                 )
-            subscriptions.reconcile(notice)
-            if order_id is not None:
-                # Access reads also check payment/ownership; do not report a
-                # successful account reconciliation after either was revoked.
-                self.store.claim_billing(principal.customer_id, None, order_id=order_id)
+            subscriptions.reconcile(notice, session_hash=principal.session_hash)
+            self.store.claim_billing(
+                principal.customer_id, key_hash, order_id=order_id,
+                session_hash=principal.session_hash, now=self._now(),
+            )
         finally:
             self._billing_slots.release()

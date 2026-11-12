@@ -107,16 +107,19 @@ def _session_url(session) -> str:
 
 
 class CheckoutService:
-    def __init__(self, store: CheckoutStore, settings: CheckoutSettings, *, sessions=None, now=None):
+    def __init__(self, store: CheckoutStore, settings: CheckoutSettings, *, sessions=None, customers=None, now=None):
         self.store, self.settings = store, settings
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._slots = threading.BoundedSemaphore(4)
         self._rate_lock = threading.Lock()
         self._recent = deque()
         self._sessions = sessions
+        self._customers = customers
         if sessions is None and settings.test_mode:
-            self._sessions = stripe.StripeClient(settings.secret_key, stripe_version="2024-06-20", max_network_retries=0,
-                http_client=stripe.RequestsClient(timeout=5)).checkout.sessions
+            client = stripe.StripeClient(settings.secret_key, stripe_version="2024-06-20", max_network_retries=0,
+                http_client=stripe.RequestsClient(timeout=5))
+            self._sessions = client.checkout.sessions
+            self._customers = customers or client.customers
 
     def offer_version(self, settings=None) -> str:
         config = settings or self.settings
@@ -205,6 +208,22 @@ class CheckoutService:
             frozen_offer = json.loads(attempt.offer_json)
             if frozen_offer["credential_hash"] != credential_hash:
                 raise CheckoutConflict
+            initialization = frozen_offer.get("customer_initialization_key")
+            if initialization and frozen_offer.get("authenticated_stripe_customer_id") is None:
+                if self._customers is None:
+                    raise CheckoutUnavailable
+                metadata = {"customer_id": str(attempt.customer_id), "initialization_key": initialization}
+                try:
+                    customer = self._customers.create({"email": attempt.email, "metadata": metadata}, {"idempotency_key": "zt-customer-" + initialization})
+                    customer_id = customer["id"]
+                    if (customer.get("object") != "customer" or customer.get("livemode") is not False
+                            or not isinstance(customer_id, str) or not re.fullmatch(r"cus_[A-Za-z0-9]+", customer_id)
+                            or customer.get("metadata") != metadata):
+                        raise ValueError("Invalid created customer")
+                except (stripe.StripeError, ValueError, TypeError, KeyError, AttributeError):
+                    raise CheckoutUnavailable from None
+                attempt = self.store.bind_checkout_customer(attempt, customer_id, session_hash=session_hash, now=self._now())
+                frozen_offer = json.loads(attempt.offer_json)
             mode = "payment" if attempt.kind == "jednorazowy" else "subscription"
             price = {"currency": "pln", "unit_amount": frozen_offer["amount_grosze"],
                      "product_data": {"name": "Żółta Tablica — test paczki" if mode == "payment" else "Żółta Tablica — test abonamentu"}}

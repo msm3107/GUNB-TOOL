@@ -53,9 +53,9 @@ def parse_notice(value, *, deleted: bool = False) -> SubscriptionNotice | None:
 
 
 class SubscriptionService:
-    def reconcile(self, notice: SubscriptionNotice) -> None:
+    def reconcile(self, notice: SubscriptionNotice, *, session_hash: str | None = None) -> None:
         """Internal ownership-confirmation refresh, explicitly not a Stripe event."""
-        self.apply(notice, event_id="local_reconcile_" + uuid4().hex)
+        self.apply(notice, event_id="local_reconcile_" + uuid4().hex, session_hash=session_hash)
 
     def __init__(
         self,
@@ -138,10 +138,10 @@ class SubscriptionService:
         except (stripe.StripeError, ValueError, TypeError, KeyError, AttributeError):
             raise CheckoutUnavailable from None
 
-    def apply(self, notice: SubscriptionNotice, *, event_id: str) -> None:
+    def apply(self, notice: SubscriptionNotice, *, event_id: str, session_hash: str | None = None) -> None:
         if not self.settings.test_mode:
             raise CheckoutUnavailable
-        ticket = self.store.claim_event(notice, event_id=event_id, now=self._now())
+        ticket = self.store.claim_event(notice, event_id=event_id, now=self._now(), session_hash=session_hash)
         if ticket is None:
             return
         try:
@@ -161,13 +161,13 @@ class SubscriptionService:
                 current["cancel_at_period_end"],
                 pause is not None,
             )
-            self.store.finish_refresh(ticket, state, now=self._now())
-        except (stripe.StripeError, ValueError, TypeError, KeyError, AttributeError):
-            self._release(ticket)
-            raise CheckoutUnavailable from None
+            self.store.finish_refresh(ticket, state, now=self._now(), session_hash=session_hash)
         except (CheckoutUnavailable, CheckoutConflict):
             self._release(ticket)
             raise
+        except (stripe.StripeError, ValueError, TypeError, KeyError, AttributeError):
+            self._release(ticket)
+            raise CheckoutUnavailable from None
 
     def _release(self, ticket) -> None:
         try:

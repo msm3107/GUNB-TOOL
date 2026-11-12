@@ -19,7 +19,7 @@ from tests.test_auth_service import settings as auth_settings
 from tests.test_auth_store import (
     auth_store_fixture as _auth_store_fixture,  # noqa: F401
 )
-from tests.test_stripe_service import URL, Sessions, settings
+from tests.test_stripe_service import URL, Customers, Sessions, settings
 
 ORIGIN = "https://example.test"
 FILTERS = {"wojewodztwo": "28", "branza": "materialy", "powiaty": "2814", "kategorie": "komercyjna", "promien_km": ""}
@@ -28,7 +28,7 @@ FILTERS = {"wojewodztwo": "28", "branza": "materialy", "powiaty": "2814", "kateg
 @pytest.fixture
 def owned_http(auth_store):
     fake = Sessions(auth_store.path)
-    checkout = CheckoutService(CheckoutStore(auth_store.path), settings(), sessions=fake, now=lambda: NOW)
+    checkout = CheckoutService(CheckoutStore(auth_store.path), settings(), sessions=fake, customers=Customers(auth_store.path), now=lambda: NOW)
     sender = Sender(auth_store.path)
     auth = AuthService(auth_store, auth_settings(), sender=sender, now=lambda: NOW)
     config = WebConfig(database_path=auth_store.path, checkout=settings(), auth=auth_settings())

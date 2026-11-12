@@ -19,6 +19,7 @@ from core.instance import database_replacement_lock
 from core.payment_store import PaidCheckout, PaymentStore
 from core.storage import SCHEMA_VERSION, LeadRepository
 from core.subscription_store import SubscriptionNotice, SubscriptionStore
+from tests.conftest import Clock
 from tests.test_auth_billing import UUID, login
 from tests.test_auth_service import Sender
 from tests.test_auth_service import settings as auth_settings
@@ -150,16 +151,17 @@ def legacy_http(legacy):
     subs = Subscriptions(store, notice)
     subs.value["current_period_end"] = int(CURRENT.timestamp()) + 3600
     sessions = CheckoutSessions(legacy)
+    sessions.clock = Clock(CURRENT)
     service = SubscriptionService(
         store,
         settings(),
         subscriptions=subs,
         checkout_sessions=sessions,
-        now=lambda: CURRENT,
+        now=sessions.clock.now_utc,
     )
     sender = Sender(legacy)
     auth = AuthService(
-        AuthStore(legacy), auth_settings(), sender=sender, now=lambda: CURRENT
+        AuthStore(legacy), auth_settings(), sender=sender, now=sessions.clock.now_utc
     )
     config = WebConfig(database_path=legacy, auth=auth_settings(), checkout=settings())
     with TestClient(
@@ -176,6 +178,41 @@ def claim(client):
         json={"request_token": UUID},
         headers={"Origin": "https://example.test"},
     )
+
+
+@pytest.mark.parametrize("change", ["email", "revoke", "expire"])
+@pytest.mark.parametrize("route", ["/panel/rozliczenia/1", "/panel/rozliczenia", "/auth/billing-link"])
+def test_session_invalidated_during_checkout_recovery_never_binds_or_renders_private_data(
+    legacy_http, change, route
+):
+    client, store, subs, sessions = legacy_http
+    if route.endswith("/1"):
+        with sqlite3.connect(store.path) as conn:
+            offer = json.loads(conn.execute("SELECT offer_json FROM checkout_attempts").fetchone()[0])
+            offer["authenticated_customer_id"] = 1
+            conn.execute("UPDATE checkout_attempts SET offer_json=?", (json.dumps(offer),))
+
+    def invalidate():
+        with sqlite3.connect(store.path) as conn:
+            if change == "email":
+                conn.execute("UPDATE b2b_customers SET email='new-private@example.test',nazwa_firmy='PRIVATE COMPANY'")
+            elif change == "revoke":
+                conn.execute("DELETE FROM auth_sessions")
+            else:
+                sessions.clock.advance(hours=8)
+
+    sessions.after_read = invalidate
+    options = {"json": {"request_token": UUID}} if route.startswith("/auth") else {} if route.endswith("/1") else {"data": {"request_token": UUID}}
+    result = client.post(route, headers={"Origin": "https://example.test"}, follow_redirects=False, **options)
+    assert result.status_code == 401
+    assert "new-private@example.test" not in result.text
+    assert "PRIVATE COMPANY" not in result.text
+    assert sessions.calls == 1 and subs.calls == 0
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute("SELECT stripe_customer_id FROM b2b_customers").fetchone()[0] is None
+        assert conn.execute("SELECT count(*) FROM checkout_billing_links").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM b2b_subscriptions").fetchone()[0] == 0
+    unchanged_business(store.path)
 
 
 def test_v20_migration_login_recovers_old_checkout_and_retry_without_duplicate_work(
@@ -376,7 +413,8 @@ def test_recovery_does_not_commit_after_owner_or_snapshot_changes(
             c.execute(statement)
 
     sessions.after_read = change
-    assert claim(client).status_code == 409 and subs.calls == 0
+    expected = 401 if statement.startswith("UPDATE b2b_customers SET email=") else 409
+    assert claim(client).status_code == expected and subs.calls == 0
     with sqlite3.connect(store.path) as c:
         assert c.execute("SELECT count(*) FROM checkout_billing_links").fetchone() == (
             0,

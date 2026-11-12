@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -116,6 +116,7 @@ class CheckoutStore:
         stamp = int(now.timestamp())
 
         def reserve(conn):
+            reserved_offer = offer_json
             self._check_session(conn, owner_id, session_hash, stamp)
             row = conn.execute("SELECT * FROM checkout_attempts WHERE key_hash=?", (key_hash,)).fetchone()
             if row is None and expected_offer_version is not None and expected_offer_version != current_offer_version:
@@ -125,8 +126,25 @@ class CheckoutStore:
                 if owner is None or owner[0].lower() != email:
                     raise CheckoutConflict
                 frozen = json.loads(row["offer_json"] if row else offer_json)
-                if not isinstance(frozen, dict) or frozen.get("authenticated_stripe_customer_id") != owner[1]:
+                if not isinstance(frozen, dict):
                     raise CheckoutConflict
+                if row:
+                    if frozen.get("authenticated_stripe_customer_id") != owner[1] and not (
+                        frozen.get("authenticated_stripe_customer_id") is None and frozen.get("customer_initialization_key")
+                    ):
+                        raise CheckoutConflict
+                else:
+                    # Freeze the current mapping in the reservation transaction.
+                    frozen["authenticated_stripe_customer_id"] = owner[1]
+                    if owner[1] is None:
+                        anchor = conn.execute("""SELECT a.offer_json FROM b2b_orders o
+                            JOIN checkout_attempts a USING(order_id)
+                            WHERE o.customer_id=? AND o.status_platnosci='pending' AND a.email=?
+                            AND a.expires_at>? AND instr(a.offer_json,'"customer_initialization_key"')>0
+                            AND instr(a.offer_json,?)>0
+                            ORDER BY o.order_id LIMIT 1""", (owner_id, email, stamp, '"credential_hash":"' + frozen["credential_hash"] + '"')).fetchone()
+                        frozen["customer_initialization_key"] = json.loads(anchor[0])["customer_initialization_key"] if anchor else key_hash
+                    reserved_offer = json.dumps(frozen, sort_keys=True, separators=(",", ":"))
             if row:
                 pending = conn.execute("SELECT status_platnosci FROM b2b_orders WHERE order_id=?", (row["order_id"],)).fetchone()[0]
                 if (row["fingerprint"] != fingerprint or stamp >= row["expires_at"] or pending != "pending"
@@ -143,10 +161,84 @@ class CheckoutStore:
             conn.execute("""INSERT INTO checkout_attempts
                 (key_hash,fingerprint,order_id,customer_id,email,filters_json,kind,offer_json,origin,created_at,expires_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (key_hash, fingerprint, order_id, customer_id, email, filters_json, kind, offer_json, origin, stamp, stamp + 3600))
+                (key_hash, fingerprint, order_id, customer_id, email, filters_json, kind, reserved_offer, origin, stamp, stamp + 3600))
             return CheckoutAttempt(**dict(conn.execute("SELECT * FROM checkout_attempts WHERE key_hash=?", (key_hash,)).fetchone()))
 
         return self._write(reserve)
+
+    def bind_checkout_customer(
+        self,
+        attempt: CheckoutAttempt,
+        stripe_customer_id: str,
+        *,
+        session_hash: str | None,
+        now: datetime,
+    ) -> CheckoutAttempt:
+        """Commit a server-created identity before any Checkout request can use it."""
+
+        def bind(conn):
+            self._check_session(
+                conn, attempt.customer_id, session_hash, int(now.timestamp())
+            )
+            row = conn.execute(
+                "SELECT * FROM checkout_attempts WHERE key_hash=?", (attempt.key_hash,)
+            ).fetchone()
+            owner = conn.execute(
+                "SELECT email,stripe_customer_id FROM b2b_customers WHERE customer_id=?",
+                (attempt.customer_id,),
+            ).fetchone()
+            if row is None or owner is None or owner[0].lower() != attempt.email:
+                raise CheckoutConflict
+            current = CheckoutAttempt(**dict(row))
+            frozen, expected = json.loads(row["offer_json"]), json.loads(attempt.offer_json)
+            expected["authenticated_stripe_customer_id"] = frozen.get(
+                "authenticated_stripe_customer_id"
+            )
+            pending = conn.execute(
+                """SELECT status_platnosci FROM b2b_orders
+                WHERE order_id=? AND customer_id=? AND filtry_json=? AND typ_pakietu=?""",
+                (attempt.order_id, attempt.customer_id, attempt.filters_json, attempt.kind),
+            ).fetchone()
+            if (
+                current != replace(attempt, offer_json=current.offer_json)
+                or not is_owned_checkout(row["offer_json"], attempt.customer_id)
+                or frozen != expected
+                or pending is None
+                or pending[0] != "pending"
+                or int(now.timestamp()) >= row["expires_at"]
+                or frozen.get("authenticated_stripe_customer_id")
+                not in (None, stripe_customer_id)
+                or owner[1] not in (None, stripe_customer_id)
+            ):
+                raise CheckoutConflict
+            other = conn.execute(
+                "SELECT customer_id FROM b2b_customers WHERE stripe_customer_id=?",
+                (stripe_customer_id,),
+            ).fetchone()
+            if other is not None and other[0] != attempt.customer_id:
+                raise CheckoutConflict
+            frozen["authenticated_stripe_customer_id"] = stripe_customer_id
+            conn.execute(
+                "UPDATE b2b_customers SET stripe_customer_id=? WHERE customer_id=?",
+                (stripe_customer_id, attempt.customer_id),
+            )
+            conn.execute(
+                "UPDATE checkout_attempts SET offer_json=? WHERE key_hash=?",
+                (
+                    json.dumps(frozen, sort_keys=True, separators=(",", ":")),
+                    attempt.key_hash,
+                ),
+            )
+            return CheckoutAttempt(
+                **dict(
+                    conn.execute(
+                        "SELECT * FROM checkout_attempts WHERE key_hash=?",
+                        (attempt.key_hash,),
+                    ).fetchone()
+                )
+            )
+
+        return self._write(bind)
 
     def complete(self, key_hash: str, session_id: str, url: str) -> None:
         def complete(conn):
