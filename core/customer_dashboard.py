@@ -10,7 +10,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 
-from .checkout_store import CheckoutStore, CheckoutUnavailable
+from .checkout_store import CheckoutStore, CheckoutUnavailable, is_owned_checkout
 from .instance import AlreadyRunning, database_replacement_lock
 from .issue_tracker import IssueNotAllowed, IssueTracker
 from .stages import get_trade
@@ -26,6 +26,7 @@ class DashboardOrder:
     kind: str
     payment: str
     scope: str
+    can_reconcile: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,7 @@ class CustomerDashboardStore(CheckoutStore):
         now: datetime,
         orders_before: int | None = None,
         deliveries_before: int | None = None,
+        session_hash: str | None = None,
     ) -> DashboardSnapshot:
         for value in (customer_id, orders_before, deliveries_before):
             if value is not None and (type(value) is not int or not 1 <= value < 2**63):
@@ -140,6 +142,7 @@ class CustomerDashboardStore(CheckoutStore):
                         or conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal"
                     ):
                         raise CheckoutUnavailable
+                    self._check_session(conn, customer_id, session_hash, int(now.timestamp()))
                     return self._snapshot(
                         conn, customer_id, now, orders_before, deliveries_before
                     )
@@ -159,8 +162,10 @@ class CustomerDashboardStore(CheckoutStore):
         if customer is None:
             raise CheckoutUnavailable
         orders = conn.execute(
-            """SELECT order_id,typ_pakietu,status_platnosci,substr(filtry_json,1,4096) AS filters
-            FROM b2b_orders WHERE customer_id=? AND order_id<=? ORDER BY order_id DESC LIMIT ?""",
+            """SELECT o.order_id,typ_pakietu,status_platnosci,substr(filtry_json,1,4096) AS filters,
+                substr(a.offer_json,1,4096) AS owner_proof
+            FROM b2b_orders o LEFT JOIN checkout_attempts a ON a.order_id=o.order_id AND a.customer_id=o.customer_id
+            WHERE o.customer_id=? AND o.order_id<=? ORDER BY o.order_id DESC LIMIT ?""",
             (
                 customer_id,
                 orders_before - 1 if orders_before else 2**63 - 1,
@@ -233,6 +238,7 @@ class CustomerDashboardStore(CheckoutStore):
                     r["typ_pakietu"],
                     r["status_platnosci"],
                     _scope(r["filters"]),
+                    r["typ_pakietu"] == "abonament" and r["status_platnosci"] == "paid" and is_owned_checkout(r["owner_proof"], customer_id),
                 )
                 for r in orders[:PAGE_SIZE]
             ),

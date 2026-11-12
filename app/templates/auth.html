@@ -13,11 +13,12 @@
       <p class="intro">Logowanie jest jeszcze niedostępne. Portal klienta jest przygotowywany.</p>
     {% elif logged_in %}
       <p class="intro">Twoje zamówienia, paczki i status abonamentu znajdziesz w panelu.</p>
-      <p><a class="button-link" href="/panel">Przejdź do panelu</a></p>
+      <p><a class="button-link" href="{{ return_to }}">Przejdź do panelu</a></p>
       <form method="post" action="/auth/logout"><button class="button-secondary" type="submit">Wyloguj się</button></form>
     {% elif view == 'verify' %}
       <p class="intro">Wybierz przycisk, aby zalogować się do Żółtej Tablicy. Jeśli nie zlecano logowania, zamknij tę stronę.</p>
       <form method="post" action="/auth/verify" id="magic-confirm">
+        <input type="hidden" name="next" value="{{ return_to }}">
         <div id="magic-code-field"><label for="magic-token">Kod z końca linku w wiadomości (po znaku #)</label>
           <input id="magic-token" name="token" type="password" required maxlength="256" autocomplete="off" spellcheck="false">
           <p class="field-help">Jeśli kod nie wypełnił się automatycznie, wklej go tutaj. Otwórz link w przeglądarce, w której go zamówiono.</p>
@@ -27,16 +28,18 @@
     {% elif view != 'requested' %}
       <p class="intro">Podaj adres przypisany do konta. Wyślemy jednorazowy link — bez zapamiętywania hasła.</p>
       <form method="post" action="/auth/magic-link">
+        <input type="hidden" name="next" value="{{ return_to }}">
         <label for="auth-email">Adres e-mail</label>
         <input id="auth-email" name="email" type="email" required maxlength="254" autocomplete="email" aria-describedby="auth-help">
         <p class="field-help" id="auth-help">Otwórz link w tej samej przeglądarce. Jest ważny 15 minut.</p>
         <button class="button-link" type="submit">Wyślij link <span aria-hidden="true">↗</span></button>
       </form>
     {% endif %}
-    <p class="field-help"><a href="/logowanie">Zamów nowy link</a> · <a href="/zamowienie">Wróć do konfiguratora</a></p>
+    <p class="field-help"><a href="{{ renew_url }}">Zamów nowy link</a> · <a href="/zamowienie">Wróć do konfiguratora</a></p>
     </div>
     <aside class="estimate-panel"><p class="eyebrow">Spokojnie, bez hasła</p><h2>Twój link.<br>Twoja przeglądarka.</h2>
       <p>Link działa raz i wygasa po 15 minutach. Samo otwarcie wiadomości nie loguje do konta.</p>
+      <p class="field-help">Link otworzył się w innej przeglądarce lub wygasł? Wróć do tej samej przeglądarki, w której zamówiono link, albo wybierz „Zamów nowy link” w przeglądarce, w której chcesz korzystać z konta. Cel powrotu zostanie zachowany.</p>
       <p class="field-help">Nie przekazuj linku innym osobom. Sprawdź folder spam. Jeśli wiadomość nie dotarła, spróbuj później.</p>
       <p class="sales-note">Sprzedaż pozostaje wyłączona. Logowanie nie jest potwierdzeniem płatności ani doręczenia paczki.</p>
     </aside>

@@ -1,6 +1,7 @@
 """Owned loopback servers and synthetic DB only; no external business operations."""
 
 import socket
+import sqlite3
 import threading
 import time
 from dataclasses import replace
@@ -26,7 +27,7 @@ def browser_context_args(browser_context_args):
 
 
 @pytest.fixture
-def app_server(tmp_path):
+def app_server(tmp_path, request):
     path = tmp_path / "browser.sqlite"
     place_source, places_path = tmp_path / "names.gml", tmp_path / "places.sqlite"
     place_source.write_text(
@@ -72,14 +73,56 @@ def app_server(tmp_path):
     auth = CompletedAuthService(
         AuthStore(path), auth_settings, sender=sender, now=lambda: NOW
     )
+    checkout_api = checkout_service = subscription_service = None
+    from app.stripe_service import CheckoutService, CheckoutSettings
+    checkout_config = CheckoutSettings()
+    if getattr(request, "param", False):
+        import copy
+
+        import stripe
+
+        from app.subscription_service import SubscriptionService
+        from core.checkout_store import CheckoutStore
+        from core.subscription_store import SubscriptionNotice, SubscriptionStore
+        from tests.test_stripe_service import Customers
+        from tests.test_stripe_service import settings as checkout_settings
+        from tests.test_subscription_service import Subscriptions, snapshot
+        checkout_config = replace(checkout_settings(), origin=url)
+        class NativeSessions:
+            def __init__(self):
+                self.calls = []
+            def create(self, params, options):
+                # Another writer can commit while the provider is called.
+                with sqlite3.connect(path, timeout=0) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                self.calls.append((copy.deepcopy(params), dict(options)))
+                if len(self.calls) == 1:
+                    raise stripe.APIConnectionError("synthetic timeout")
+                return {"id": "cs_test_native", "livemode": False, "url": "https://checkout.stripe.com/test-owned"}
+        checkout_api = NativeSessions()
+        class NativeCustomers(Customers):
+            def create(self, params, options):
+                value = super().create(params, options)
+                value["id"] = "cus_native"
+                return value
+        checkout_service = CheckoutService(CheckoutStore(path), checkout_config, sessions=checkout_api, customers=NativeCustomers(path), now=lambda: NOW)
+        class NativeSubscriptions:
+            def retrieve(self, subscription_id):
+                metadata = checkout_api.calls[-1][0]["metadata"]
+                notice = SubscriptionNotice("sub_native", "cus_native", metadata["checkout_key"], metadata["order_id"], metadata["customer_id"])
+                api = Subscriptions(SubscriptionStore(path), notice)
+                api.value = snapshot(notice, current_period_end=int(time.time()) + 86400)
+                return api.retrieve(subscription_id)
+        subscription_service = SubscriptionService(SubscriptionStore(path), checkout_config, subscriptions=NativeSubscriptions(), now=lambda: NOW)
     server = uvicorn.Server(
         uvicorn.Config(
             create_app(
                 WebConfig(
                     database_path=path, places_path=places_path, auth=auth_settings,
-                    package_dir=tmp_path / "private",
+                    package_dir=tmp_path / "private", checkout=checkout_config,
                 ),
                 auth_service=auth,
+                checkout_service=checkout_service, subscription_service=subscription_service,
             ),
             log_level="error",
             access_log=False,
@@ -103,6 +146,7 @@ def app_server(tmp_path):
             places_path=places_path,
             place_source=place_source,
             place_version=place_version,
+            checkout_api=checkout_api,
         )
     finally:
         server.should_exit = True

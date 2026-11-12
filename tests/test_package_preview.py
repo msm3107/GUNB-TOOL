@@ -527,7 +527,7 @@ def test_owner_get_is_private_paginated_and_selected_row_is_escaped(preview_http
     h.client.cookies.clear()
     assert (
         h.client.get("/panel/paczki/1", follow_redirects=False).headers["location"]
-        == "/logowanie"
+        == "/logowanie?next=%2Fpanel%2Fpaczki%2F1"
     )
 
 

@@ -215,7 +215,7 @@ async def read_input(request: Request, *, native: bool = False) -> EstimateInput
 
 
 def order_router(
-    estimator: Estimator, templates, places: PlaceCatalog | None = None
+    estimator: Estimator, templates, places: PlaceCatalog | None = None, *, checkout_enabled: bool = False
 ) -> APIRouter:
     router = APIRouter()
     places = places or PlaceCatalog(None)
@@ -274,6 +274,7 @@ def order_router(
             headers={"Cache-Control": "no-store"},
             context={
                 "page_title": "Konfigurator paczki",
+                "checkout_enabled": checkout_enabled,
                 "counties": counties,
                 "voivodeships": VOIVODESHIPS,
                 "trades": TRADES,

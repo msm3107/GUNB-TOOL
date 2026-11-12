@@ -27,6 +27,26 @@ def settings(**updates):
     return CheckoutSettings(**values)
 
 
+class Customers:
+    def __init__(self, path):
+        self.path = path
+        self.calls = []
+        self.error = None
+        self.after_create = None
+        self.check_locks = True
+
+    def create(self, params, options):
+        if self.check_locks:
+            with database_replacement_lock(self.path), sqlite3.connect(self.path, timeout=0) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+        self.calls.append((copy.deepcopy(params), dict(options)))
+        if self.after_create:
+            self.after_create()
+        if self.error:
+            raise self.error
+        return {"id": "cus_synthetic", "object": "customer", "livemode": False, "metadata": params["metadata"]}
+
+
 class Sessions:
     def __init__(self, path):
         self.path = path
