@@ -102,6 +102,27 @@ def test_v22_download_manifest_upgrade_preserves_legacy_and_backup(tmp_path):
     assert len(list((tmp_path / "backups").glob("*.sqlite"))) == 1
 
 
+def test_v23_outbox_upgrade_preserves_publications_without_historical_mail(tmp_path):
+    from tests.test_storage import legacy_database
+
+    path = tmp_path / "v23.sqlite"
+    conn = legacy_database(path, 23)
+    conn.execute("INSERT INTO b2b_customers(customer_id,email) VALUES(1,'legacy@example.test')")
+    conn.execute("INSERT INTO b2b_orders VALUES(1,1,'{}','jednorazowy','paid')")
+    conn.execute("INSERT INTO b2b_deliveries VALUES(1,1,'delta','2026-11-01','old.xlsx','old.csv')")
+    conn.execute("INSERT INTO package_publications VALUES(1,'2026-11-01')")
+    conn.commit()
+    conn.close()
+    with LeadRepository(path) as repo:
+        assert repo.connection.execute("PRAGMA user_version").fetchone()[0] == 24
+        assert repo.connection.execute("SELECT count(*) FROM b2b_outbox").fetchone()[0] == 0
+        assert repo.connection.execute("SELECT published_at FROM package_publications").fetchone()[0] == '2026-11-01'
+    (backup,) = (tmp_path / "backups").glob("*.sqlite")
+    with sqlite3.connect(backup) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 23
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='b2b_outbox'").fetchone() is None
+
+
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch):
     monkeypatch.setenv("ENGINE_API_TOKEN", TOKEN)
