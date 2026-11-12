@@ -13,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 from app.auth import AuthService, digest
 from app.stripe_service import CheckoutBusy, CheckoutService
 from core.checkout_store import (
+    CheckoutBillingRequired,
     CheckoutConflict,
     CheckoutUnauthorized,
     CheckoutUnavailable,
@@ -70,13 +71,14 @@ def checkout_router(service: CheckoutService, templates, places: PlaceCatalog | 
         return JSONResponse({"detail": message}, status_code=code,
                             headers={"Cache-Control": "no-store", "Retry-After": "60"} if code in (429, 503) else {"Cache-Control": "no-store"})
 
-    def owned_page(request, selection=None, *, status=200, message="", login=False, offers=None):
+    def owned_page(request, selection=None, *, status=200, message="", login=False, offers=None, billing_required=False):
         filters_json = json.dumps(selection.filters.model_dump(), ensure_ascii=True, separators=(",", ":")) if selection else ""
         return templates.TemplateResponse(request=request, name="checkout_summary.html", context={
             "page_title": "Testowe zamówienie", "selection": selection, "filters_json": filters_json,
             "scope": _scope(filters_json), "message": message, "login": login,
             "category_labels": CATEGORY_PLURALS,
             "offers": offers,
+            "billing_required": billing_required,
         }, status_code=status, headers={"Cache-Control": "no-store", **({"Retry-After": "60"} if status in (429, 503) else {})})
 
     @router.post("/zamowienie/podsumowanie", include_in_schema=False)
@@ -106,7 +108,7 @@ def checkout_router(service: CheckoutService, templates, places: PlaceCatalog | 
         selection = None
         owner = None
         session_hash = digest(request.cookies.get(auth.session_cookie, ""))
-        async def reject(message, code, *, login=False):
+        async def reject(message, code, *, login=False, billing_required=False):
             if not native:
                 return failure(message, code)
             offers = None
@@ -119,7 +121,7 @@ def checkout_router(service: CheckoutService, templates, places: PlaceCatalog | 
                     code, message = 409, "Nie potwierdzono właściciela zapisanej próby. Sprawdź swoje zamówienia."
                 except CheckoutUnavailable:
                     code, message = 503, "Nie można odczytać zapisanej oferty. Zachowano tę próbę; ponów ją później."
-            return owned_page(request, selection, status=code, message=message, login=login, offers=offers)
+            return owned_page(request, selection, status=code, message=message, login=login, offers=offers, billing_required=billing_required)
         try:
             selection = await _owned_input(request, native)
             owner = await run_in_threadpool(auth.resolve, request)
@@ -134,6 +136,8 @@ def checkout_router(service: CheckoutService, templates, places: PlaceCatalog | 
             return await reject(str(exc), exc.status)
         except CheckoutUnauthorized:
             return await reject("Sesja wygasła lub zmieniło się konto. Zaloguj się w nowej karcie i wróć do tej próby.", 401, login=True)
+        except CheckoutBillingRequired:
+            return await reject("Potwierdź rozliczenia dotychczasowego abonamentu w panelu. Następnie wróć tutaj i ponów tę samą próbę.", 409, billing_required=True)
         except CheckoutConflict:
             return await reject("Dane, oferta lub termin tej próby zmieniły się. Sprawdź panel i wróć do konfiguratora, aby potwierdzić aktualną ofertę.", 409)
         except CheckoutBusy:

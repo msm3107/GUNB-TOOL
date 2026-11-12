@@ -60,6 +60,27 @@ class Sessions:
             "url": "https://checkout.stripe.com/test-order" + order,
         }
 
+    def retrieve(self, session_id):
+        order = session_id.removeprefix("cs_test_order")
+        params = self.values[order]
+        return {
+            "id": session_id,
+            "object": "checkout.session",
+            "livemode": False,
+            "mode": "subscription",
+            "status": "complete",
+            "payment_status": "paid",
+            "currency": "pln",
+            "amount_total": params["line_items"][0]["price_data"]["unit_amount"],
+            "created": int(NOW.timestamp()),
+            "expires_at": params["expires_at"],
+            "customer_email": params.get("customer_email"),
+            "customer": params.get("customer", "cus_order" + order),
+            "subscription": "sub_order" + order,
+            "client_reference_id": order,
+            "metadata": params["metadata"],
+        }
+
 
 class Subscriptions:
     def __init__(self, sessions):
@@ -95,6 +116,7 @@ def first_customer(auth_store):
         SubscriptionStore(auth_store.path),
         settings(),
         subscriptions=Subscriptions(sessions),
+        checkout_sessions=sessions,
         now=lambda: NOW,
     )
     config = WebConfig(
@@ -345,4 +367,174 @@ def test_unverified_customer_response_never_binds_or_opens_checkout(
         assert (
             conn.execute("SELECT stripe_customer_id FROM b2b_customers").fetchone()[0]
             is None
+        )
+
+
+@pytest.mark.parametrize("missing_link", [False, True])
+def test_legacy_payment_arriving_during_customer_creation_preserves_both_retries(
+    first_customer, missing_link
+):
+    client, checkout, customers, sessions = first_customer
+    legacy_token = str(uuid4())
+    checkout.start(
+        email="person@example.test",
+        kind="abonament",
+        filters=PackageFilters("28", "materialy"),
+        request_token=legacy_token,
+    )
+    key = sessions.values["1"]["metadata"]["checkout_key"]
+    payment = PaidCheckout(
+        key,
+        "cs_test_order1",
+        "1",
+        "1",
+        "subscription",
+        "pln",
+        23456,
+        int(NOW.timestamp()),
+        "cus_order1",
+        "sub_order1",
+    )
+
+    def legacy_paid():
+        PaymentStore(checkout.store.path).record_event(
+            event_id="evt_paid1",
+            event_type="checkout.session.completed",
+            completion=payment,
+            now=NOW,
+        )
+        if missing_link:
+            with sqlite3.connect(checkout.store.path) as conn:
+                conn.execute("DELETE FROM checkout_billing_links")
+
+    customers.after_create = legacy_paid
+    data = prepare(client)
+    assert (
+        client.post(
+            "/zamowienie/checkout", data=data, follow_redirects=False
+        ).status_code
+        == 409
+    )
+    assert len(customers.calls) == len(sessions.calls) == 1
+    with sqlite3.connect(checkout.store.path) as conn:
+        assert (
+            conn.execute("SELECT stripe_customer_id FROM b2b_customers").fetchone()[0]
+            is None
+        )
+    assert (
+        client.post(
+            "/auth/billing-link", json={"request_token": legacy_token}
+        ).status_code
+        == 200
+    )
+    customers.after_create = None
+    assert (
+        client.post(
+            "/zamowienie/checkout", data=data, follow_redirects=False
+        ).status_code
+        == 303
+    )
+    assert (
+        sessions.calls[-1][0]["customer"] == "cus_order1" and len(customers.calls) == 1
+    )
+
+
+@pytest.mark.parametrize("missing_link", [False, True])
+def test_paid_legacy_recovery_precedes_new_customer_and_preserves_native_retry(
+    first_customer, missing_link
+):
+    from tests.test_auth_navigation import Fields
+
+    client, checkout, customers, sessions = first_customer
+    legacy_token = str(uuid4())
+    checkout.start(
+        email="person@example.test",
+        kind="abonament",
+        filters=PackageFilters("28", "materialy"),
+        request_token=legacy_token,
+    )
+    key = sessions.values["1"]["metadata"]["checkout_key"]
+    payment = PaidCheckout(
+        key,
+        "cs_test_order1",
+        "1",
+        "1",
+        "subscription",
+        "pln",
+        23456,
+        int(NOW.timestamp()),
+        "cus_order1",
+        "sub_order1",
+    )
+    PaymentStore(checkout.store.path).record_event(
+        event_id="evt_paid1",
+        event_type="checkout.session.completed",
+        completion=payment,
+        now=NOW,
+    )
+    if missing_link:
+        with sqlite3.connect(checkout.store.path) as conn:
+            conn.execute("DELETE FROM checkout_billing_links")
+    data = prepare(client)
+    blocked = client.post("/zamowienie/checkout", data=data, follow_redirects=False)
+    assert blocked.status_code == 409
+    assert "Potwierdź rozliczenia dotychczasowego abonamentu" in blocked.text
+    assert 'href="/panel" target="_blank"' in blocked.text
+    fields = Fields(blocked.text).values
+    assert (
+        fields["request_token"] == data["request_token"]
+        and fields["filters"] == data["filters"]
+    )
+    assert customers.calls == [] and len(sessions.calls) == 1
+    assert (
+        client.post(
+            "/auth/billing-link", json={"request_token": legacy_token}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/zamowienie/checkout", data=data, follow_redirects=False
+        ).status_code
+        == 303
+    )
+    assert sessions.calls[-1][0]["customer"] == "cus_order1" and customers.calls == []
+    params = sessions.values["2"]
+    completion = PaidCheckout(
+        params["metadata"]["checkout_key"],
+        "cs_test_order2",
+        "2",
+        "1",
+        "subscription",
+        "pln",
+        23456,
+        int(NOW.timestamp()),
+        "cus_order1",
+        "sub_order2",
+    )
+    PaymentStore(checkout.store.path).record_event(
+        event_id="evt_paid2",
+        event_type="checkout.session.completed",
+        completion=completion,
+        now=NOW,
+    )
+    assert (
+        client.post("/panel/rozliczenia/2", follow_redirects=False).status_code == 303
+    )
+    assert (
+        client.post(
+            "/auth/billing-link", json={"request_token": legacy_token}
+        ).status_code
+        == 200
+    )
+    with sqlite3.connect(checkout.store.path) as conn:
+        assert conn.execute(
+            "SELECT count(*),count(DISTINCT stripe_customer_id) FROM b2b_subscriptions"
+        ).fetchone() == (2, 1)
+        assert conn.execute("SELECT count(*) FROM paid_package_jobs").fetchone()[0] == 2
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM stripe_events WHERE outcome='paid'"
+            ).fetchone()[0]
+            == 2
         )

@@ -538,6 +538,8 @@ Pierwsze uwierzytelnione zamówienia współdzielą `customer_initialization_key
 
 Uzgodnienie przez konto przekazuje hash sesji przez transakcje odzyskania korelacji i odświeżenia abonamentu. Odwołanie, wygaśnięcie albo zmiana zweryfikowanego emaila przerywają zapis odpowiedzią 401. Odczyt panelu sprawdza sesję we własnej transakcji odczytowej przed pobraniem prywatnych pól.
 
+Istniejący opłacony abonament z niepotwierdzonym powiązaniem wymaga potwierdzenia w panelu przed tworzeniem pierwszego nowego Customer. Formularz zachowuje UUID i filtry oraz otwiera panel w nowej karcie. Starszy anonimowy abonament wymaga tam oryginalnego UUID. Po odzyskaniu rozliczeń ta sama nowa próba korzysta z odzyskanego Customer. Kontrola obejmuje też płatność starszego zamówienia otrzymaną podczas tworzenia Customer. Nieukończona inicjalizacja może przyjąć odzyskane ID przed pierwszym wywołaniem Checkout.
+
 ## Podgląd własnej paczki — UX-05
 
 Z panelu „Przejrzyj paczkę” otwiera `GET /panel/paczki/{delivery_id}`. Widok pokazuje zapisany CSV: po 50 pozycji, filtr Nowe/Zmiany/Pełna baza, miejscowość, status i daty, uzasadnienie, archiwalny szacunek branżowy, organ oraz jakość danych. Aktualny import i nowe zgłoszenia nie zmieniają archiwum. Rozwijane pozycje, paginacja i formularze działają bez JS; CSV można pobrać bezpośrednio z widoku.

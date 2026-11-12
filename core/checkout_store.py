@@ -25,6 +25,10 @@ class CheckoutUnauthorized(CheckoutConflict):
     pass
 
 
+class CheckoutBillingRequired(CheckoutConflict):
+    pass
+
+
 def is_owned_checkout(offer_json: str, customer_id: int) -> bool:
     try:
         marker = json.loads(offer_json).get("authenticated_customer_id")
@@ -62,6 +66,14 @@ class CheckoutStore:
             AND s.verified_email=c.email COLLATE NOCASE""", (session_hash, owner_id, stamp)
         ).fetchone() is None:
             raise CheckoutUnauthorized
+
+    @staticmethod
+    def _check_unbound_billing(conn, customer_id, email):
+        if conn.execute("""SELECT 1 FROM b2b_orders o JOIN checkout_attempts a USING(order_id)
+            WHERE o.customer_id=? AND o.status_platnosci='paid' AND a.customer_id=o.customer_id
+            AND a.kind='abonament' AND o.typ_pakietu=a.kind AND o.filtry_json=a.filters_json
+            AND a.email=? COLLATE NOCASE LIMIT 1""", (customer_id, email)).fetchone():
+            raise CheckoutBillingRequired
 
     def read_owned_offer(self, customer_id, key_hash, *, session_hash, now):
         def read(conn):
@@ -128,11 +140,22 @@ class CheckoutStore:
                 frozen = json.loads(row["offer_json"] if row else offer_json)
                 if not isinstance(frozen, dict):
                     raise CheckoutConflict
+                if owner[1] is None:
+                    self._check_unbound_billing(conn, owner_id, email)
                 if row:
                     if frozen.get("authenticated_stripe_customer_id") != owner[1] and not (
-                        frozen.get("authenticated_stripe_customer_id") is None and frozen.get("customer_initialization_key")
+                        frozen.get("authenticated_stripe_customer_id") is None
+                        and frozen.get("customer_initialization_key") and row["session_id"] is None
                     ):
                         raise CheckoutConflict
+                    if frozen.get("authenticated_stripe_customer_id") is None and owner[1] is not None:
+                        # This protocol commits Customer before contacting Checkout.
+                        # No Checkout parameters exist yet, so a recovered mapping
+                        # can safely complete this still-uninitialized attempt.
+                        frozen["authenticated_stripe_customer_id"] = owner[1]
+                        conn.execute("UPDATE checkout_attempts SET offer_json=? WHERE key_hash=?",
+                            (json.dumps(frozen, sort_keys=True, separators=(",", ":")), key_hash))
+                        row = conn.execute("SELECT * FROM checkout_attempts WHERE key_hash=?", (key_hash,)).fetchone()
                 else:
                     # Freeze the current mapping in the reservation transaction.
                     frozen["authenticated_stripe_customer_id"] = owner[1]
@@ -189,6 +212,8 @@ class CheckoutStore:
             ).fetchone()
             if row is None or owner is None or owner[0].lower() != attempt.email:
                 raise CheckoutConflict
+            if owner[1] is None:
+                self._check_unbound_billing(conn, attempt.customer_id, attempt.email)
             current = CheckoutAttempt(**dict(row))
             frozen, expected = json.loads(row["offer_json"]), json.loads(attempt.offer_json)
             expected["authenticated_stripe_customer_id"] = frozen.get(
