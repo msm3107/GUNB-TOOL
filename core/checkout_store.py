@@ -26,7 +26,9 @@ class CheckoutUnauthorized(CheckoutConflict):
 
 
 class CheckoutBillingRequired(CheckoutConflict):
-    pass
+    def __init__(self, *, payment_pending: bool):
+        super().__init__("Prior subscription billing is unresolved")
+        self.payment_pending = payment_pending
 
 
 def is_owned_checkout(offer_json: str, customer_id: int) -> bool:
@@ -69,11 +71,14 @@ class CheckoutStore:
 
     @staticmethod
     def _check_unbound_billing(conn, customer_id, email):
-        if conn.execute("""SELECT 1 FROM b2b_orders o JOIN checkout_attempts a USING(order_id)
-            WHERE o.customer_id=? AND o.status_platnosci='paid' AND a.customer_id=o.customer_id
+        prior = conn.execute("""SELECT o.status_platnosci FROM b2b_orders o JOIN checkout_attempts a USING(order_id)
+            WHERE o.customer_id=? AND a.customer_id=o.customer_id
+            AND (o.status_platnosci='paid' OR (o.status_platnosci='pending'
+                AND instr(a.offer_json,'"customer_initialization_key"')=0))
             AND a.kind='abonament' AND o.typ_pakietu=a.kind AND o.filtry_json=a.filters_json
-            AND a.email=? COLLATE NOCASE LIMIT 1""", (customer_id, email)).fetchone():
-            raise CheckoutBillingRequired
+            AND a.email=? COLLATE NOCASE LIMIT 1""", (customer_id, email)).fetchone()
+        if prior is not None:
+            raise CheckoutBillingRequired(payment_pending=prior[0] == "pending")
 
     def read_owned_offer(self, customer_id, key_hash, *, session_hash, now):
         def read(conn):

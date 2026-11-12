@@ -136,7 +136,9 @@ def checkout_router(service: CheckoutService, templates, places: PlaceCatalog | 
             return await reject(str(exc), exc.status)
         except CheckoutUnauthorized:
             return await reject("Sesja wygasła lub zmieniło się konto. Zaloguj się w nowej karcie i wróć do tej próby.", 401, login=True)
-        except CheckoutBillingRequired:
+        except CheckoutBillingRequired as exc:
+            if exc.payment_pending:
+                return await reject("Wcześniejsza próba abonamentu ma niepotwierdzony wynik. Dokończ ją w poprzednim oknie płatności. Po potwierdzeniu odzyskaj rozliczenia w panelu i ponów ten formularz. Jeśli wynik pozostaje nieznany, zgłoś go obsłudze.", 409, billing_required=True)
             return await reject("Potwierdź rozliczenia dotychczasowego abonamentu w panelu. Następnie wróć tutaj i ponów tę samą próbę.", 409, billing_required=True)
         except CheckoutConflict:
             return await reject("Dane, oferta lub termin tej próby zmieniły się. Sprawdź panel i wróć do konfiguratora, aby potwierdzić aktualną ofertę.", 409)

@@ -540,6 +540,8 @@ Uzgodnienie przez konto przekazuje hash sesji przez transakcje odzyskania korela
 
 Istniejący opłacony abonament z niepotwierdzonym powiązaniem wymaga potwierdzenia w panelu przed tworzeniem pierwszego nowego Customer. Formularz zachowuje UUID i filtry oraz otwiera panel w nowej karcie. Starszy anonimowy abonament wymaga tam oryginalnego UUID. Po odzyskaniu rozliczeń ta sama nowa próba korzysta z odzyskanego Customer. Kontrola obejmuje też płatność starszego zamówienia otrzymaną podczas tworzenia Customer. Nieukończona inicjalizacja może przyjąć odzyskane ID przed pierwszym wywołaniem Checkout.
 
+Wcześniejsza anonimowa próba abonamentowa ze statusem `pending` również wymaga rozstrzygnięcia, ponieważ płatność i webhook mogą nadejść później. Zachowany nowy formularz wskaże powrót do poprzedniego okna płatności i potwierdzenie rozliczeń w panelu. Nieznany wynik wymaga uzgodnienia z dostawcą przez obsługę, również po lokalnym terminie ważności. Dotyczy to wcześniejszych prób bez wspólnego klucza inicjalizacji Customer.
+
 ## Podgląd własnej paczki — UX-05
 
 Z panelu „Przejrzyj paczkę” otwiera `GET /panel/paczki/{delivery_id}`. Widok pokazuje zapisany CSV: po 50 pozycji, filtr Nowe/Zmiany/Pełna baza, miejscowość, status i daty, uzasadnienie, archiwalny szacunek branżowy, organ oraz jakość danych. Aktualny import i nowe zgłoszenia nie zmieniają archiwum. Rozwijane pozycje, paginacja i formularze działają bez JS; CSV można pobrać bezpośrednio z widoku.

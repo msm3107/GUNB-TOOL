@@ -22,6 +22,7 @@ from core.instance import database_replacement_lock
 from core.package_selection import PackageFilters
 from core.payment_store import PaidCheckout, PaymentStore
 from core.subscription_store import SubscriptionNotice, SubscriptionStore
+from tests.conftest import Clock
 from tests.test_auth_billing import login
 from tests.test_auth_service import NOW, Sender
 from tests.test_auth_service import settings as auth_settings
@@ -103,21 +104,23 @@ class Subscriptions:
 @pytest.fixture
 def first_customer(auth_store):
     customers, sessions = Customers(auth_store.path), Sessions(auth_store.path)
+    clock = Clock(NOW)
     checkout = CheckoutService(
         CheckoutStore(auth_store.path),
         settings(),
         sessions=sessions,
         customers=customers,
-        now=lambda: NOW,
+        now=clock.now_utc,
     )
+    checkout.clock = clock
     sender = Sender(auth_store.path)
-    auth = AuthService(auth_store, auth_settings(), sender=sender, now=lambda: NOW)
+    auth = AuthService(auth_store, auth_settings(), sender=sender, now=clock.now_utc)
     subs = SubscriptionService(
         SubscriptionStore(auth_store.path),
         settings(),
         subscriptions=Subscriptions(sessions),
         checkout_sessions=sessions,
-        now=lambda: NOW,
+        now=clock.now_utc,
     )
     config = WebConfig(
         database_path=auth_store.path, checkout=settings(), auth=auth_settings()
@@ -370,9 +373,92 @@ def test_unverified_customer_response_never_binds_or_opens_checkout(
         )
 
 
+@pytest.mark.parametrize("delay_hours", [0, 2])
 @pytest.mark.parametrize("missing_link", [False, True])
-def test_legacy_payment_arriving_during_customer_creation_preserves_both_retries(
-    first_customer, missing_link
+def test_legacy_reservation_appearing_during_customer_io_keeps_original_owned_retry(
+    first_customer, missing_link, delay_hours
+):
+    client, checkout, customers, sessions = first_customer
+    legacy_token = str(uuid4())
+
+    def legacy_reserved():
+        checkout.start(
+            email="person@example.test",
+            kind="abonament",
+            filters=PackageFilters("28", "materialy"),
+            request_token=legacy_token,
+        )
+
+    customers.after_create = legacy_reserved
+    data = prepare(client)
+    assert (
+        client.post(
+            "/zamowienie/checkout", data=data, follow_redirects=False
+        ).status_code
+        == 409
+    )
+    assert len(customers.calls) == len(sessions.calls) == 1
+    with sqlite3.connect(checkout.store.path) as conn:
+        assert (
+            conn.execute("SELECT stripe_customer_id FROM b2b_customers").fetchone()[0]
+            is None
+        )
+    customers.after_create = None
+    checkout.clock.advance(hours=delay_hours)
+    params = sessions.values["2"]
+    payment = PaidCheckout(
+        params["metadata"]["checkout_key"],
+        "cs_test_order2",
+        "2",
+        "1",
+        "subscription",
+        "pln",
+        23456,
+        int(NOW.timestamp()),
+        "cus_order2",
+        "sub_order2",
+    )
+    PaymentStore(checkout.store.path).record_event(
+        event_id="evt_paid2",
+        event_type="checkout.session.completed",
+        completion=payment,
+        now=checkout.clock.now_utc(),
+    )
+    if missing_link:
+        with sqlite3.connect(checkout.store.path) as conn:
+            conn.execute("DELETE FROM checkout_billing_links")
+    assert (
+        client.post(
+            "/auth/billing-link", json={"request_token": legacy_token}
+        ).status_code
+        == 200
+    )
+    # A two-hour delay expires the reserved new attempt as well. A valid retry
+    # stays within its existing lifetime, while legacy recovery remains usable.
+    if delay_hours:
+        assert (
+            client.post(
+                "/zamowienie/checkout", data=data, follow_redirects=False
+            ).status_code
+            == 409
+        )
+    else:
+        assert (
+            client.post(
+                "/zamowienie/checkout", data=data, follow_redirects=False
+            ).status_code
+            == 303
+        )
+        assert (
+            sessions.calls[-1][0]["customer"] == "cus_order2"
+            and len(customers.calls) == 1
+        )
+
+
+@pytest.mark.parametrize("delay_hours", [0, 2])
+@pytest.mark.parametrize("missing_link", [False, True])
+def test_pending_legacy_payment_after_new_submit_preserves_both_retries(
+    first_customer, missing_link, delay_hours
 ):
     client, checkout, customers, sessions = first_customer
     legacy_token = str(uuid4())
@@ -401,13 +487,13 @@ def test_legacy_payment_arriving_during_customer_creation_preserves_both_retries
             event_id="evt_paid1",
             event_type="checkout.session.completed",
             completion=payment,
-            now=NOW,
+            now=checkout.clock.now_utc(),
         )
         if missing_link:
             with sqlite3.connect(checkout.store.path) as conn:
                 conn.execute("DELETE FROM checkout_billing_links")
 
-    customers.after_create = legacy_paid
+    checkout.clock.advance(hours=delay_hours)
     data = prepare(client)
     assert (
         client.post(
@@ -415,7 +501,8 @@ def test_legacy_payment_arriving_during_customer_creation_preserves_both_retries
         ).status_code
         == 409
     )
-    assert len(customers.calls) == len(sessions.calls) == 1
+    assert customers.calls == [] and len(sessions.calls) == 1
+    legacy_paid()
     with sqlite3.connect(checkout.store.path) as conn:
         assert (
             conn.execute("SELECT stripe_customer_id FROM b2b_customers").fetchone()[0]
@@ -427,16 +514,13 @@ def test_legacy_payment_arriving_during_customer_creation_preserves_both_retries
         ).status_code
         == 200
     )
-    customers.after_create = None
     assert (
         client.post(
             "/zamowienie/checkout", data=data, follow_redirects=False
         ).status_code
         == 303
     )
-    assert (
-        sessions.calls[-1][0]["customer"] == "cus_order1" and len(customers.calls) == 1
-    )
+    assert sessions.calls[-1][0]["customer"] == "cus_order1" and customers.calls == []
 
 
 @pytest.mark.parametrize("missing_link", [False, True])
