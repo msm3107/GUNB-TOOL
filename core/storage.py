@@ -569,6 +569,34 @@ _MIGRATIONS: tuple[Migration, ...] = (
     );
     CREATE INDEX ix_download_audit_time ON download_audit(attempted_at);
     """,                                                  # v23: manifest, granty i audyt pobrania
+    """CREATE TABLE b2b_outbox (
+        delivery_id INTEGER PRIMARY KEY REFERENCES b2b_deliveries(delivery_id),
+        customer_id INTEGER NOT NULL REFERENCES b2b_customers(customer_id),
+        recipient TEXT NOT NULL,
+        published_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','leased','sending','accepted','rejected','unknown','cancelled')),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 5),
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        lease_token TEXT,
+        lease_until INTEGER,
+        finished_at INTEGER,
+        error_code TEXT,
+        provider_receipt TEXT,
+        CHECK((status IN ('leased','sending') AND lease_token IS NOT NULL AND lease_until IS NOT NULL)
+            OR (status NOT IN ('leased','sending') AND lease_token IS NULL AND lease_until IS NULL))
+    );
+    CREATE INDEX ix_b2b_outbox_due ON b2b_outbox(status,next_attempt_at,delivery_id);
+    CREATE INDEX ix_b2b_outbox_lease ON b2b_outbox(status,lease_until);
+    CREATE TRIGGER package_publication_enqueue AFTER INSERT ON package_publications
+    BEGIN
+        INSERT OR IGNORE INTO b2b_outbox(delivery_id,customer_id,recipient,published_at)
+        SELECT NEW.delivery_id,o.customer_id,c.email,NEW.published_at
+        FROM b2b_deliveries d JOIN b2b_orders o USING(order_id)
+        JOIN b2b_customers c USING(customer_id) WHERE d.delivery_id=NEW.delivery_id;
+    END;
+    """,                                                  # v24: trwałe powiadomienie publikacji
 )
 """Kolejne migracje schematu; indeks + 1 = wersja zapisywana w ``PRAGMA user_version``.
 

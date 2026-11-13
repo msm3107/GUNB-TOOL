@@ -19,7 +19,7 @@ def _smtp_child(pipe, settings, method, endpoint, payload, metadata) -> None:
             result = DeliveryResult('failed')
         elif method in ('report', 'send_email', 'send'):
             if isinstance(payload, str):
-                result = sender.send_email(endpoint, metadata.get('subject', 'Raport'), payload, idempotency_key=metadata.get('idempotency_key'))
+                result = sender.send_email(endpoint, metadata.get('subject', 'Raport'), payload, idempotency_key=metadata.get('idempotency_key'), html_body=metadata.get('html_body'))
             else:
                 result = DeliveryResult('failed')
         elif method == 'verification':
@@ -58,8 +58,11 @@ class SupervisedSMTP:
     def send(self, endpoint, report, *, idempotency_key: str) -> DeliveryResult:
         return self._run('report', endpoint, report, dict(idempotency_key=idempotency_key))
 
-    def send_email(self, recipient: str, subject: str, body: str, *, idempotency_key: str) -> DeliveryResult:
-        return self._run('send_email', recipient, body, dict(subject=subject,idempotency_key=idempotency_key))
+    def send_email(self, recipient: str, subject: str, body: str, *, idempotency_key: str, html_body: str | None = None) -> DeliveryResult:
+        metadata = dict(subject=subject, idempotency_key=idempotency_key)
+        if html_body is not None:
+            metadata['html_body'] = html_body
+        return self._run('send_email', recipient, body, metadata)
 
     def send_verification(self, endpoint, token: str, *, expires_at: datetime,
                           idempotency_key: str) -> DeliveryResult:

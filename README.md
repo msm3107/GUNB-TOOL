@@ -8,7 +8,7 @@
 
 Silnik obsługuje pobieranie paczek RWDZ, filtrowanie i klasyfikację spraw, geokodowanie ULDK, zapis w SQLite oraz kontrolę stanu bazy. CLI jest dostępne w pliku main.py.
 
-Silnik B2B korzysta ze schematu SQLite v22 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
+Silnik B2B korzysta ze schematu SQLite v24 dla klientów, zamówień, dostaw i zgłoszeń jakości danych. Klasyfikator rozróżnia nowe inwestycje, zmiany i pełny snapshot, a `core.export_package` zapisuje sklasyfikowane sprawy do arkusza XLSX z trzema zakładkami oraz płaskiego CSV z BOM UTF-8. Pełny snapshot zachowuje wsadowo pobraną historię statusów; eksport zawiera też scoring i jego uzasadnienie, opcjonalne szacunkowe okno branżowe, organ, lokalizację i linki mapowe. Tekst jest zapisywany jako tekst arkusza, a CSV chroni pola przed interpretacją jako formuły.
 
 `core.issue_tracker.IssueTracker.report_issue(...)` zapisuje uwagi do spraw wcześniej doręczonych danemu klientowi. Obsługuje typy `zly_telefon`, `to_nie_inwestor_tylko_projektant`, `inwestycja_juz_stoi` i `inna_uwaga`. Opis jest zwykłym tekstem do 1000 znaków wejściowych, a limit wynosi 20 nowych zgłoszeń na godzinę na klienta. Ponowienie tego samego typu uwagi do tej samej sprawy zwraca oryginalne zgłoszenie, bez zmiany opisu i zużywania limitu. Wywołująca warstwa aplikacji musi ustalać `customer_id` z uwierzytelnionej sesji.
 
@@ -48,7 +48,7 @@ Po instalacji zależności uruchom serwer lokalny:
 
 ### Konfigurator i estymator
 
-Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v22), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
+Ustaw `GUNB_WEB_DB_PATH` na ścieżkę istniejącej bazy WAL w aktualnym schemacie (v24), wcześniej zainicjalizowanej przez CLI. Bez tego ustawienia strona główna i liveness działają, natomiast estymator informuje o niedostępności. Serwer WWW nie tworzy i nie migruje bazy oraz nie ładuje konfiguracji silnika ani jego `.env`.
 
 `GET /zamowienie` pokazuje formularz, `POST /zamowienie` zwraca wynik HTML (także bez JavaScriptu), a `POST /api/estimate` przyjmuje JSON. Przykład:
 
@@ -541,6 +541,46 @@ Uzgodnienie przez konto przekazuje hash sesji przez transakcje odzyskania korela
 Istniejący opłacony abonament z niepotwierdzonym powiązaniem wymaga potwierdzenia w panelu przed tworzeniem pierwszego nowego Customer. Formularz zachowuje UUID i filtry oraz otwiera panel w nowej karcie. Starszy anonimowy abonament wymaga tam oryginalnego UUID. Po odzyskaniu rozliczeń ta sama nowa próba korzysta z odzyskanego Customer. Kontrola obejmuje też płatność starszego zamówienia otrzymaną podczas tworzenia Customer. Nieukończona inicjalizacja może przyjąć odzyskane ID przed pierwszym wywołaniem Checkout.
 
 Wcześniejsza anonimowa próba abonamentowa ze statusem `pending` również wymaga rozstrzygnięcia, ponieważ płatność i webhook mogą nadejść później. Zachowany nowy formularz wskaże powrót do poprzedniego okna płatności i potwierdzenie rozliczeń w panelu. Nieznany wynik wymaga uzgodnienia z dostawcą przez obsługę, również po lokalnym terminie ważności. Dotyczy to wcześniejszych prób bez wspólnego klucza inicjalizacji Customer.
+
+## Trwałe powiadomienia o paczce — etap14
+
+Aktualny schemat to **v24**. Przed uruchomieniem nowego WWW i workera wykonaj standardową migrację CLI, np. `python main.py --stats --config config.yaml`, na właściwej bazie testowej. `VACUUM INTO` tworzy kopię przed DDL. Migracja zachowuje publikacje, historię dostaw i artefakty oraz dodaje pusty outbox. Publikacje istniejące przed migracją zachowują dotychczasową historię powiadomień. Rollback wymaga zgodnej kopii v23, zatrzymania procesów oraz uzgodnienia wysyłek i publikacji powstałych po kopii.
+
+Nowy wpis w `package_publications` atomowo zapisuje jeden event `b2b_outbox` na delivery_id. Stan przygotowanych plików jest osobny. Proces publikujący po sprawdzeniu plików i uprawnień powstaje w etapie15. API `B2BOutbox.enqueue_ready(delivery_id)` pozwala jawnie zakolejkować istniejącą publikację i zachowuje deduplikację eventu.
+
+Worker odczytuje zmienne procesu. Tryb domyślny to `disabled`, tryb wysyłki to `test`. Korzystaj z osobnej bazy i testowego serwera SMTP. Konfiguracja dotyczy usługowych powiadomień o paczce.
+
+| Zmienna procesu | Wartość |
+|---|---|
+| `GUNB_B2B_NOTIFY_MODE` | `disabled` albo `test` |
+| `GUNB_B2B_NOTIFY_ORIGIN` | Origin własnego portalu HTTPS, HTTP dopuszczone dla loopback |
+| `GUNB_B2B_NOTIFY_SMTP_HOST` | Host testowego SMTP |
+| `GUNB_B2B_NOTIFY_SMTP_PORT` | Domyślnie587 |
+| `GUNB_B2B_NOTIFY_SMTP_FROM` | Pojedynczy adres nadawcy |
+| `GUNB_B2B_NOTIFY_SMTP_TLS` | `starttls` albo `implicit` |
+| `GUNB_B2B_NOTIFY_SMTP_USERNAME/PASSWORD` | Opcjonalna kompletna para, poza repo i logami |
+
+```sh
+python -m core.delivery_notifications --database data/test.sqlite --limit 10
+```
+
+Limit wynosi1–100 zadań na przebieg. Opcja `--enqueue-ready ID` jawnie dodaje event istniejącej publikacji przed przebiegiem. Nowe publikacje zapisują eventy także przy wyłączonym workerze. Włączenie workera przetwarza zaległe `pending` w zadanym limicie.
+
+Krótki claim ma lease90s. Tuż przed SMTP osobna transakcja sprawdza aktualny adres, właściciela, płatność, publikację i oba wpisy manifestu, a następnie zapisuje `sending`. Zmieniony adres lub uprawnienia kończą event jako `cancelled`. Wiadomość zawiera liczniki oraz link `/panel/paczki/{id}`. Logowanie zachowuje cel, a sesja właściciela chroni podgląd i pobranie. Wersje text i HTML korzystają z obecnego nadzorowanego adaptera SMTP. Budżet procesu SMTP to45s plus ograniczone sprzątanie.
+
+- `accepted` potwierdza przyjęcie wiadomości przez SMTP. Stan odbioru przez człowieka jest odrębny. [RFC5321, sekcja4.2.5](https://www.rfc-editor.org/rfc/rfc5321.html#section-4.2.5)
+- `retry` dostawcy wraca do `pending` z backoff60–3600s, najwyżej5 prób. Wyczerpanie prób daje `rejected`.
+- `rejected` zapisuje trwałe odrzucenie. `unknown` obejmuje niepewny wynik SMTP, crash po `sending` oraz utratę zapisu wyniku po akceptacji.
+- Restart po samym claim może ponowić zadanie po wygaśnięciu lease. Wygaśnięte `sending` przechodzi do `unknown`. Worker zachowuje te eventy do wyjaśnienia przez operatora.
+
+CLI zwraca liczniki bieżącego przebiegu oraz kod1 dla rejected/unknown/retry/skipped lub niedostępności. Nowo wykryte unknown po crashu trafiają do tego licznika. Stan całej kolejki można sprawdzić odczytowo
+
+```sql
+SELECT delivery_id,status,attempts,error_code,next_attempt_at
+FROM b2b_outbox ORDER BY delivery_id;
+```
+
+Przy `unknown` uzgodnij wynik z logami testowego dostawcy. Message-ID jest stabilny dla eventu, a ręczne ponowienie może powielić wiadomość. Przyjęcie SMTP, pobranie pliku i historyczne `doreczono_utc` są zapisywane oddzielnie. Testy tej funkcji wykorzystują atrapy SMTP i syntetyczną bazę.
 
 ## Podgląd własnej paczki — UX-05
 
