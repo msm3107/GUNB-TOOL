@@ -29,7 +29,7 @@
 ### Task 1: Trwała kolejka i migracja
 
 **Files:** core/storage.py, core/b2b_outbox.py, tests/test_delivery_notifications.py, tests/test_migration.py.
-**Interfaces:** B2BOutbox.enqueue_ready(delivery_id)->bool, claim(now)->ticket|None, begin_send(ticket,now)->message snapshot|None, finish(ticket,result,now)->bool, recover_stale(now,limit)->None.
+**Interfaces:** B2BOutbox.enqueue_ready(delivery_id)->bool, claim(now)->ticket|None, begin_send(ticket,now)->message snapshot|None, finish(ticket,result,now)->bool, recover_stale(now,limit)->int (liczba nowych unknown).
 - [ ] RED — publikacja tworzy jeden outbox, jawne enqueue jest idempotentne, przygotowana paczka nie tworzy eventu. Migracja23→24 zachowuje dane i tworzy kopię przed DDL.
 - [ ] Implementacja schematu/triggera i krótkich transakcji z lease90s. Statusy pending/leased/sending/accepted/rejected/unknown/cancelled.
 - [ ] GREEN — testy kolejki, migracji i przygotowywania paczek. Commit.

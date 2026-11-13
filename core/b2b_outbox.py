@@ -22,6 +22,7 @@ class NotificationTicket:
     published_at: str
     lease_token: str = field(repr=False)
     lease_until: int
+    attempts: int
 
 
 @dataclass(frozen=True)
@@ -58,30 +59,34 @@ class B2BOutbox(CheckoutStore):
 
         return self._write(enqueue)
 
-    def recover_stale(self, *, now: datetime, limit: int = 100) -> None:
+    def recover_stale(self, *, now: datetime, limit: int = 100) -> int:
         limit, stamp = _limit(limit), int(now.timestamp())
 
         def recover(conn):
+            unknown = 0
             for status, recovered, code in (
                 ("leased", "pending", "lease_expired_before_send"),
                 ("sending", "unknown", "lease_expired_unknown"),
             ):
-                conn.execute(
+                recovered_count = conn.execute(
                     """UPDATE b2b_outbox SET status=?,lease_token=NULL,lease_until=NULL,error_code=?,
                     finished_at=CASE WHEN ?='unknown' THEN ? ELSE NULL END
                     WHERE delivery_id IN (SELECT delivery_id FROM b2b_outbox
                         WHERE status=? AND lease_until<=? ORDER BY lease_until LIMIT ?)""",
                     (recovered, code, recovered, stamp, status, stamp, limit),
-                )
+                ).rowcount
+                if recovered == "unknown":
+                    unknown += recovered_count
+            return unknown
 
-        self._write(recover)
+        return self._write(recover)
 
     def claim(self, *, now: datetime) -> NotificationTicket | None:
         stamp = int(now.timestamp())
 
         def claim(conn):
             row = conn.execute(
-                """SELECT delivery_id,customer_id,recipient,published_at FROM b2b_outbox
+                """SELECT delivery_id,customer_id,recipient,published_at,attempts FROM b2b_outbox
                 WHERE status='pending' AND next_attempt_at<=?
                 ORDER BY next_attempt_at,delivery_id LIMIT 1""",
                 (stamp,),

@@ -118,13 +118,14 @@ class SMTPEmailSender:
         body: str,
         *,
         idempotency_key: str | None = None,
+        html_body: str | None = None,
     ) -> DeliveryResult:
         address = normalize_address("email", recipient)
         key = idempotency_key or hashlib.sha256(f"{address}:{subject}:{time.time()}".encode()).hexdigest()
-        message = self._message(address, subject, body, key)
+        message = self._message(address, subject, body, key, html_body=html_body)
         return self._deliver(address, message)
 
-    def _message(self, address: str, title: str, body: str, key: str) -> EmailMessage:
+    def _message(self, address: str, title: str, body: str, key: str, *, html_body: str | None = None) -> EmailMessage:
         bounded_text(key, 256, single_line=True)
         bounded_text(title, 120, single_line=True)
         message = EmailMessage(policy=SMTP)
@@ -135,6 +136,9 @@ class SMTPEmailSender:
         domain = self.settings.from_address.rsplit("@", 1)[1]
         message["Message-ID"] = f"<{hashlib.sha256(key.encode()).hexdigest()}@{domain}>"
         message.set_content(body, charset="utf-8", cte="quoted-printable")
+        if html_body is not None:
+            bounded_text(html_body, 16384)
+            message.add_alternative(html_body, subtype="html", charset="utf-8", cte="quoted-printable")
         return message
 
     def _deliver(self, address: str, message: EmailMessage) -> DeliveryResult:

@@ -8,6 +8,14 @@ from core.email_sender import SMTPSettings
 SETTINGS = SMTPSettings('smtp.example.org', 587, 'reports@example.org')
 
 
+def test_optional_html_is_forwarded_to_disposable_process(monkeypatch):
+    context = Context(b'{"outcome":"accepted","provider_message_id":null,"retry_after_seconds":null}')
+    sender = supervisor(context, monkeypatch)
+    result = sender.send_email('person@example.test', 'Subject', 'plain', idempotency_key='key', html_body='<p>html</p>')
+    assert result.outcome == 'accepted'
+    assert context.args[-1]['html_body'] == '<p>html</p>'
+
+
 class Pipe:
     def __init__(self, reply):
         self.reply, self.closed = reply, False
