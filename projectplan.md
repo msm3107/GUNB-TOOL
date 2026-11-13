@@ -379,17 +379,15 @@ UX-06 doprecyzowuje ścieżkę konta: powrót po Magic Link jest ograniczony do 
 - Kontekstowy POST uwagi ponownie wiąże klienta, konkretną dostawę, płatność, uprawnienie i digest CSV w krótkiej transakcji; odczyt pliku kończy się przed zapisem. Historyczne ręczne doręczenia zachowują dotychczasowy formularz. Odczyt uprawnień do istniejących publikacji nie tworzy publikacji — ich integracja pozostaje etapem15.
 - Błędy503/429 zachowują escapowane pola i page/category/case niezależnie od udanego ponownego snapshotu. Historia pokazuje własne przyjęte uwagi, datę i treść, bez deklaracji rozstrzygnięcia. Brak nowego schematu, zależności i zmian pamięci dostaw.
 
-#### PR 14: E-mailowe Powiadomienia o Gotowych Paczkach i Zmianach
-- **Gałąź:** `feat/core-delivery-notifications`
-- **Role:**
-  - *Koordynator:* Zwięzłe, handlowe szablony wiadomości (np. „18 nowych budów domów w Twoim powiecie – pobierz paczkę”).
-  - *Workhorse:* Integracja modułu `core/email_sender.py` z procesem generowania paczek, wysyłka e-maila z bezpośrednim przyciskiem pobrania.
-  - *Reviewer:* Bezpieczeństwo nagłówków e-mail (ochrona przed CRLF Injection), brak wrażliwych danych w treści maila.
-- **Zakres zmian:**
-  - Moduł `core/delivery_notifications.py`.
-  - Szablony HTML i text wiadomości transakcyjnej.
-- **Kryteria akceptacji:**
-  - Testy generowania i wysyłki e-maili przy użyciu atrap SMTP (`tests/fakes.py`).
+#### PR 14: Trwałe usługowe powiadomienie o opublikowanej paczce
+- **Gałąź:** `codex/core-delivery-notifications`
+- **Zakres zmian:** migracja v24 z kopią przed DDL, `core/b2b_outbox.py`, `core/delivery_notifications.py` i opcjonalna alternatywa HTML w obecnym porcie SMTP.
+- Jeden event na delivery_id powstaje atomowo z wpisem `package_publications`. Publikację po sprawdzeniu plików oraz uprawnień realizuje etap15. Samo przygotowanie plików pozostaje osobnym stanem.
+- Ograniczony worker CLI sprawdza aktualną własność, adres, płatność, publikację i manifest w krótkiej transakcji przed SMTP. Zmieniony odbiorca lub cofnięte uprawnienia anulują event.
+- Wiadomość text/HTML zawiera liczniki Nowe/Zmiany/Pełna baza oraz link do własnej paczki w panelu. Istniejące logowanie zachowuje cel. Serwis działa niezależnie od ustawień marketingowych.
+- Lease90s odgradza workerów. Restart przed sending pozwala ponowić zadanie. Wygaśnięte sending i wynik unknown wymagają wyjaśnienia. Tylko potwierdzony błąd przejściowy jest automatycznie ponawiany, najwyżej5 prób z backoff60–3600s.
+- Accepted potwierdza przyjęcie SMTP. Publikacja, przyjęcie SMTP, pobranie pliku i historyczne `doreczono_utc` mają osobną semantykę. Wiadomości pozostają w jawnym trybie test, domyślnie disabled.
+- **Kryteria akceptacji:** deduplikacja i atomowość enqueue, migracja23→24 bez historycznej wysyłki, CRLF, zmiana adresu po enqueue, dwa workery, crash/timeout, utrata zapisu wyniku oraz testy z atrapami SMTP.
 
 ---
 
